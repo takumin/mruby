@@ -29,6 +29,7 @@ mruby now supports pattern matching (case/in) syntax:
 # Changes in C API
 
 - **_NOTE_**: `mrb_alloca()` renamed to `mrb_temp_alloc()` ([7fe5c2e](https://github.com/mruby/mruby/commit/7fe5c2e))
+- **_NOTE_**: the `const char*` from `mrb_string_value_cstr()` must not be cached across other mruby operations. Appending to a string now writes in place when the string shares its buffer, and that write can land on the byte another sharer's terminator occupied, so `strlen()` on a cached pointer may run past `RSTRING_LEN()`. Re-fetch the pointer instead; `mrb_string_value_cstr()` restores the terminator on each call
 - **_NOTE_**: `mruby/ext/io.h` renamed to `mruby/io.h` ([2813f79](https://github.com/mruby/mruby/commit/2813f79))
 - `mrb_gc_add_region()` for contiguous heap region support ([072855a](https://github.com/mruby/mruby/commit/072855a))
 - `mrb_class_outer()` to get the outer class/module ([3a1b771](https://github.com/mruby/mruby/commit/3a1b771))
@@ -70,6 +71,7 @@ mruby-symbol-ext, mruby-range-ext, mruby-object-ext.
 - Lossless rotation encoding for 32-bit float32 word boxing ([14a5cfb](https://github.com/mruby/mruby/commit/14a5cfb))
 - Consolidated irep allocation for .mrb loading ([74fb045](https://github.com/mruby/mruby/commit/74fb045))
 - Object shapes (hidden classes) for `MRB_TT_OBJECT` IV storage, sharing key layouts across objects with the same instance variable assignment order ([8d10056](https://github.com/mruby/mruby/commit/8d10056))
+- `mrb_str_cat()` appends in place instead of unsharing the buffer when the string is shared, so "append, take a substring, append" loops are linear in time and memory rather than quadratic. **_NOTE_**: sharing a buffer no longer trims its spare capacity, so a retained `dup` or slice of a string that was built by appending can pin up to twice the bytes it did before
 
 # Build & Configuration
 
