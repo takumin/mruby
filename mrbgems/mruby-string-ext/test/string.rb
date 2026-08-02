@@ -848,3 +848,83 @@ assert('String#scrub no-op on non-UTF-8 build') do
   assert_equal "abc\x80def", "abc\x80def".scrub("?")
   assert_equal "abc\x80def", "abc\x80def".scrub { |_| "?" }
 end
+
+
+# mrb_str_cat() appends in place when the string shares its buffer, instead of
+# unsharing it. These pin the invariant that makes that safe: the appended
+# bytes must be invisible to every other sharer of the same buffer.
+
+assert('String#<< keeps sharers of one buffer independent') do
+  a = ""
+  10.times { a << "0123456789" }   # heap string with spare capacity
+  b = a.dup
+  c = a.dup
+  b << "B"
+  c << "C"
+  a << "A"
+
+  assert_equal "0123456789" * 10 + "A", a
+  assert_equal "0123456789" * 10 + "B", b
+  assert_equal "0123456789" * 10 + "C", c
+end
+
+assert('String#<< on a tail substring leaves the original alone') do
+  a = ""
+  30.times { a << "0123456789" }
+  t = a[250, 50]                   # shares the buffer, ends where `a` ends
+  t << "T"
+
+  assert_equal "0123456789" * 30, a
+  assert_equal "0123456789" * 5 + "T", t
+
+  a << "A"                         # `a` must not reclaim the bytes `t` took
+  assert_equal "0123456789" * 30 + "A", a
+  assert_equal "0123456789" * 5 + "T", t
+end
+
+assert('String#<< with a source sharing the same buffer') do
+  a = ""
+  40.times { a << "0123456789" }
+  head = a[0, 100]
+  tail = a[300, 100]
+  tail << head                     # source and destination share one allocation
+
+  assert_equal "0123456789" * 20, tail
+  assert_equal "0123456789" * 40, a
+end
+
+assert('String#<< on a frozen shared string raises') do
+  a = ""
+  10.times { a << "0123456789" }
+  b = a.dup.freeze
+
+  assert_raise(FrozenError) { b << "x" }
+  assert_equal "0123456789" * 10, b
+  assert_equal "0123456789" * 10, a
+end
+
+assert('String#<< with retained substrings of a growing string') do
+  s = ""
+  subs = []
+  200.times do
+    s << "0123456789" * 4
+    subs << s[-30, 30]
+  end
+
+  assert_equal 200, subs.size
+  assert_equal 8000, s.size
+  bad = 0
+  subs.each { |x| bad += 1 unless x == "0123456789" * 3 }
+  assert_equal 0, bad
+end
+
+assert('String#<< after a sharer shrinks') do
+  a = ""
+  30.times { a << "0123456789" }
+  b = a.dup
+  b.slice!(100, 200)               # b detaches from the shared buffer
+  a << "A"
+
+  assert_equal "0123456789" * 10, b
+  assert_equal "0123456789" * 30 + "A", a
+end

@@ -3168,6 +3168,12 @@ mrb_str_cat(mrb_state *mrb, mrb_value str, const char *ptr, size_t len)
   ptrdiff_t off = -1;
 
   if (len == 0) return str;
+  if (len > (size_t)MRB_INT_MAX) {
+    /* Reject before the mrb_int cast below: a negative `addlen` would let
+       str_modify_cat() lower `shared->reserved`, and that offset must only
+       ever grow. */
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "string size too big");
+  }
   mrb_int capa = str_modify_cat(mrb, s, (mrb_int)len);
   if (ptr >= RSTR_PTR(s) && ptr <= RSTR_PTR(s) + (size_t)RSTR_LEN(s)) {
       off = ptr - RSTR_PTR(s);
