@@ -216,6 +216,8 @@ end
 
 - Adds UTF-8 encoding support to character-oriented String instance methods.
 - If it isn't defined, they only support the US-ASCII encoding.
+- See [doc/internal/string.md](../internal/string.md) for what this option
+  does and does not change.
 
 `MRB_STR_LENGTH_MAX`
 

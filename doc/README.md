@@ -57,6 +57,7 @@ then dive into the subsystem you need:
 | [Compiler Pipeline](internal/compiler.md) | Parser, code generator, IRep, binary format        |
 | [Opcodes](internal/opcode.md)             | VM instruction set reference                       |
 | [Value Boxing](internal/boxing.md)        | How `mrb_value` encodes types                      |
+| [String Indexing](internal/string.md)     | Bytes vs characters, `MRB_UTF8_STRING`, binary flag |
 
 ## Release Notes
 
