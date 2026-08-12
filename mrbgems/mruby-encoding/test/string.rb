@@ -21,8 +21,16 @@ assert('String#valid_encoding? survives what the string goes through') do
      ->(s) { s * 2 },
      ->(s) { s.dup },
      ->(s) { s.byteslice(0, 1) || s },
-     ->(s) { s[0, 1] || s }].each do |op|
-      ["あ", "あa", "あい", "あ" * 40].each do |base|
+     ->(s) { s.byteslice(1..-1) || s },
+     ->(s) { s[0, 1] || s },
+     ->(s) { s + "い" },
+     ->(s) { s + "\x80" },
+     ->(s) { "\xC0" + s },
+     ->(s) { s.dup << "い" << "x" },
+     ->(s) { s.dup << "\xE3" },
+     ->(s) { "#{s}い" },
+     ->(s) { "#{s}\x80" }].each do |op|
+      ["あ", "あa", "あい", "あ" * 40, "あ\xfe", "\x80"].each do |base|
         warm = base.dup
         warm.valid_encoding?          # remember the answer before the change
         cold = base.dup
@@ -206,5 +214,42 @@ assert('String#encoding survives a copy') do
     d = "x".b
     d.replace(c)
     assert_equal Encoding::UTF_8, d.encoding
+  end
+end
+
+assert('String#valid_encoding? of a built string') do
+  # Building a string out of strings whose bytes are known to read whole hands
+  # the walk's answer to the result. These ask that the hand-off never claims
+  # more than a walk of the result would find.
+  if UTF8STRING
+    assert_true ("あ," * 20000).valid_encoding?
+    assert_false ("あ\xfe" * 2).valid_encoding?
+    assert_false ("\x80" * 3).valid_encoding?
+    assert_true ("あ" + "い").valid_encoding?
+    assert_false ("あ" + "\x80").valid_encoding?
+    assert_false ("\x80" + "あ").valid_encoding?
+
+    s = "あ" * 40
+    s.valid_encoding?               # leave the answer for the builders to carry
+    assert_true (s + "い").valid_encoding?
+    assert_false (s + "\x80").valid_encoding?
+    assert_true (s.dup << "い").valid_encoding?
+    assert_false (s.dup << "\x80").valid_encoding?
+    assert_true "#{s}い".valid_encoding?
+    assert_false "#{s}\x80".valid_encoding?
+
+    # A piece cut out by byte offsets is answered by its boundary bytes.
+    assert_true s.byteslice(0, 3).valid_encoding?
+    assert_false s.byteslice(0, 2).valid_encoding?
+    assert_false s.byteslice(1, 3).valid_encoding?
+    assert_true s.byteslice(3..-1).valid_encoding?
+
+    # Measuring leaves behind the same answer a search's walk would find.
+    t = "あ" * 40 + "\xfe"
+    t.length
+    assert_false t.valid_encoding?
+    u = "あいう"
+    u.length
+    assert_true u.valid_encoding?
   end
 end

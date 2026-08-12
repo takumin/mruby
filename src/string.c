@@ -598,11 +598,14 @@ static inline uint32_t popcount(bitint x)
 #endif
 
 /* Counts characters, and when `validp` is given also reports whether every
-   sequence decoded as one character. The walk stops at the first broken
-   sequence, so the returned count is a character count only while `*validp`
-   stays TRUE. */
+   sequence decoded as one character. `stop_on_invalid` picks what the walk is
+   for: stopping at the first broken sequence answers a validity question as
+   soon as it is decided, but the count returned then holds only while
+   `*validp` stays TRUE; walking on counts every stray byte as the one
+   character mrb_utf8len() answers for it, which is the count String#length
+   stands on. */
 static mrb_int
-utf8_strlen_check(const char *str, mrb_int byte_len, mrb_bool *validp)
+utf8_strlen_check(const char *str, mrb_int byte_len, mrb_bool *validp, mrb_bool stop_on_invalid)
 {
   const char *p = str;
   const char *e = str + byte_len;
@@ -620,9 +623,11 @@ utf8_strlen_check(const char *str, mrb_int byte_len, mrb_bool *validp)
       /* mrb_utf8len() answers 1 for a byte that leads no valid sequence. The
          byte here is known to be non-ASCII, so a length of 1 means the string
          carries a byte that stands for no character. */
-      if (validp && clen == 1) {
-        *validp = FALSE;
-        return len;
+      if (clen == 1) {
+        if (validp) {
+          *validp = FALSE;
+          if (stop_on_invalid) return len;
+        }
       }
       p += clen;
       len++;
@@ -634,7 +639,7 @@ utf8_strlen_check(const char *str, mrb_int byte_len, mrb_bool *validp)
 mrb_int
 mrb_utf8_strlen(const char *str, mrb_int byte_len)
 {
-  return utf8_strlen_check(str, byte_len, NULL);
+  return utf8_strlen_check(str, byte_len, NULL, FALSE);
 }
 
 /* count the characters of a string */
@@ -676,8 +681,15 @@ mrb_str_char_len(mrb_state *mrb, mrb_value str)
       RSTR_SET_SINGLE_BYTE_FLAG(s);
       return byte_len;
     }
-    mrb_int utf8_len = (mrb_int)(np - p) + mrb_utf8_strlen(np, (mrb_int)(e - np));
+    /* The rest of the count decodes every sequence anyway, so have the same
+       walk say whether they all spelled a character and keep that answer on
+       the string, where the next search finds it and skips its own walk. A
+       stray byte still counts as one character, which is the count this has
+       always returned; being seen only costs the walked string the flag. */
+    mrb_bool valid = TRUE;
+    mrb_int utf8_len = (mrb_int)(np - p) + utf8_strlen_check(np, (mrb_int)(e - np), &valid, FALSE);
     mrb_assert(utf8_len <= byte_len);
+    if (valid) RSTR_SET_VALID_ENC_FLAG(s);
     return utf8_len;
   }
 }
@@ -702,7 +714,7 @@ mrb_str_valid_encoding_p(mrb_state *mrb, mrb_value str)
 
   mrb_int byte_len = RSTR_LEN(s);
   mrb_bool valid = TRUE;
-  mrb_int utf8_len = utf8_strlen_check(RSTR_PTR(s), byte_len, &valid);
+  mrb_int utf8_len = utf8_strlen_check(RSTR_PTR(s), byte_len, &valid, TRUE);
 
   if (!valid) return FALSE;
   if (byte_len == utf8_len) RSTR_SET_SINGLE_BYTE_FLAG(s);
@@ -957,6 +969,42 @@ str_share(mrb_state *mrb, struct RString *orig, struct RString *s)
   }
 }
 
+/* Whether `s` is already known to hold bytes that read as UTF-8, for the
+   string builders below that hand the answer to what they build instead of
+   making it pay a walk. The flag is one way of knowing; empty is another,
+   holding no byte that could fail to read. A short unflagged string is
+   walked on the spot and remembered: the length bound keeps the walk under
+   the cost of the copy its caller is about to do, and it is what keeps the
+   short literal in `line + "\n"` from defeating the flag the other side
+   carries. */
+#define STR_KNOWN_VALID_SCAN_MAX 16
+
+static inline mrb_bool
+str_known_valid_p(struct RString *s)
+{
+  /* MRB_STR_SINGLE_BYTE says every byte is ASCII, which reads as UTF-8 as
+     it stands, so it answers here just as it does in
+     mrb_str_valid_encoding_p(). */
+  if (RSTR_LEN(s) == 0 || RSTR_VALID_ENC_P(s) || RSTR_SINGLE_BYTE_P(s)) return TRUE;
+#ifdef MRB_UTF8_STRING
+  if (!RSTR_BINARY_P(s) && RSTR_LEN(s) <= STR_KNOWN_VALID_SCAN_MAX) {
+    const char *p = RSTR_PTR(s);
+    const char *e = p + RSTR_LEN(s);
+    /* All-ASCII answers on the spot, which is what the short side of an
+       append usually is; only a byte beyond that range needs the decode.
+       The answer is not written back: the walked side is most often a
+       literal this evaluation made and the next one remakes, so there is
+       no later read to save a walk for, and re-walking a reused one costs
+       these same few bytes. */
+    if (search_nonascii(p, e) == e) return TRUE;
+    mrb_bool valid = TRUE;
+    utf8_strlen_check(p, RSTR_LEN(s), &valid, TRUE);
+    return valid;
+  }
+#endif
+  return FALSE;
+}
+
 /*
  * @param mrb The mruby state.
  * @param str The original mruby string.
@@ -983,6 +1031,22 @@ mrb_str_byte_subseq(mrb_state *mrb, mrb_value str, mrb_int beg, mrb_int len)
     s->as.heap.len = (mrb_ssize)len;
   }
   RSTR_COPY_SINGLE_BYTE_FLAG(s, orig);
+#ifdef MRB_UTF8_STRING
+  /* A byte range of a string whose bytes read whole reads whole itself
+     exactly when both cuts land on character boundaries, and in such a
+     string every byte that is not a continuation byte begins a character.
+     So the byte each cut lands on answers for it--the one at `beg`, and the
+     one just past the range, with the end of the string standing for a
+     boundary--and the walk the flag stands for is decided in two byte
+     tests. This is what hands the flag a searched subject earned down to
+     the pieces split and scan cut from it. */
+  if (RSTR_VALID_ENC_P(orig) &&
+      (len == 0 ||
+       (utf8_islead(RSTR_PTR(orig)[beg]) &&
+        (beg + len == RSTR_LEN(orig) || utf8_islead(RSTR_PTR(orig)[beg + len]))))) {
+    RSTR_SET_VALID_ENC_FLAG(s);
+  }
+#endif
   return mrb_obj_value(s);
 }
 
@@ -1363,6 +1427,16 @@ mrb_str_plus(mrb_state *mrb, mrb_value a, mrb_value b)
   char *pt = RSTR_PTR(t);
   memcpy(pt, p, slen);
   memcpy(pt + slen, p2, s2len);
+  /* Bytes that read as UTF-8 followed by bytes that do read as UTF-8 end to
+     end, each side's sequences being complete on their own, so the walk the
+     result would pay on its first search is decided here. Two ASCII sides
+     make an ASCII whole the same way. */
+  if (str_known_valid_p(s) && str_known_valid_p(s2)) {
+    RSTR_SET_VALID_ENC_FLAG(t);
+    if ((slen == 0 || RSTR_SINGLE_BYTE_P(s)) && (s2len == 0 || RSTR_SINGLE_BYTE_P(s2))) {
+      RSTR_SET_SINGLE_BYTE_FLAG(t);
+    }
+  }
 
   return mrb_obj_value(t);
 }
@@ -1443,8 +1517,16 @@ mrb_str_times(mrb_state *mrb, mrb_value self)
     memcpy(p + n, p, len-n);
   }
   p[RSTR_LEN(str2)] = '\0';
-  RSTR_COPY_SINGLE_BYTE_FLAG(str2, mrb_str_ptr(self));
-  RSTR_COPY_VALID_ENC_FLAG(str2, mrb_str_ptr(self));
+  /* A repetition holds nothing but the source's bytes over and over, so what
+     is known of them is known of it. The source is worth the short walk
+     str_known_valid_p() may spend: `"a," * n` builds a subject in one step,
+     and the answer bought for a few bytes covers however long the result
+     is. */
+  struct RString *orig = mrb_str_ptr(self);
+  if (str_known_valid_p(orig)) {
+    RSTR_SET_VALID_ENC_FLAG(str2);
+  }
+  RSTR_COPY_SINGLE_BYTE_FLAG(str2, orig);
 
   return mrb_obj_value(str2);
 }
@@ -3536,10 +3618,29 @@ mrb_str_cat_cstr(mrb_state *mrb, mrb_value str, const char *ptr)
 MRB_API mrb_value
 mrb_str_cat_str(mrb_state *mrb, mrb_value str, mrb_value str2)
 {
-  if (mrb_str_ptr(str) == mrb_str_ptr(str2)) {
-    mrb_str_modify(mrb, mrb_str_ptr(str));
+  struct RString *s = mrb_str_ptr(str);
+  struct RString *s2 = mrb_str_ptr(str2);
+
+  /* Answered before the append, which takes the flags on `s` down on its
+     way through mrb_str_modify(). Appending bytes that read as UTF-8 to
+     bytes that do leaves bytes that do, so the walk's answer for the longer
+     string is already decided; set it back once the append has happened.
+     This is what keeps a subject grown by `<<` or interpolation from paying
+     a walk per search, and it holds across a self-append, both sides being
+     the same bytes. */
+  mrb_bool valid = str_known_valid_p(s) && str_known_valid_p(s2);
+  mrb_bool ascii = valid &&
+    (RSTR_LEN(s) == 0 || RSTR_SINGLE_BYTE_P(s)) &&
+    (RSTR_LEN(s2) == 0 || RSTR_SINGLE_BYTE_P(s2));
+  if (s == s2) {
+    mrb_str_modify(mrb, s);
   }
-  return mrb_str_cat(mrb, str, RSTRING_PTR(str2), RSTRING_LEN(str2));
+  mrb_str_cat(mrb, str, RSTRING_PTR(str2), RSTRING_LEN(str2));
+  if (valid) {
+    RSTR_SET_VALID_ENC_FLAG(s);
+    if (ascii) RSTR_SET_SINGLE_BYTE_FLAG(s);
+  }
+  return str;
 }
 
 /*

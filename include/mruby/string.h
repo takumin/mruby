@@ -92,9 +92,10 @@ struct RStringEmbed {
 # define RSTR_WRITE_SINGLE_BYTE_FLAG(s, v) (RSTR_UNSET_SINGLE_BYTE_FLAG(s), (s)->flags |= v)
 # define RSTR_COPY_SINGLE_BYTE_FLAG(dst, src) RSTR_WRITE_SINGLE_BYTE_FLAG(dst, RSTR_SINGLE_BYTE_P(src))
 /* Set once a walk has read the whole string as UTF-8, so a later walk can be
-   skipped. Unlike MRB_STR_SINGLE_BYTE this is not a property a byte subrange
-   inherits, since a subrange can cut a character in half; copy it only where
-   the destination ends up holding exactly the source's bytes. */
+   skipped. Unlike MRB_STR_SINGLE_BYTE this is not a property every byte
+   subrange inherits, since a subrange can cut a character in half; copy it
+   where the destination ends up holding exactly the source's bytes, or a
+   range of them that begins and ends on character boundaries. */
 # define RSTR_VALID_ENC_P(s) ((s)->flags & MRB_STR_VALID_ENC)
 # define RSTR_SET_VALID_ENC_FLAG(s) ((s)->flags |= MRB_STR_VALID_ENC)
 # define RSTR_UNSET_VALID_ENC_FLAG(s) ((s)->flags &= ~MRB_STR_VALID_ENC)
