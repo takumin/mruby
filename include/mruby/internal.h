@@ -189,11 +189,19 @@ mrb_int mrb_str_byte_to_char(mrb_state *mrb, mrb_value str, mrb_int bi);
    definition in string.c for what it reads and what it leaves behind. */
 mrb_bool mrb_str_valid_encoding_p(mrb_state *mrb, mrb_value str);
 
-/* Write the UTF-8 spelling of a codepoint into a buffer of at least four
-   bytes, and return how many it took (1-4), or 0 for a value that spells no
-   character. What counts as one, and why a surrogate does spell one here
-   while mrb_utf8len() says it does not, is in the definition in string.c. */
-mrb_int mrb_utf8_to_buf(char *buf, mrb_int cp);
+/* The most bytes mrb_str_encode() may write: the size a caller's buffer has
+   to have, whatever encodings a build carries. */
+#define MRB_STR_ENCODE_MAXLEN 4
+
+/* Write the spelling of a codepoint into a buffer of at least
+   MRB_STR_ENCODE_MAXLEN bytes, and return how many bytes it took, or 0 for a
+   value that spells no character. Every string is UTF-8 or binary today, so
+   the spelling is UTF-8 on every build; a build that grows another encoding
+   dispatches inside this function, which is why callers encode through it
+   rather than through anything UTF-8-named. What counts as a character, and
+   why a surrogate spells one here while mrb_utf8len() reads none, is at the
+   definition in string.c. */
+mrb_int mrb_str_encode(mrb_state *mrb, char *buf, mrb_int cp);
 
 /* What a run of bytes spells is a question apart from whether String indexes
    by character, so a gem that reads UTF-8 on its own asks for these by

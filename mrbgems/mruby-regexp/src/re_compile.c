@@ -451,7 +451,7 @@ parse_escape(re_compiler *c)
 /* Reject what a pattern may not name. CRuby reports both a surrogate and a
    value past the last plane as "invalid Unicode range", and reports it where
    the pattern is read rather than where it is emitted, so the check stays
-   here: mrb_utf8_to_buf() refuses the second on its own but spells the first,
+   here: mrb_str_encode() refuses the second on its own but spells the first,
    and neither reaches it anyway. */
 static void
 check_unicode_cp(re_compiler *c, uint32_t cp)
@@ -1051,8 +1051,8 @@ emit_codepoint(re_compiler *c, uint32_t cp)
     return;
   }
   if ((c->flags & RE_FLAG_IGNORECASE) && emit_cp_folded(c, cp)) return;
-  char buf[4];
-  int len = (int)mrb_utf8_to_buf(buf, (mrb_int)cp);
+  char buf[MRB_STR_ENCODE_MAXLEN];
+  int len = (int)mrb_str_encode(c->mrb, buf, (mrb_int)cp);
   for (int i = 0; i < len; i++) {
     emit(c, RE_CHAR, (uint8_t)buf[i], 0);
   }

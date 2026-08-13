@@ -529,7 +529,7 @@ retry:
           /* CHARACTER FORMATTING (%c) */
           mrb_value val = GETARG();
           const char *c;
-          char cbuf[4];  /* stack buffer for character bytes */
+          char cbuf[MRB_STR_ENCODE_MAXLEN];  /* stack buffer for character bytes */
           int clen;
 
           if (mrb_integer_p(val)) {
@@ -539,7 +539,7 @@ retry:
             /* A value that spells no character writes no byte, and is what
                CRuby reports here as an invalid character rather than as a
                range error. */
-            clen = (int)mrb_utf8_to_buf(cbuf, code);
+            clen = (int)mrb_str_encode(mrb, cbuf, code);
             if (clen == 0) {
               mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid character");
             }

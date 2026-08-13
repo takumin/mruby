@@ -37,7 +37,7 @@ mruby now supports pattern matching (case/in) syntax:
 - `MRB_OPEN_FAILURE()` macro for checking mrb_open result ([40b0cb9](https://github.com/mruby/mruby/commit/40b0cb9))
 - `mrb_print_error()` now handles NULL gracefully ([8e50a45](https://github.com/mruby/mruby/commit/8e50a45))
 - `mrb_open()` returns mrb_state with exc set on init failure ([05ffe0c](https://github.com/mruby/mruby/commit/05ffe0c))
-- `mrb_utf8_to_buf()` for UTF-8 encoding consolidation ([7e28e68](https://github.com/mruby/mruby/commit/7e28e68))
+- `mrb_str_encode()` for codepoint-to-bytes encoding consolidation (UTF-8 today) ([7e28e68](https://github.com/mruby/mruby/commit/7e28e68))
 - `kh_is_end()` macro for safe khash iteration ([893cc75](https://github.com/mruby/mruby/commit/893cc75))
 - `mrb_bigint_p()` always defined regardless of bigint gem presence ([6c4a8c0](https://github.com/mruby/mruby/commit/6c4a8c0))
 - `RInteger` and `RFloat` added to `RVALUE` union ([13dbca0](https://github.com/mruby/mruby/commit/13dbca0))

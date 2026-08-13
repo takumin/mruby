@@ -349,8 +349,8 @@ mrb_gc_free_str(mrb_state *mrb, struct RString *str)
    it by RFC 3629, under which a surrogate spells nothing. So what this writes
    is deliberately wider than what that reads, and a string built from one is
    valid_encoding? == false. */
-mrb_int
-mrb_utf8_to_buf(char *buf, mrb_int cp)
+static mrb_int
+utf8_to_buf(char *buf, mrb_int cp)
 {
   if (cp < 0) {
     return 0;
@@ -378,6 +378,20 @@ mrb_utf8_to_buf(char *buf, mrb_int cp)
     return 4;
   }
   return 0;  /* above U+10FFFF */
+}
+
+/* Encode a codepoint into the bytes a string carries for it (the contract is
+   at the declaration in internal.h). Every string is UTF-8 or binary today,
+   so this spells UTF-8 on every build; the gems that build string content
+   from codepoints (sprintf's %c, pack's U, Integer#chr, a pattern's \u)
+   encode through here rather than through the UTF-8 encoder above, so a
+   build that grows another encoding grows a dispatch here and the callers
+   stand as they are. */
+mrb_int
+mrb_str_encode(mrb_state *mrb, char *buf, mrb_int cp)
+{
+  (void)mrb;
+  return utf8_to_buf(buf, cp);
 }
 
 /* What a run of bytes spells is a question apart from whether String indexes

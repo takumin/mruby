@@ -39,7 +39,7 @@ static mrb_value
 int_chr_utf8(mrb_state *mrb, mrb_value num)
 {
   mrb_int cp = mrb_int(mrb, num);
-  char utf8[4];
+  char utf8[MRB_STR_ENCODE_MAXLEN];
   mrb_int len;
   mrb_value str;
 
@@ -47,7 +47,7 @@ int_chr_utf8(mrb_state *mrb, mrb_value num)
      zero length. A surrogate does spell one to the encoder, because CRuby's
      sprintf("%c") and pack("U") spell one; Integer#chr is where CRuby refuses
      it, so the refusal belongs here rather than in the encoder. */
-  len = mrb_utf8_to_buf(utf8, cp);
+  len = mrb_str_encode(mrb, utf8, cp);
   if (len == 0 || (0xD800 <= cp && cp <= 0xDFFF)) {
     mrb_raisef(mrb, E_RANGE_ERROR, "%v out of char range", num);
   }

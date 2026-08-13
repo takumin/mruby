@@ -773,12 +773,12 @@ unpack_float(mrb_state *mrb, const unsigned char * src, mrb_int srclen, mrb_valu
 static int
 pack_utf8(mrb_state *mrb, mrb_value o, mrb_value str, mrb_int sidx, int count, unsigned int flags)
 {
-  char utf8[4];
+  char utf8[MRB_STR_ENCODE_MAXLEN];
   int len;
   mrb_int c = mrb_integer(o);
 
   /* A value that spells no character writes no byte. */
-  len = (int)mrb_utf8_to_buf(utf8, c);
+  len = (int)mrb_str_encode(mrb, utf8, c);
   if (len == 0) {
     mrb_raise(mrb, E_RANGE_ERROR, "pack(U): value out of range");
   }
