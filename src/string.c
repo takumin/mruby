@@ -3850,7 +3850,7 @@ mrb_str_bytesplice(mrb_state *mrb, mrb_value str)
 }
 
 static mrb_value
-mrb_encoding(mrb_state *mrb, mrb_value self)
+mrb_f_encoding(mrb_state *mrb, mrb_value self)
 {
   mrb_get_args(mrb, "");
 #ifdef MRB_UTF8_STRING
@@ -3926,5 +3926,5 @@ mrb_init_string(mrb_state *mrb)
 
   MRB_MT_INIT_ROM(mrb, s, string_rom_entries);
 
-  mrb_define_method_id(mrb, mrb->kernel_module, MRB_SYM(__ENCODING__), mrb_encoding, MRB_ARGS_NONE());
+  mrb_define_method_id(mrb, mrb->kernel_module, MRB_SYM(__ENCODING__), mrb_f_encoding, MRB_ARGS_NONE());
 }
