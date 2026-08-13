@@ -381,3 +381,29 @@ assert('String#append_as_bytes leaves the reading alone') do
     assert_equal [0xE3, 0x81, 0x82, 171], t.bytes
   end
 end
+
+assert('a byte-read string padded to width') do
+  # ljust, rjust and center hand back the receiver's bytes in wider clothes,
+  # so the result is read the way the receiver was, ASCII bytes and all. A
+  # pad read as bytes marks the result the way any appended byte-read bytes
+  # do.
+  if UTF8STRING
+    s = 171.chr
+    [s.ljust(3), s.rjust(3), s.center(4)].each do |padded|
+      assert_equal Encoding::BINARY, padded.encoding
+      assert_true padded.valid_encoding?
+    end
+    assert_equal [171, 32, 32], s.ljust(3).bytes
+    assert_equal [32, 32, 171], s.rjust(3).bytes
+    assert_equal [32, 171, 32, 32], s.center(4).bytes
+    # an ASCII receiver read as bytes keeps the byte reading too
+    assert_equal Encoding::BINARY, "abc".b.ljust(5).encoding
+    assert_equal Encoding::BINARY, "abc".b.rjust(5).encoding
+    assert_equal Encoding::BINARY, "abc".b.center(5).encoding
+    # a byte-read pad above ASCII marks a plain receiver's result
+    assert_equal Encoding::BINARY, "ab".center(4, 255.chr).encoding
+    # a byte-read pad of ASCII bytes moves nothing
+    assert_equal Encoding::UTF_8, "ab".center(4, "-".b).encoding
+    assert_equal Encoding::UTF_8, "あ".center(3).encoding
+  end
+end
