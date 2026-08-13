@@ -371,7 +371,7 @@ exec_match(mrb_state *mrb, mrb_value self, mrb_value str, mrb_int pos)
   int *captures = (int*)mrb_malloc(mrb, sizeof(int) * cap_size);
   memset(captures, -1, sizeof(int) * cap_size);
   int ncap = mrb_re_exec(mrb, pat, RSTRING_PTR(str), RSTRING_LEN(str), pos,
-                     captures, cap_size, re_binary_string_p(str));
+                     captures, cap_size, mrb_str_encoding(str));
 
   if (ncap == 0) {
     mrb_free(mrb, captures);
@@ -506,7 +506,7 @@ exec_match_p(mrb_state *mrb, mrb_value re, mrb_value str, mrb_int pos)
   re_check_encoding(mrb, str);
 
   int ncap = mrb_re_exec(mrb, pat, RSTRING_PTR(str), RSTRING_LEN(str), pos, NULL, 0,
-                         re_binary_string_p(str));
+                         mrb_str_encoding(str));
   return mrb_bool_value(ncap > 0);
 }
 
@@ -1153,7 +1153,7 @@ regexp_s_gsub_str(mrb_state *mrb, mrb_value klass)
   const char *rep = RSTRING_PTR(replacement);
   mrb_int rep_len = RSTRING_LEN(replacement);
   mrb_bool need_expand = has_backslash(rep, rep_len);
-  mrb_bool binary = re_binary_string_p(str);
+  mrb_encoding enc = mrb_str_encoding(str);
 
   int ncap = pat->num_captures;
   int cap_size = ncap * 2;
@@ -1167,7 +1167,7 @@ regexp_s_gsub_str(mrb_state *mrb, mrb_value klass)
 
   while (pos <= slen) {
     memset(captures, -1, sizeof(int) * cap_size);
-    int n = mrb_re_exec(mrb, pat, s, slen, pos, captures, cap_size, binary);
+    int n = mrb_re_exec(mrb, pat, s, slen, pos, captures, cap_size, enc);
     if (n == 0) break;
 
     /* save last match for $~ */
@@ -1193,7 +1193,7 @@ regexp_s_gsub_str(mrb_state *mrb, mrb_value klass)
        the whole character so multibyte text is not split. */
     if (captures[1] == captures[0]) {
       if (captures[1] < slen) {
-        int clen = mrb_re_charlen(s + captures[1], s + slen, binary);
+        int clen = mrb_re_charlen(s + captures[1], s + slen, enc);
         mrb_str_cat(mrb, result, s + captures[1], clen);
         pos = captures[1] + clen;
       }
@@ -1251,7 +1251,7 @@ regexp_s_sub_str(mrb_state *mrb, mrb_value klass)
   int *captures = (int*)mrb_malloc(mrb, sizeof(int) * cap_size);
   memset(captures, -1, sizeof(int) * cap_size);
 
-  int n = mrb_re_exec(mrb, pat, s, slen, 0, captures, cap_size, re_binary_string_p(str));
+  int n = mrb_re_exec(mrb, pat, s, slen, 0, captures, cap_size, mrb_str_encoding(str));
   if (n == 0) {
     mrb_free(mrb, captures);
     clear_match_globals(mrb);
@@ -1299,7 +1299,7 @@ regexp_s_scan(mrb_state *mrb, mrb_value klass)
 
   const char *s = RSTRING_PTR(str);
   mrb_int slen = RSTRING_LEN(str);
-  mrb_bool binary = re_binary_string_p(str);
+  mrb_encoding enc = mrb_str_encoding(str);
   int ncap = pat->num_captures;
   int cap_size = ncap * 2;
   int *captures = (int*)mrb_malloc(mrb, sizeof(int) * cap_size);
@@ -1312,7 +1312,7 @@ regexp_s_scan(mrb_state *mrb, mrb_value klass)
 
   while (pos <= slen) {
     memset(captures, -1, sizeof(int) * cap_size);
-    int n = mrb_re_exec(mrb, pat, s, slen, pos, captures, cap_size, binary);
+    int n = mrb_re_exec(mrb, pat, s, slen, pos, captures, cap_size, enc);
     if (n == 0) break;
 
     last_ncap = cap_size;

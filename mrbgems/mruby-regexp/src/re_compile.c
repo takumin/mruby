@@ -599,7 +599,7 @@ read_class_atom(re_compiler *c, re_charclass *cc, mrb_bool *is_byte)
   /* Multi-byte UTF-8 leader: decode the full codepoint. An invalid leader
      decodes as itself over one byte, so it is a byte like the rest. */
   int len = 0;
-  uint32_t cp = mrb_re_decode_char(c->p, c->src_end, &len, FALSE);
+  uint32_t cp = mrb_re_decode_char(c->p, c->src_end, &len, mrb_enc_default());
   c->p += len;
   if (len == 1) *is_byte = TRUE;
   return cp;
@@ -853,7 +853,7 @@ compute_fixed_len(re_compiler *c, uint32_t start, uint32_t end, int *chars_out)
         buf[n] = (char)c->code[pc + n].a;
         n++;
       }
-      int clen = mrb_re_charlen(buf, buf + n, FALSE);
+      int clen = mrb_re_charlen(buf, buf + n, mrb_enc_default());
       len += clen;
       chars += 1;
       pc += (uint32_t)clen;
@@ -971,7 +971,7 @@ emit_char(re_compiler *c, uint8_t ch)
 static void
 emit_char_bytes(re_compiler *c, int ch)
 {
-  int len = mrb_re_charlen(c->p - 1, c->src_end, FALSE);
+  int len = mrb_re_charlen(c->p - 1, c->src_end, mrb_enc_default());
   emit(c, RE_CHAR, (uint8_t)ch, 0);
   for (int i = 1; i < len; i++) {
     int b = next_char(c);
@@ -1029,7 +1029,7 @@ emit_char_folded(re_compiler *c, int ch)
 {
   if (ch < 128 || !(c->flags & RE_FLAG_IGNORECASE)) return FALSE;
   int len = 0;
-  uint32_t cp = mrb_re_decode_char(c->p - 1, c->src_end, &len, FALSE);
+  uint32_t cp = mrb_re_decode_char(c->p - 1, c->src_end, &len, mrb_enc_default());
   if (len == 1) return FALSE;
   if (!emit_cp_folded(c, cp)) return FALSE;
   c->p += len - 1;
@@ -1060,7 +1060,7 @@ emit_codepoint(re_compiler *c, uint32_t cp)
      which is the fallback a character the pattern spells already takes there,
      through the length emit_char_folded() reads. */
   if ((c->flags & RE_FLAG_IGNORECASE) &&
-      mrb_re_charlen(buf, buf + len, FALSE) == len &&
+      mrb_re_charlen(buf, buf + len, mrb_enc_default()) == len &&
       emit_cp_folded(c, cp)) {
     return;
   }

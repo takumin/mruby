@@ -229,23 +229,22 @@ void mrb_re_case_unfold_range(uint32_t lo, uint32_t hi,
 #endif
 
 /* The byte length of the character at `s`, and its codepoint: every read of a
-   run of bytes in this gem goes through these two. A subject handed over as
-   binary is one character per byte; everything else is whatever core says a
-   run of bytes spells, which is one character per byte too on a build that
-   indexes Strings by byte. So the engine reads pattern and subject the way
-   the build reads a String, and the compiler passes FALSE for `binary`, a
-   pattern being read that same way. */
+   run of bytes in this gem goes through these two, which are core's answers
+   narrowed to the `int` the engine counts bytes in. The codec travels with
+   the subject it was read off, so a binary subject is one character per byte
+   because core says so of MRB_ENC_BINARY, not because the engine holds a case
+   for it. A pattern is read with the codec of the String it was written as. */
 static inline int
-mrb_re_charlen(const char *s, const char *end, mrb_bool binary)
+mrb_re_charlen(const char *s, const char *end, mrb_encoding enc)
 {
-  return (int)mrb_enc_charlen(binary ? MRB_ENC_BINARY : mrb_enc_default(), s, end);
+  return (int)mrb_enc_charlen(enc, s, end);
 }
 
 static inline uint32_t
-mrb_re_decode_char(const char *s, const char *end, int *len, mrb_bool binary)
+mrb_re_decode_char(const char *s, const char *end, int *len, mrb_encoding enc)
 {
   mrb_int n;
-  uint32_t cp = mrb_enc_decode(binary ? MRB_ENC_BINARY : mrb_enc_default(), s, end, &n);
+  uint32_t cp = mrb_enc_decode(enc, s, end, &n);
   if (len) *len = (int)n;
   return cp;
 }
@@ -254,14 +253,18 @@ mrb_re_decode_char(const char *s, const char *end, int *len, mrb_bool binary)
    the string, so it is not a place a match may start at. A byte that looks
    like a continuation byte but follows no lead byte that reaches it belongs
    to no character and stands on its own, and there the head of the character
-   covering s is s itself. The matcher asks this at every position it tries,
-   so keep the answer for a byte that starts a character here rather than in
-   the call. */
+   covering s is s itself. Under MRB_ENC_BINARY every byte starts a character,
+   so the answer is FALSE throughout and the caller needs no case of its own.
+
+   The matcher asks this at every position it tries, so the bytes that can
+   begin no character under any codec core reads are answered for here rather
+   than in the call. A codec that spells an interior byte some other way would
+   have to be asked instead of tested for. */
 static inline mrb_bool
-mrb_re_char_interior_p(const char *str, const char *s, const char *end)
+mrb_re_char_interior_p(mrb_encoding enc, const char *str, const char *s, const char *end)
 {
   if (s >= end || ((uint8_t)*s & 0xC0) != 0x80) return FALSE;
-  return mrb_enc_char_head(mrb_enc_default(), str, s, end) != s;
+  return mrb_enc_char_head(enc, str, s, end) != s;
 }
 
 /* Execute a match.
@@ -269,6 +272,6 @@ mrb_re_char_interior_p(const char *str, const char *s, const char *end)
    captures[2*n] = start, captures[2*n+1] = end for group n. */
 int mrb_re_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
             const char *str, mrb_int len, mrb_int start,
-            int *captures, int captures_size, mrb_bool binary);
+            int *captures, int captures_size, mrb_encoding enc);
 
 #endif /* MRB_RE_INTERNAL_H */
