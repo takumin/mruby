@@ -220,49 +220,79 @@ uint32_t mrb_utf8_decode(const char *p, const char *e, mrb_int *lenp);
 mrb_int mrb_utf8_strlen(const char *str, mrb_int byte_len);
 #endif
 
-/* What a run of bytes spells, in whatever a build's strings are encoded in.
-   These are the three above where the build reads UTF-8, and one byte per
-   character where it does not, which is what a String is there. Anything that
-   has to read a string whatever the build indexes it by asks through these,
-   so that adding a codec is a change here rather than in every caller. The
-   spelling of a codepoint has no such answer and stays UTF-8: see
-   mrb_utf8_to_buf() above.
+/* Which codec a run of bytes is read with. A String carries one: today that
+   is the MRB_STR_BINARY flag, the whole of what a String records about how
+   its bytes are to be read, and mrb_str_encoding() answers with it. A read
+   holding only a pointer has no string to ask, so it takes the codec as an
+   argument and passes on the one the string it came from gave.
 
-   The byte-per-character answers are inline because a matcher asks them once
-   per byte; where the build reads bytes each call folds into the constant it
-   returns and the branch around it goes away. */
-static inline mrb_int
-mrb_enc_charlen(const char *p, const char *e)
+   No caller names a codec. A build without MRB_UTF8_STRING never hands out
+   MRB_ENC_UTF8, nothing there claiming to hold UTF-8, so the constant
+   standing whatever the build reads costs that build nothing and spares its
+   callers an #ifdef. */
+typedef uint8_t mrb_encoding;
+#define MRB_ENC_BINARY 0  /* a byte is a character */
+#define MRB_ENC_UTF8   1
+
+/* The codec a String's bytes are read with when the String claims none of its
+   own, which is what a run of bytes not taken off a String is read with too.
+   A build reading UTF-8 answers with it; one that does not has only bytes to
+   answer with. */
+static inline mrb_encoding
+mrb_enc_default(void)
 {
 #ifdef MRB_UTF8_STRING
-  return mrb_utf8len(p, e);
+  return MRB_ENC_UTF8;
 #else
-  (void)p; (void)e;
-  return 1;
+  return MRB_ENC_BINARY;
 #endif
+}
+
+/* The codec a string's bytes are to be read with. */
+mrb_encoding mrb_str_encoding(mrb_value str);
+
+/* What a run of bytes spells, read with codec `enc`. Anything that has to
+   read a string whatever codec it carries asks through these, so that adding
+   one is a change here rather than in every caller. The spelling of a
+   codepoint has no such answer and stays UTF-8: see mrb_utf8_to_buf() above.
+
+   These are inline because a matcher asks them once per byte: the codec is a
+   loop invariant there, so the test folds away where the build reads no
+   UTF-8 and predicts where it does. */
+static inline mrb_int
+mrb_enc_charlen(mrb_encoding enc, const char *p, const char *e)
+{
+#ifdef MRB_UTF8_STRING
+  if (enc == MRB_ENC_UTF8) return mrb_utf8len(p, e);
+#else
+  (void)enc; (void)p; (void)e;
+#endif
+  return 1;
 }
 
 static inline const char *
-mrb_enc_char_head(const char *beg, const char *p, const char *end)
+mrb_enc_char_head(mrb_encoding enc, const char *beg, const char *p, const char *end)
 {
 #ifdef MRB_UTF8_STRING
-  return mrb_utf8_char_head(beg, p, end);
+  if (enc == MRB_ENC_UTF8) return mrb_utf8_char_head(beg, p, end);
 #else
+  (void)enc;
+#endif
   (void)beg; (void)end;
   return p;  /* every byte starts a character of its own */
-#endif
 }
 
 static inline uint32_t
-mrb_enc_decode(const char *p, const char *e, mrb_int *lenp)
+mrb_enc_decode(mrb_encoding enc, const char *p, const char *e, mrb_int *lenp)
 {
 #ifdef MRB_UTF8_STRING
-  return mrb_utf8_decode(p, e, lenp);
+  if (enc == MRB_ENC_UTF8) return mrb_utf8_decode(p, e, lenp);
 #else
+  (void)enc;
+#endif
   (void)e;
   *lenp = 1;
   return (uint8_t)*p;
-#endif
 }
 
 /* attr accessor bodies (class.c); the VM compares function pointers against

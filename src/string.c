@@ -380,6 +380,15 @@ mrb_utf8_to_buf(char *buf, mrb_int cp)
   return 0;  /* above U+10FFFF */
 }
 
+/* A binary string is bytes by its own account. Every other string is read the
+   way the build reads a String: UTF-8 where it carries the scan below, bytes
+   where it does not, there being nothing there for a string to claim. */
+mrb_encoding
+mrb_str_encoding(mrb_value str)
+{
+  return RSTR_BINARY_P(mrb_str_ptr(str)) ? MRB_ENC_BINARY : mrb_enc_default();
+}
+
 /* UTF-8: what a run of bytes spells, and what a string holds character by
    character. Only a build that indexes strings by character has to answer
    either, so a build without MRB_UTF8_STRING carries none of it. */

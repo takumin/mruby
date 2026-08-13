@@ -238,18 +238,14 @@ void mrb_re_case_unfold_range(uint32_t lo, uint32_t hi,
 static inline int
 mrb_re_charlen(const char *s, const char *end, mrb_bool binary)
 {
-  return binary ? 1 : (int)mrb_enc_charlen(s, end);
+  return (int)mrb_enc_charlen(binary ? MRB_ENC_BINARY : mrb_enc_default(), s, end);
 }
 
 static inline uint32_t
 mrb_re_decode_char(const char *s, const char *end, int *len, mrb_bool binary)
 {
-  if (binary) {
-    if (len) *len = 1;
-    return (uint8_t)*s;
-  }
   mrb_int n;
-  uint32_t cp = mrb_enc_decode(s, end, &n);
+  uint32_t cp = mrb_enc_decode(binary ? MRB_ENC_BINARY : mrb_enc_default(), s, end, &n);
   if (len) *len = (int)n;
   return cp;
 }
@@ -265,7 +261,7 @@ static inline mrb_bool
 mrb_re_char_interior_p(const char *str, const char *s, const char *end)
 {
   if (s >= end || ((uint8_t)*s & 0xC0) != 0x80) return FALSE;
-  return mrb_enc_char_head(str, s, end) != s;
+  return mrb_enc_char_head(mrb_enc_default(), str, s, end) != s;
 }
 
 /* Execute a match.
