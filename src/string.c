@@ -381,11 +381,10 @@ mrb_utf8_to_buf(char *buf, mrb_int cp)
 }
 
 /* What a run of bytes spells is a question apart from whether String indexes
-   by character, and mruby-regexp asks the first one whatever the build does.
-   So this much is here for any build that asks, through MRB_UTF8_SCAN or
-   MRB_UTF8_STRING; what indexes a string by character waits behind the latter
-   alone, below. A build with neither carries none of it. */
-#if defined(MRB_UTF8_STRING) || defined(MRB_UTF8_SCAN)
+   by character, and a gem reads UTF-8 whatever the build does: mruby-regexp
+   matches against it in a byte-indexed build too. So this much is here for
+   every build; what indexes a string by character waits behind
+   MRB_UTF8_STRING, below. */
 
 #define utf8_islead(c) ((unsigned char)((c)&0xc0) != 0x80)
 
@@ -484,8 +483,6 @@ mrb_utf8_decode(const char *p, const char *e, mrb_int *lenp)
     return c;  /* ASCII, or invalid/truncated byte returned as-is */
   }
 }
-
-#endif  /* MRB_UTF8_STRING || MRB_UTF8_SCAN */
 
 #ifdef MRB_UTF8_STRING
 

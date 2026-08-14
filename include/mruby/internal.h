@@ -202,10 +202,9 @@ void mrb_str_check_byte_pos(mrb_state *mrb, mrb_value str, mrb_int pos);
 mrb_int mrb_utf8_to_buf(char *buf, mrb_int cp);
 
 /* What a run of bytes spells is a question apart from whether String indexes
-   by character, so a gem that reads UTF-8 on its own asks for these by
-   defining MRB_UTF8_SCAN (mruby-regexp does, from its mrbgem.rake). A build
-   with neither that gem nor MRB_UTF8_STRING carries none of them. */
-#if defined(MRB_UTF8_STRING) || defined(MRB_UTF8_SCAN)
+   by character, so these answer it in every build: mruby-regexp reads UTF-8
+   on its own even where String indexes by byte. */
+
 /* The byte length of the character at `str`, which has to be a byte of the
    string rather than `end` itself, and 1 for a run of bytes that spells no
    character. See the definition in string.c for what it rejects. */
@@ -222,7 +221,6 @@ const char *mrb_utf8_char_head(const char *beg, const char *p, const char *end);
    byte over one byte, so a value of 0x80 or above beside *lenp == 1 marks an
    invalid sequence; whether that is an error is the caller's question. */
 uint32_t mrb_utf8_decode(const char *p, const char *e, mrb_int *lenp);
-#endif
 
 #ifdef MRB_UTF8_STRING
 mrb_int mrb_utf8_strlen(const char *str, mrb_int byte_len);
