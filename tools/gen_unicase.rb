@@ -2,11 +2,11 @@
 #
 #   ruby tools/gen_unicase.rb src
 #
-# unicase.h holds what `String#downcase`, `#upcase`, `#capitalize` and
-# `#swapcase` answer for a character above ASCII, and is compiled only into a
-# build that defines MRB_UTF8_STRING, which is the build that reads a string as
-# characters rather than bytes. ASCII is folded inline by the callers and is
-# not in the table.
+# unicase.h holds what `String#downcase`, `#upcase`, `#capitalize`,
+# `#swapcase` and `#casecmp?` answer for a character above ASCII, and is
+# compiled only into a build that defines MRB_UTF8_STRING, which is the build
+# that reads a string as characters rather than bytes. ASCII is folded inline
+# by the callers and is not in the table.
 #
 # The mappings are the full ones, so a source can map to more than one
 # character ("ß" upcases to "SS"). Those go in a second table beside the
@@ -31,6 +31,7 @@ outdir = ARGV[0] or abort "usage: #{$0} OUTDIR"
 lower = {}
 upper = {}
 title = {}
+fold  = {}
 swap_diff = {}
 
 (0x80..0x10FFFF).each do |cp|
@@ -39,9 +40,11 @@ swap_diff = {}
   l = c.downcase
   u = c.upcase
   t = c.capitalize          # one character capitalized is its title case
+  f = c.downcase(:fold)
   lower[cp] = l if l != c
   upper[cp] = u if u != c
   title[cp] = t if t != c
+  fold[cp] = f if f != c
   # What the swap rule would answer, against what swapping actually answers.
   s = c.swapcase
   swap_diff[cp] = s if s != (l != c ? l : u)
@@ -106,6 +109,7 @@ TABLES = [
   ['upper', upper,      'the uppercase mapping'],
   ['title', title_diff, 'where title case differs from upper case'],
   ['swap',  swap_diff,  'where swapping differs from the down-then-up rule'],
+  ['fold',  fold,       'the case folding'],
 ]
 
 encoded = TABLES.map do |name, map, _|
@@ -114,7 +118,7 @@ encoded = TABLES.map do |name, map, _|
   [name, runs, multi]
 end
 
-widest = ([lower, upper, title].flat_map { |m| m.values.map(&:bytesize) }).max
+widest = ([lower, upper, title, fold].flat_map { |m| m.values.map(&:bytesize) }).max
 
 # ------------------------------------------------------------------- emit
 
