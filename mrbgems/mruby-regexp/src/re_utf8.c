@@ -17,7 +17,7 @@ mrb_re_is_word_char(uint32_t c)
   return FALSE;
 }
 
-#ifdef MRB_REGEXP_UNICODE_CASE
+#ifdef MRB_UTF8_STRING
 
 #include "re_casefold.h"
 
@@ -42,7 +42,7 @@ fold_run_for(uint32_t cp)
   return NULL;
 }
 
-#else  /* !MRB_REGEXP_UNICODE_CASE */
+#else  /* !MRB_UTF8_STRING */
 
 #include "re_cased.h"
 
@@ -56,13 +56,13 @@ mrb_re_needs_case_data(uint32_t lo, uint32_t hi)
   return FALSE;
 }
 
-#endif  /* MRB_REGEXP_UNICODE_CASE */
+#endif  /* MRB_UTF8_STRING */
 
 uint32_t
 mrb_re_case_fold(uint32_t cp)
 {
   if (cp < 128) return (cp >= 'A' && cp <= 'Z') ? cp + 32 : cp;
-#ifdef MRB_REGEXP_UNICODE_CASE
+#ifdef MRB_UTF8_STRING
   const re_fold_run *r = fold_run_for(cp);
   return r ? (uint32_t)((int32_t)cp + r->delta) : cp;
 #else
@@ -72,7 +72,7 @@ mrb_re_case_fold(uint32_t cp)
 #endif
 }
 
-#ifdef MRB_REGEXP_UNICODE_CASE
+#ifdef MRB_UTF8_STRING
 int
 mrb_re_case_unfold(uint32_t cp, uint32_t *out, int max)
 {
@@ -165,4 +165,4 @@ mrb_re_case_unfold_range(uint32_t lo, uint32_t hi,
     }
   }
 }
-#endif  /* MRB_REGEXP_UNICODE_CASE */
+#endif  /* MRB_UTF8_STRING */

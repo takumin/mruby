@@ -1,7 +1,8 @@
-# Only compiled into mrbtest when the build does NOT define
-# MRB_REGEXP_UNICODE_CASE; see the gem's mrbgem.rake. With the option every
-# pattern refused here compiles and matches instead.
+# What /i answers on a byte-indexed build, which carries no Unicode case data:
+# every pattern refused here compiles and matches on a build that reads
+# characters, so the mirror of this file is unicode_case.rb.
 assert("Regexp - /i refuses what ASCII folding cannot answer") do
+  skip if __ENCODING__ == "UTF-8"
   # Folding ASCII and carrying on would answer wrongly rather than narrowly:
   # the missing fold is a missed match in the plain and class forms, and the
   # same gap with the sign flipped is a false accept in the negated class.
@@ -19,12 +20,12 @@ assert("Regexp - /i refuses what ASCII folding cannot answer") do
   # which the split leaves in the codepoint list; the ASCII half it could have
   # answered on its own does not save it.
   assert_raise(RegexpError) { Regexp.new("[a-Ā]", Regexp::IGNORECASE) }
-  # A source the option build cannot fold either is refused all the same: the
-  # build has no data to tell it apart from one that would have folded.
+  # A source no build folds is refused all the same: this one has no data to
+  # tell it apart from one that would have folded.
   assert_raise(RegexpError) { Regexp.new("ß", Regexp::IGNORECASE) }
   assert_raise(RegexpError) { Regexp.new("ﬀ", Regexp::IGNORECASE) }
-  # The message names the option, so hitting this says what to do about it.
-  refused = "/i needs MRB_REGEXP_UNICODE_CASE for this character"
+  # The message names the define, so hitting this says what to do about it.
+  refused = "/i needs MRB_UTF8_STRING for this character"
   assert_raise_with_message(RegexpError, "#{refused}: /Ā/") do
     Regexp.new("Ā", Regexp::IGNORECASE)
   end

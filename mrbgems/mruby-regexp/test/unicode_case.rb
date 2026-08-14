@@ -1,7 +1,9 @@
-# Only compiled into mrbtest when the build defines MRB_REGEXP_UNICODE_CASE;
-# see the gem's mrbgem.rake. Without the option every assertion here would
-# fail, since /i then folds ASCII letters and nothing else.
+# What /i answers on a build that reads a string as characters, which is the
+# build that carries the Unicode case data. A byte-indexed one refuses every
+# pattern here rather than folding ASCII and answering wrongly, which is what
+# ascii_case.rb asserts.
 assert("Regexp - Unicode case folding under /i") do
+  skip unless __ENCODING__ == "UTF-8"
   # A literal and its counterpart, in both directions.
   assert_equal "ā", "ā".match(/Ā/i)[0]
   assert_equal "Ā", "Ā".match(/ā/i)[0]

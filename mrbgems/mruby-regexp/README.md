@@ -54,7 +54,7 @@ its own, and the last one can still open a range: `/[\u{61 62}-z]/` is
 ### Flags
 
 - `i` (`Regexp::IGNORECASE`) case-insensitive matching (ASCII, or Unicode
-  with `MRB_REGEXP_UNICODE_CASE`)
+  where the build defines `MRB_UTF8_STRING`)
 - `m` (`Regexp::MULTILINE`) `.` matches newline; `^`/`$` match at line boundaries
 - `x` (`Regexp::EXTENDED`) free-spacing mode; unescaped whitespace ignored, `#` starts comments
 
@@ -172,13 +172,13 @@ pattern analysis.
   CRuby settles the same question with the pattern's encoding and raises
   `RegexpError` for either spelling. A range whose ends are a byte and a
   character (`[\x80-µ]`) names neither and raises `RegexpError`.
-- **ASCII case folding by default**: The `i` flag handles ASCII letters
-  only unless the build defines `MRB_REGEXP_UNICODE_CASE`, which adds the
-  Unicode foldings that pair one codepoint with one other. Without the
-  option, a pattern holding a character that needs one of those raises
-  `RegexpError` rather than answering as if the character had no case; see
-  Configuration. A codepoint with no single counterpart to fold to (`ﬀ` to
-  `ff`) is never folded by either build.
+- **ASCII case folding on a byte-indexed build**: The `i` flag handles ASCII
+  letters only unless the build defines `MRB_UTF8_STRING`, which is the build
+  that reads a string as characters and carries the Unicode foldings that pair
+  one codepoint with one other. Without it, a pattern holding a character that
+  needs one of those raises `RegexpError` rather than answering as if the
+  character had no case; see Configuration. A codepoint with no single
+  counterpart to fold to (`ﬀ` to `ff`) is never folded by either build.
 - **Case-insensitive backreferences match a superset**: `\1` under `i`
   folds each side and compares, so it matches where the capture and the
   repeat hold the same characters in different widths (`k` and `K`).
@@ -228,30 +228,31 @@ there.
 #endif
 ```
 
-Case folding beyond ASCII is opt-in, since it carries a table of the Unicode
-foldings. Define `MRB_REGEXP_UNICODE_CASE` to enable it:
+Case folding beyond ASCII follows `MRB_UTF8_STRING`, the define that makes a
+string index by character. `mruby-encoding` sets it, and a build configuration
+can set it on its own:
 
 ```ruby
-conf.cc.defines << 'MRB_REGEXP_UNICODE_CASE'
+conf.gem :core => 'mruby-encoding'
 ```
 
 It costs about 4KB of text, of which roughly 2.5KB is the table itself. With
 it, `/Ā/i` matches `"ā"`, `/Σ/i` matches `"σ"`, and `[^Ā]` under `/i` stops
 accepting `"ā"`.
 
-Without it, those same patterns do not compile:
+On a byte-indexed build, those same patterns do not compile:
 
 ```ruby
-/Ā/i     # RegexpError: /i needs MRB_REGEXP_UNICODE_CASE for this character
+/Ā/i     # RegexpError: /i needs MRB_UTF8_STRING for this character
 ```
 
 The test is whether a character has a case folding, not whether it is
 non-ASCII, so a script without case is unaffected and `/日本/i`, `/العربية/i`
 and `/😀/i` go on working. Patterns like `/Ā/i` were answering wrongly rather
 than narrowly before this: `[Ā]` under `/i` missed `"ā"`, and `[^Ā]` accepted
-it. Reaching this error means the option is what you want.
+it. Reaching this error means the define is what you want.
 
-`/k/i` matching `"K"` (U+212A) and `/s/i` matching `"ſ"` need no option.
+`/k/i` matching `"K"` (U+212A) and `/s/i` matching `"ſ"` need no define.
 Those two are the only foldings whose result is an ASCII letter, and both
 builds carry them, so that folding "ASCII only" covers the whole of the
 equivalence class an ASCII letter belongs to rather than the part of it that

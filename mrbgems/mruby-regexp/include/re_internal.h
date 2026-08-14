@@ -185,7 +185,7 @@ mrb_bool mrb_re_is_word_char(uint32_t c);
 #define RE_FOLD_KELVIN 0x212A  /* to 'k' */
 
 /* Simple case folding: the folded codepoint, or cp itself when it folds to
-   nothing else. With MRB_REGEXP_UNICODE_CASE that is ASCII plus every 1:1
+   nothing else. With MRB_UTF8_STRING that is ASCII plus every 1:1
    Unicode folding; without it, ASCII plus the two above. Neither build folds a
    codepoint that has no single counterpart to fold to (U+FB00 to "ff"). */
 uint32_t mrb_re_case_fold(uint32_t cp);
@@ -203,13 +203,13 @@ uint32_t mrb_re_case_fold(uint32_t cp);
    nothing to refuse, so the test compiles away there. The arguments are
    evaluated at most once, but only by the definition that uses them, so pass
    plain values. */
-#ifdef MRB_REGEXP_UNICODE_CASE
+#ifdef MRB_UTF8_STRING
 #define mrb_re_needs_case_data(lo, hi) FALSE
 #else
 mrb_bool mrb_re_needs_case_data(uint32_t lo, uint32_t hi);
 #endif
 
-#ifdef MRB_REGEXP_UNICODE_CASE
+#ifdef MRB_UTF8_STRING
 /* Walking the table takes data only this build has. Without it the compiler
    reaches the same two foldings directly, since there are only two.
 
