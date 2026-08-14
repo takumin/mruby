@@ -2016,133 +2016,20 @@ ascii_case_conv(int c, enum mrb_case_mode mode, mrb_bool first)
 
 #ifdef MRB_UTF8_STRING
 
-#include "unicase.h"
-
-/* Which table of unicase.h a character is looked up in. The last two hold a
-   difference rather than a mapping: title case against upper case, and
-   swapping against the rule below it. */
-enum case_kind {
-  CASE_KIND_LOWER,
-  CASE_KIND_UPPER,
-  CASE_KIND_TITLE,
-  CASE_KIND_SWAP,
-  CASE_KIND_FOLD
-};
-
-static const struct case_table {
-  const uni_case_run *runs;
-  size_t run_count;
-  const uni_case_multi *multi;
-  size_t multi_count;
-  uint32_t min, max;
-} case_tables[] = {
-  {UNI_LOWER_RUNS, UNI_LOWER_RUN_COUNT, UNI_LOWER_MULTI, UNI_LOWER_MULTI_COUNT,
-   UNI_LOWER_MIN, UNI_LOWER_MAX},
-  {UNI_UPPER_RUNS, UNI_UPPER_RUN_COUNT, UNI_UPPER_MULTI, UNI_UPPER_MULTI_COUNT,
-   UNI_UPPER_MIN, UNI_UPPER_MAX},
-  {UNI_TITLE_RUNS, UNI_TITLE_RUN_COUNT, UNI_TITLE_MULTI, UNI_TITLE_MULTI_COUNT,
-   UNI_TITLE_MIN, UNI_TITLE_MAX},
-  {UNI_SWAP_RUNS, UNI_SWAP_RUN_COUNT, UNI_SWAP_MULTI, UNI_SWAP_MULTI_COUNT,
-   UNI_SWAP_MIN, UNI_SWAP_MAX},
-  {UNI_FOLD_RUNS, UNI_FOLD_RUN_COUNT, UNI_FOLD_MULTI, UNI_FOLD_MULTI_COUNT,
-   UNI_FOLD_MIN, UNI_FOLD_MAX},
-};
-
-/* Locate the run holding cp, or NULL. Runs are emitted in ascending source
-   order and never overlap, so a binary search on start is enough; a run with
-   stride 2 covers only every other codepoint in its span, which the modulo
-   check rejects. */
-static const uni_case_run*
-case_run_for(const struct case_table *t, uint32_t cp)
-{
-  size_t lo = 0, hi = t->run_count;
-  while (lo < hi) {
-    size_t mid = lo + (hi - lo) / 2;
-    const uni_case_run *r = &t->runs[mid];
-    uint32_t last = r->start + (uint32_t)(r->count - 1) * r->stride;
-    if (cp < r->start) hi = mid;
-    else if (cp > last) lo = mid + 1;
-    else return ((cp - r->start) % r->stride) == 0 ? r : NULL;
-  }
-  return NULL;
-}
-
-static const uni_case_multi*
-case_multi_for(const struct case_table *t, uint32_t cp)
-{
-  size_t lo = 0, hi = t->multi_count;
-  while (lo < hi) {
-    size_t mid = lo + (hi - lo) / 2;
-    if (cp < t->multi[mid].cp) hi = mid;
-    else if (cp > t->multi[mid].cp) lo = mid + 1;
-    else return &t->multi[mid];
-  }
-  return NULL;
-}
-
-/* Ask one table about cp, writing what it says into buf. Answers the byte
-   count written, 0 for a character the table maps to itself, and -1 for one
-   the table says nothing about. The two apart is what lets title case hand a
-   character it says nothing about on to upper case while keeping the ones it
-   deliberately maps to themselves. */
-static mrb_int
-case_map_one(enum case_kind kind, uint32_t cp, char *buf)
-{
-  const struct case_table *t = &case_tables[kind];
-  if (cp < t->min || t->max < cp) return -1;
-
-  const uni_case_multi *m = case_multi_for(t, cp);
-  if (m) {
-    memcpy(buf, uni_case_pool + m->off, m->len);
-    return m->len;
-  }
-  const uni_case_run *r = case_run_for(t, cp);
-  if (r == NULL) return -1;
-  if (r->delta == 0) return 0;
-  return mrb_utf8_to_buf(buf, (mrb_int)cp + r->delta);
-}
-
-/* The case mapping of cp, written into buf, which needs UNI_CASE_MAX_BYTES of
-   room. Answers the byte count written, or 0 for a character that maps to
-   itself. */
-static mrb_int
-case_map(enum case_kind kind, uint32_t cp, char *buf)
-{
-  mrb_int n = case_map_one(kind, cp, buf);
-  if (n >= 0) return n;
-
-  switch (kind) {
-  case CASE_KIND_TITLE:
-    /* Title case is the difference from upper case, so a character the
-       difference says nothing about takes the upper case answer. */
-    n = case_map_one(CASE_KIND_UPPER, cp, buf);
-    break;
-  case CASE_KIND_SWAP:
-    /* Swapping is the difference from this rule: a character with a lower
-       case is an upper case one and swaps down, and one without swaps up. */
-    n = case_map_one(CASE_KIND_LOWER, cp, buf);
-    if (n < 0) n = case_map_one(CASE_KIND_UPPER, cp, buf);
-    break;
-  default:
-    break;
-  }
-  return n < 0 ? 0 : n;
-}
-
-static enum case_kind
+static enum mrb_case_kind
 case_kind_of(enum mrb_case_mode mode, mrb_bool first)
 {
   switch (mode) {
   case MRB_CASE_UP:
-    return CASE_KIND_UPPER;
+    return MRB_CASE_KIND_UPPER;
   case MRB_CASE_CAPITALIZE:
-    return first ? CASE_KIND_TITLE : CASE_KIND_LOWER;
+    return first ? MRB_CASE_KIND_TITLE : MRB_CASE_KIND_LOWER;
   case MRB_CASE_SWAP:
-    return CASE_KIND_SWAP;
+    return MRB_CASE_KIND_SWAP;
   case MRB_CASE_FOLD:
-    return CASE_KIND_FOLD;
+    return MRB_CASE_KIND_FOLD;
   default:
-    return CASE_KIND_LOWER;
+    return MRB_CASE_KIND_LOWER;
   }
 }
 
@@ -2162,7 +2049,7 @@ str_case_convert_utf8(mrb_state *mrb, mrb_value str, enum mrb_case_mode mode)
   mrb_bool first = TRUE;
 
   while (p < pend) {
-    char buf[UNI_CASE_MAX_BYTES];
+    char buf[MRB_UNI_CASE_MAX_BYTES];
     const char *src = p;
     mrb_int clen;
     uint32_t cp = mrb_utf8_decode(p, pend, &clen);
@@ -2179,7 +2066,7 @@ str_case_convert_utf8(mrb_state *mrb, mrb_value str, enum mrb_case_mode mode)
       if (clen == 1) {
         mrb_raise(mrb, E_ARGUMENT_ERROR, "input string invalid");
       }
-      n = case_map(case_kind_of(mode, first), cp, buf);
+      n = mrb_uni_case_map(case_kind_of(mode, first), cp, buf);
       /* A character with no mapping stands as it is. */
       if (n == 0) {
         memcpy(buf, src, (size_t)clen);

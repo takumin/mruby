@@ -59,6 +59,22 @@ title_diff = {}
   title_diff[cp] = title[cp] || cp.chr("UTF-8")
 end
 
+# Simple case folding is the run table read on its own, so the runs have to
+# hold what simple folding answers rather than the 1:1 half of the full one.
+# The two differ over a source whose full folding spells several characters
+# and which still has a single counterpart to fold to: U+1E9E folds to "ss"
+# and lower cases to U+00DF, which folds to "ss" as well, so simple folding
+# pairs the two and /ß/i reaching "ẞ" needs nothing wider. A source with no
+# such counterpart (U+FB00 to "ff") stays out of the runs, which is exactly
+# what simple folding leaves alone.
+fold_extra = {}
+fold.each do |cp, f|
+  next if f.unpack("U*").size == 1
+  c = cp.chr("UTF-8")
+  lo = c.downcase
+  fold_extra[cp] = lo if lo.length == 1 && lo != c && lo.downcase(:fold) == f
+end
+
 # ---------------------------------------------------------------- encode
 
 # Run-length encode the 1:1 mappings: consecutive sources stepping by a fixed
@@ -104,17 +120,19 @@ place = lambda do |str|
   end
 end
 
+# The runs and the multi table of one name may come from different maps, which
+# is what tells simple folding from full folding.
 TABLES = [
-  ['lower', lower,      'the lowercase mapping'],
-  ['upper', upper,      'the uppercase mapping'],
-  ['title', title_diff, 'where title case differs from upper case'],
-  ['swap',  swap_diff,  'where swapping differs from the down-then-up rule'],
-  ['fold',  fold,       'the case folding'],
+  ['lower', lower,                    lower,      'the lowercase mapping'],
+  ['upper', upper,                    upper,      'the uppercase mapping'],
+  ['title', title_diff,               title_diff, 'where title case differs from upper case'],
+  ['swap',  swap_diff,                swap_diff,  'where swapping differs from the down-then-up rule'],
+  ['fold',  fold.merge(fold_extra),   fold,       'the case folding, simple in the runs and full in the multi'],
 ]
 
-encoded = TABLES.map do |name, map, _|
-  runs = runs_of(map)
-  multi = multis_of(map).map { |cp, s| [cp, place.call(s), s.bytesize] }
+encoded = TABLES.map do |name, run_map, multi_map, _|
+  runs = runs_of(run_map)
+  multi = multis_of(multi_map).map { |cp, s| [cp, place.call(s), s.bytesize] }
   [name, runs, multi]
 end
 
@@ -178,7 +196,7 @@ File.open(File.join(outdir, 'unicase.h'), 'w') do |out|
     covered = runs.sum { |r| r[:count] }
 
     out.puts
-    out.puts "/* #{TABLES.find { |n, _, _| n == name }[2]}: " \
+    out.puts "/* #{TABLES.find { |t| t[0] == name }[3]}: " \
              "#{covered} sources in #{runs.size} runs, #{multi.size} multi. */"
     # A table with nothing in it is spelled as a null pointer rather than as an
     # array of no elements, which C does not have.

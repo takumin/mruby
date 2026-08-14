@@ -185,9 +185,10 @@ mrb_bool mrb_re_is_word_char(uint32_t c);
 #define RE_FOLD_KELVIN 0x212A  /* to 'k' */
 
 /* Simple case folding: the folded codepoint, or cp itself when it folds to
-   nothing else. With MRB_UTF8_STRING that is ASCII plus every 1:1
-   Unicode folding; without it, ASCII plus the two above. Neither build folds a
-   codepoint that has no single counterpart to fold to (U+FB00 to "ff"). */
+   nothing else. With MRB_UTF8_STRING that is ASCII plus every 1:1 Unicode
+   folding, read off core's table; without it, ASCII plus the two above.
+   Neither build folds a codepoint that has no single counterpart to fold to
+   (U+FB00 to "ff"). */
 uint32_t mrb_re_case_fold(uint32_t cp);
 
 /* True when [lo, hi] holds a codepoint that carries case folding data this
@@ -209,24 +210,11 @@ uint32_t mrb_re_case_fold(uint32_t cp);
 mrb_bool mrb_re_needs_case_data(uint32_t lo, uint32_t hi);
 #endif
 
-#ifdef MRB_UTF8_STRING
-/* Walking the table takes data only this build has. Without it the compiler
-   reaches the same two foldings directly, since there are only two.
-
-   mrb_re_case_unfold() writes every other codepoint sharing cp's folded form
-   into out, at most max of them, and returns how many it wrote. The two range
-   forms do the same two directions over a span rather than one codepoint,
-   reporting what they find by calling add() with each span of it:
-   mrb_re_case_fold_range the folds of the sources in [lo, hi],
-   mrb_re_case_unfold_range the sources of the folds in [lo, hi]. Spans may
-   repeat or overlap what the caller already holds; the caller merges. */
-#define RE_MAX_UNFOLD 4
-int mrb_re_case_unfold(uint32_t cp, uint32_t *out, int max);
-void mrb_re_case_fold_range(uint32_t lo, uint32_t hi,
-                            void (*add)(void *, uint32_t, uint32_t), void *user);
-void mrb_re_case_unfold_range(uint32_t lo, uint32_t hi,
-                              void (*add)(void *, uint32_t, uint32_t), void *user);
-#endif
+/* Walking the table takes data only a build reading characters has, and there
+   it is core's table: `mrb_uni_case_unfold()` and the two range walks beside
+   it in mruby/internal.h are what the compiler reaches for. A build reading
+   bytes has the two foldings above and reaches them directly, since there are
+   only two. */
 
 static inline int
 mrb_re_charlen(const char *s, const char *end, mrb_bool binary)

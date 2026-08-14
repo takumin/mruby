@@ -244,8 +244,8 @@ static void
 class_add_fold_counterparts(re_compiler *c, uint16_t id, uint32_t cp)
 {
 #ifdef MRB_UTF8_STRING
-  uint32_t alt[RE_MAX_UNFOLD];
-  int n = mrb_re_case_unfold(cp, alt, RE_MAX_UNFOLD);
+  uint32_t alt[MRB_UNI_MAX_UNFOLD];
+  int n = mrb_uni_case_unfold(cp, alt, MRB_UNI_MAX_UNFOLD);
   for (int i = 0; i < n; i++) {
     if (alt[i] < 128) class_set_bit(&c->classes[id], (uint8_t)alt[i]);
     else class_add_codepoint(c, &c->classes[id], alt[i]);
@@ -726,7 +726,7 @@ compile_charclass(re_compiler *c)
     uint32_t nranges = cc->num_ranges;
     for (uint32_t i = 0; i < nranges; i++) {
       if (cc->ranges[2 * i] & RE_CLASS_BYTE) continue;
-      mrb_re_case_fold_range(cc->ranges[2 * i], cc->ranges[2 * i + 1],
+      mrb_uni_case_fold_range(cc->ranges[2 * i], cc->ranges[2 * i + 1],
                              class_fold_add, &sink);
     }
     for (int ch = 'A'; ch <= 'Z'; ch++) {
@@ -740,7 +740,7 @@ compile_charclass(re_compiler *c)
     nranges = cc->num_ranges;
     for (uint32_t i = 0; i < nranges; i++) {
       if (cc->ranges[2 * i] & RE_CLASS_BYTE) continue;
-      mrb_re_case_unfold_range(cc->ranges[2 * i], cc->ranges[2 * i + 1],
+      mrb_uni_case_unfold_range(cc->ranges[2 * i], cc->ranges[2 * i + 1],
                                class_fold_add, &sink);
     }
     for (int ch = 0; ch < 128; ch++) {
@@ -748,7 +748,7 @@ compile_charclass(re_compiler *c)
       if (ch >= 'a' && ch <= 'z') class_set_bit(cc, (uint8_t)(ch - 32));
       /* An ASCII member can have a non-ASCII source (U+212A folds to 'k'),
          which the range walk cannot reach: the bitmap holds no ranges. */
-      mrb_re_case_unfold_range((uint32_t)ch, (uint32_t)ch, class_fold_add, &sink);
+      mrb_uni_case_unfold_range((uint32_t)ch, (uint32_t)ch, class_fold_add, &sink);
     }
 #else
     /* The same closure, restricted to the foldings this build has. Refusing
@@ -995,8 +995,8 @@ emit_cp_folded(re_compiler *c, uint32_t cp)
     compile_error(c, "/i needs MRB_UTF8_STRING for this character");
   }
 #ifdef MRB_UTF8_STRING
-  uint32_t alt[RE_MAX_UNFOLD];
-  int n = mrb_re_case_unfold(cp, alt, RE_MAX_UNFOLD);
+  uint32_t alt[MRB_UNI_MAX_UNFOLD];
+  int n = mrb_uni_case_unfold(cp, alt, MRB_UNI_MAX_UNFOLD);
 #else
   /* Whatever survived the refusal folds to an ASCII letter or to nothing at
      all, so the counterparts are that letter and its upper case: the first two

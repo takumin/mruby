@@ -248,6 +248,55 @@ enum mrb_case_mode {
    so the tables are asked about in one place. */
 mrb_bool mrb_str_case_convert(mrb_state *mrb, mrb_value str, enum mrb_case_mode mode);
 
+#ifdef MRB_UTF8_STRING
+/* What case a character has, from the tables in unicase.c. A string is
+   converted through mrb_str_case_convert() above; these are for a caller that
+   has a codepoint rather than a string, which is mruby-regexp under /i. */
+
+/* Which table a character is looked up in. The last two hold a difference
+   rather than a mapping: title case against upper case, and swapping against
+   the rule that a character with a lower case swaps down. */
+enum mrb_case_kind {
+  MRB_CASE_KIND_LOWER,
+  MRB_CASE_KIND_UPPER,
+  MRB_CASE_KIND_TITLE,
+  MRB_CASE_KIND_SWAP,
+  MRB_CASE_KIND_FOLD
+};
+
+/* The buffer mrb_uni_case_map() writes into. A mapping may spell several
+   characters, so this is wider than one of them; unicase.c asserts that the
+   table it carries fits. */
+#define MRB_UNI_CASE_MAX_BYTES 8
+
+/* The `kind` mapping of `cp`, written into `buf` as UTF-8, answering how many
+   bytes it took, or 0 for a character that maps to itself. */
+mrb_int mrb_uni_case_map(enum mrb_case_kind kind, uint32_t cp, char *buf);
+
+/* Simple case folding: the folded codepoint, or cp itself when it folds to
+   nothing else. A codepoint whose folding spells several characters (U+FB00
+   to "ff") folds to itself here, which is what makes this the simple folding
+   rather than the full one mrb_uni_case_map() answers with. */
+uint32_t mrb_uni_case_fold(uint32_t cp);
+
+/* At most this many codepoints share one folded form. */
+#define MRB_UNI_MAX_UNFOLD 4
+
+/* Write every other codepoint sharing cp's folded form into out, at most max
+   of them, and answer how many were written. */
+int mrb_uni_case_unfold(uint32_t cp, uint32_t *out, int max);
+
+/* The same two directions over a span rather than one codepoint, reporting
+   what they find by calling add() with each span of it: fold_range the folds
+   of the sources in [lo, hi], unfold_range the sources of the folds in
+   [lo, hi]. Spans may repeat or overlap what the caller already holds; the
+   caller merges. */
+void mrb_uni_case_fold_range(uint32_t lo, uint32_t hi,
+                             void (*add)(void *, uint32_t, uint32_t), void *user);
+void mrb_uni_case_unfold_range(uint32_t lo, uint32_t hi,
+                               void (*add)(void *, uint32_t, uint32_t), void *user);
+#endif
+
 /* attr accessor bodies (class.c); the VM compares function pointers against
    these to run attr calls without a full method-call frame */
 mrb_value mrb_attr_reader(mrb_state *mrb, mrb_value obj);

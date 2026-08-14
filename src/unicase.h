@@ -738,7 +738,7 @@ static const uni_case_multi uni_swap_multi[] = {
 #define UNI_SWAP_MIN 0x001C5
 #define UNI_SWAP_MAX 0x01FFC
 
-/* the case folding: 1455 sources in 198 runs, 104 multi. */
+/* the case folding, simple in the runs and full in the multi: 1483 sources in 205 runs, 104 multi. */
 static const uni_case_run uni_fold_runs[] = {
   { 0x000B5,    1, 1,     775 },
   { 0x000C0,   23, 1,      32 },
@@ -853,6 +853,7 @@ static const uni_case_run uni_fold_runs[] = {
   { 0x01CBD,    3, 1,   -3008 },
   { 0x01E00,   75, 2,       1 },
   { 0x01E9B,    1, 1,     -58 },
+  { 0x01E9E,    1, 1,   -7615 },
   { 0x01EA0,   48, 2,       1 },
   { 0x01F08,    8, 1,      -8 },
   { 0x01F18,    6, 1,      -8 },
@@ -861,10 +862,15 @@ static const uni_case_run uni_fold_runs[] = {
   { 0x01F48,    6, 1,      -8 },
   { 0x01F59,    4, 2,      -8 },
   { 0x01F68,    8, 1,      -8 },
+  { 0x01F88,    8, 1,      -8 },
+  { 0x01F98,    8, 1,      -8 },
+  { 0x01FA8,    8, 1,      -8 },
   { 0x01FB8,    2, 1,      -8 },
   { 0x01FBA,    2, 1,     -74 },
+  { 0x01FBC,    1, 1,      -9 },
   { 0x01FBE,    1, 1,   -7173 },
   { 0x01FC8,    4, 1,     -86 },
+  { 0x01FCC,    1, 1,      -9 },
   { 0x01FD8,    2, 1,      -8 },
   { 0x01FDA,    2, 1,    -100 },
   { 0x01FE8,    2, 1,      -8 },
@@ -872,6 +878,7 @@ static const uni_case_run uni_fold_runs[] = {
   { 0x01FEC,    1, 1,      -7 },
   { 0x01FF8,    2, 1,    -128 },
   { 0x01FFA,    2, 1,    -126 },
+  { 0x01FFC,    1, 1,      -9 },
   { 0x02126,    1, 1,   -7517 },
   { 0x0212A,    1, 1,   -8383 },
   { 0x0212B,    1, 1,   -8262 },
