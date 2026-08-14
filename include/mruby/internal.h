@@ -226,6 +226,24 @@ uint32_t mrb_utf8_decode(const char *p, const char *e, mrb_int *lenp);
 mrb_int mrb_utf8_strlen(const char *str, mrb_int byte_len);
 #endif
 
+/* What a case conversion makes of each character. `capitalize` asks two things
+   of one string, title case at the front and lower case behind it, and `swap`
+   asks per character, so a mode is what a method does rather than one case. */
+enum mrb_case_mode {
+  MRB_CASE_DOWN,
+  MRB_CASE_UP,
+  MRB_CASE_CAPITALIZE,
+  MRB_CASE_SWAP
+};
+
+/* Convert every character of `str` in place, answering whether any of them
+   changed, which is what the bang methods hand back as the string or nil. A
+   build that reads a string as characters maps what Unicode says; one that
+   reads it as bytes, and a string read as bytes in either, map ASCII alone.
+   `swapcase` lives in mruby-string-ext and reaches the same walk from there,
+   so the tables are asked about in one place. */
+mrb_bool mrb_str_case_convert(mrb_state *mrb, mrb_value str, enum mrb_case_mode mode);
+
 /* attr accessor bodies (class.c); the VM compares function pointers against
    these to run attr calls without a full method-call frame */
 mrb_value mrb_attr_reader(mrb_state *mrb, mrb_value obj);

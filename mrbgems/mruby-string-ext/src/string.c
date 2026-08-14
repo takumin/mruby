@@ -65,31 +65,11 @@ int_chr_utf8(mrb_state *mrb, mrb_value num)
  *
  *  Equivalent to `String#swapcase`, but modifies the receiver in
  *  place, returning *str*, or `nil` if no changes were made.
- *  Note: case conversion is effective only in ASCII region.
  */
 static mrb_value
 str_swapcase_bang(mrb_state *mrb, mrb_value str)
 {
-  int modify = 0;
-  struct RString *s = mrb_str_ptr(str);
-
-  mrb_str_modify(mrb, s);
-  char *p = RSTRING_PTR(str);
-  char *pend = p + RSTRING_LEN(str);
-  while (p < pend) {
-    if (ISUPPER(*p)) {
-      *p = TOLOWER(*p);
-      modify = 1;
-    }
-    else if (ISLOWER(*p)) {
-      *p = TOUPPER(*p);
-      modify = 1;
-    }
-    p++;
-  }
-
-  if (modify) return str;
-  return mrb_nil_value();
+  return mrb_str_case_convert(mrb, str, MRB_CASE_SWAP) ? str : mrb_nil_value();
 }
 
 /*
@@ -97,8 +77,10 @@ str_swapcase_bang(mrb_state *mrb, mrb_value str)
  *     str.swapcase   -> new_str
  *
  *  Returns a copy of *str* with uppercase alphabetic characters converted
- *  to lowercase and lowercase characters converted to uppercase.
- *  Note: case conversion is effective only in ASCII region.
+ *  to lowercase and lowercase characters converted to uppercase. A build that
+ *  reads a string as characters swaps every character Unicode gives a case,
+ *  which can spell more characters than it was handed ("ß" to "SS"); one that
+ *  reads it as bytes swaps ASCII letters alone.
  *
  *     "Hello".swapcase          #=> "hELLO"
  *     "cYbEr_PuNk11".swapcase   #=> "CyBeR_pUnK11"

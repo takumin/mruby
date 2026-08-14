@@ -1999,39 +1999,33 @@ mrb_str_aset_m(mrb_state *mrb, mrb_value str)
   return replace;
 }
 
-/* What a method makes of each character. `capitalize` asks two things of one
-   string, title case at the front and lower case behind it, so a mode is what
-   a method does rather than one case. */
-enum case_mode {
-  CASE_DOWN,
-  CASE_UP,
-  CASE_CAPITALIZE
-};
-
-#ifdef MRB_UTF8_STRING
-
-#include "unicase.h"
-
 static int
-ascii_case_conv(int c, enum case_mode mode, mrb_bool first)
+ascii_case_conv(int c, enum mrb_case_mode mode, mrb_bool first)
 {
   switch (mode) {
-  case CASE_UP:
+  case MRB_CASE_UP:
     return TOUPPER(c);
-  case CASE_CAPITALIZE:
+  case MRB_CASE_CAPITALIZE:
     return first ? TOUPPER(c) : TOLOWER(c);
+  case MRB_CASE_SWAP:
+    return ISUPPER(c) ? TOLOWER(c) : TOUPPER(c);
   default:
     return TOLOWER(c);
   }
 }
 
-/* Which table of unicase.h a character is looked up in. Title case holds only
-   its difference from upper case, so a lookup that misses it asks upper case
-   next. */
+#ifdef MRB_UTF8_STRING
+
+#include "unicase.h"
+
+/* Which table of unicase.h a character is looked up in. The last two hold a
+   difference rather than a mapping: title case against upper case, and
+   swapping against the rule below it. */
 enum case_kind {
   CASE_KIND_LOWER,
   CASE_KIND_UPPER,
-  CASE_KIND_TITLE
+  CASE_KIND_TITLE,
+  CASE_KIND_SWAP
 };
 
 static const struct case_table {
@@ -2041,12 +2035,14 @@ static const struct case_table {
   size_t multi_count;
   uint32_t min, max;
 } case_tables[] = {
-  {uni_lower_runs, UNI_LOWER_RUN_COUNT, uni_lower_multi, UNI_LOWER_MULTI_COUNT,
+  {UNI_LOWER_RUNS, UNI_LOWER_RUN_COUNT, UNI_LOWER_MULTI, UNI_LOWER_MULTI_COUNT,
    UNI_LOWER_MIN, UNI_LOWER_MAX},
-  {uni_upper_runs, UNI_UPPER_RUN_COUNT, uni_upper_multi, UNI_UPPER_MULTI_COUNT,
+  {UNI_UPPER_RUNS, UNI_UPPER_RUN_COUNT, UNI_UPPER_MULTI, UNI_UPPER_MULTI_COUNT,
    UNI_UPPER_MIN, UNI_UPPER_MAX},
-  {uni_title_runs, UNI_TITLE_RUN_COUNT, uni_title_multi, UNI_TITLE_MULTI_COUNT,
+  {UNI_TITLE_RUNS, UNI_TITLE_RUN_COUNT, UNI_TITLE_MULTI, UNI_TITLE_MULTI_COUNT,
    UNI_TITLE_MIN, UNI_TITLE_MAX},
+  {UNI_SWAP_RUNS, UNI_SWAP_RUN_COUNT, UNI_SWAP_MULTI, UNI_SWAP_MULTI_COUNT,
+   UNI_SWAP_MIN, UNI_SWAP_MAX},
 };
 
 /* Locate the run holding cp, or NULL. Runs are emitted in ascending source
@@ -2110,18 +2106,36 @@ static mrb_int
 case_map(enum case_kind kind, uint32_t cp, char *buf)
 {
   mrb_int n = case_map_one(kind, cp, buf);
-  if (n < 0 && kind == CASE_KIND_TITLE) n = case_map_one(CASE_KIND_UPPER, cp, buf);
+  if (n >= 0) return n;
+
+  switch (kind) {
+  case CASE_KIND_TITLE:
+    /* Title case is the difference from upper case, so a character the
+       difference says nothing about takes the upper case answer. */
+    n = case_map_one(CASE_KIND_UPPER, cp, buf);
+    break;
+  case CASE_KIND_SWAP:
+    /* Swapping is the difference from this rule: a character with a lower
+       case is an upper case one and swaps down, and one without swaps up. */
+    n = case_map_one(CASE_KIND_LOWER, cp, buf);
+    if (n < 0) n = case_map_one(CASE_KIND_UPPER, cp, buf);
+    break;
+  default:
+    break;
+  }
   return n < 0 ? 0 : n;
 }
 
 static enum case_kind
-case_kind_of(enum case_mode mode, mrb_bool first)
+case_kind_of(enum mrb_case_mode mode, mrb_bool first)
 {
   switch (mode) {
-  case CASE_UP:
+  case MRB_CASE_UP:
     return CASE_KIND_UPPER;
-  case CASE_CAPITALIZE:
+  case MRB_CASE_CAPITALIZE:
     return first ? CASE_KIND_TITLE : CASE_KIND_LOWER;
+  case MRB_CASE_SWAP:
+    return CASE_KIND_SWAP;
   default:
     return CASE_KIND_LOWER;
   }
@@ -2132,7 +2146,7 @@ case_kind_of(enum case_mode mode, mrb_bool first)
    byte of "k"), so the answer is built beside the string rather than over it,
    and the string takes the buffer's bytes at the end. */
 static mrb_bool
-str_case_convert_utf8(mrb_state *mrb, mrb_value str, enum case_mode mode)
+str_case_convert_utf8(mrb_state *mrb, mrb_value str, enum mrb_case_mode mode)
 {
   struct RString *s = mrb_str_ptr(str);
   const char *p = RSTR_PTR(s);
@@ -2189,10 +2203,8 @@ str_case_convert_utf8(mrb_state *mrb, mrb_value str, enum case_mode mode)
 
 #endif  /* MRB_UTF8_STRING */
 
-/* Convert every character of `str` in place, answering whether any of them
-   changed. */
-static mrb_bool
-str_case_convert(mrb_state *mrb, mrb_value str, enum case_mode mode)
+mrb_bool
+mrb_str_case_convert(mrb_state *mrb, mrb_value str, enum mrb_case_mode mode)
 {
   struct RString *s = mrb_str_ptr(str);
 
@@ -2211,28 +2223,13 @@ str_case_convert(mrb_state *mrb, mrb_value str, enum case_mode mode)
 #endif
 
   mrb_bool modify = FALSE;
-  char *pend = p + len;
-  if (mode == CASE_CAPITALIZE) {
-    if (ISLOWER(*p)) {
-      *p = TOUPPER(*p);
+  const char *head = p;
+  for (const char *pend = p + len; p < pend; p++) {
+    int c = (unsigned char)*p;
+    int conv = ascii_case_conv(c, mode, p == head);
+    if (conv != c) {
+      *p = (char)conv;
       modify = TRUE;
-    }
-    p++;
-  }
-  if (mode == CASE_UP) {
-    for (; p < pend; p++) {
-      if (ISLOWER(*p)) {
-        *p = TOUPPER(*p);
-        modify = TRUE;
-      }
-    }
-  }
-  else {
-    for (; p < pend; p++) {
-      if (ISUPPER(*p)) {
-        *p = TOLOWER(*p);
-        modify = TRUE;
-      }
     }
   }
   return modify;
@@ -2254,7 +2251,7 @@ str_case_convert(mrb_state *mrb, mrb_value str, enum case_mode mode)
 static mrb_value
 mrb_str_capitalize_bang(mrb_state *mrb, mrb_value str)
 {
-  return str_case_convert(mrb, str, CASE_CAPITALIZE) ? str : mrb_nil_value();
+  return mrb_str_case_convert(mrb, str, MRB_CASE_CAPITALIZE) ? str : mrb_nil_value();
 }
 
 /* 15.2.10.5.7  */
@@ -2469,7 +2466,7 @@ mrb_str_chop(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_str_downcase_bang(mrb_state *mrb, mrb_value str)
 {
-  return str_case_convert(mrb, str, CASE_DOWN) ? str : mrb_nil_value();
+  return mrb_str_case_convert(mrb, str, MRB_CASE_DOWN) ? str : mrb_nil_value();
 }
 
 /* 15.2.10.5.13 */
@@ -3633,7 +3630,7 @@ mrb_str_to_s(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_str_upcase_bang(mrb_state *mrb, mrb_value str)
 {
-  return str_case_convert(mrb, str, CASE_UP) ? str : mrb_nil_value();
+  return mrb_str_case_convert(mrb, str, MRB_CASE_UP) ? str : mrb_nil_value();
 }
 
 /* 15.2.10.5.42 */
