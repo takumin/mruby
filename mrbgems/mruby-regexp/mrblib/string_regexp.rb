@@ -397,7 +397,7 @@ class String
   # the price of the regexp forms being reachable at all; the alternative,
   # letting the opcode keep answering, is the redefinition being silently
   # ignored for those three argument types.
-  def [](*args)
+  def __aref_re(*args)
     # Before any argument inspection, so that the non-regexp forms keep the
     # arity check `mrb_get_args()` does.  With no arguments at all `args[0]`
     # is nil, the guard fails, and `__aref()` raises the ArgumentError.
@@ -426,7 +426,6 @@ class String
   # the override above would leave it on the C implementation.  This is also
   # what makes `sym[re]` work: `Symbol#[]` is an alias of `Symbol#slice`,
   # which delegates to `String#slice`.
-  alias slice []
 
   # Regexp-aware element assignment.  Falls back to the C-defined `[]=`
   # (aliased as `__aset` above) for every other argument form, and handles a

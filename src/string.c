@@ -1787,6 +1787,25 @@ mrb_str_aref_m(mrb_state *mrb, mrb_value str)
     a2 = mrb_undef_value();
   }
 
+  /* PROTOTYPE (fork issue #137, candidate C).  The three types below are the
+     ones the inline index opcodes answer themselves; anything else is offered
+     to the registered hook first, which is how a gem adds an index type
+     without replacing this method.  The opcode calls mrb_str_aref() directly
+     and never arrives here, so the inline fast path pays nothing for this. */
+  if (mrb->str_aref_hook) {
+    switch (mrb_type(a1)) {
+    case MRB_TT_INTEGER:
+    case MRB_TT_STRING:
+    case MRB_TT_RANGE:
+      break;
+    default: {
+      mrb_value v = mrb->str_aref_hook(mrb, str, a1, a2);
+      if (!mrb_undef_p(v)) return v;
+      break;
+    }
+    }
+  }
+
   return mrb_str_aref(mrb, str, a1, a2);
 }
 

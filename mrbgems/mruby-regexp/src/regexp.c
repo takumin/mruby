@@ -1472,10 +1472,26 @@ regexp_check_pattern(mrb_state *mrb, mrb_value self)
 
 /* --- Gem init --- */
 
+/* PROTOTYPE (fork issue #137, candidate C): the gem answers a Regexp index
+   through core's hook instead of replacing `String#[]`, so the method table
+   entry stays the builtin and #103's idx_class slot stays armed. */
+static mrb_value
+regexp_str_aref_hook(mrb_state *mrb, mrb_value str, mrb_value idx, mrb_value alen)
+{
+  if (!mrb_obj_is_kind_of(mrb, idx, mrb_class_get(mrb, "Regexp"))) {
+    return mrb_undef_value();
+  }
+  mrb_value argv[2];
+  mrb_int argc = mrb_undef_p(alen) ? 1 : 2;
+  argv[0] = idx; argv[1] = alen;
+  return mrb_funcall_argv(mrb, str, mrb_intern_cstr(mrb, "__aref_re"), argc, argv);
+}
+
 void
 mrb_mruby_regexp_gem_init(mrb_state *mrb)
 {
   struct RClass *re = mrb_define_class(mrb, "Regexp", mrb->object_class);
+  mrb->str_aref_hook = regexp_str_aref_hook;
   MRB_SET_INSTANCE_TT(re, MRB_TT_CDATA);
 
   /* Constants */

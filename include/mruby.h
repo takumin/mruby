@@ -418,6 +418,12 @@ struct mrb_state {
      the disabled value because no live object has a NULL class pointer.
      Armed by mrb_idx_op_init(), rechecked by mrb_idx_op_update().  Placed at
      the end of the struct so that adding them moves no existing field. */
+  /* PROTOTYPE (fork issue #137, candidate C): a gem that can answer `str[x]`
+     for an index type core does not know registers it here, so the method
+     table entry for `[]` stays the builtin and the slot below stays armed.
+     Consulted only by `mrb_str_aref_m()`, never by the inline opcode path.
+     Returns undef to decline. */
+  mrb_value (*str_aref_hook)(mrb_state *mrb, mrb_value str, mrb_value idx, mrb_value alen);
   struct RClass *idx_class[MRB_IDX_OP_SLOT_COUNT];
   mrb_method_t idx_builtin[MRB_IDX_OP_SLOT_COUNT];
 
