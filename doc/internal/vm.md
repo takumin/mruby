@@ -7,8 +7,7 @@ working on `src/vm.c` and related code.
 
 **Read this if you are:** debugging method dispatch or call frame
 issues, working on exception handling, implementing new opcodes,
-modifying fiber/coroutine or task-scheduler behavior, or optimizing
-the dispatch loop.
+modifying fiber/coroutine behavior, or optimizing the dispatch loop.
 
 For the instruction set, see [opcode.md](opcode.md). For the
 compiler that generates bytecode, see [compiler.md](compiler.md).
@@ -36,11 +35,6 @@ mrb_context
 
 The value stack and call info stack grow independently. Each fiber
 has its own `mrb_context`.
-
-With `MRB_USE_TASK_SCHEDULER`, tasks reuse the same structure:
-`status` doubles as the task status through the
-`MRB_TASK_CREATED` / `MRB_TASK_STOPPED` aliases (see
-[Task Scheduler](#task-scheduler)).
 
 ### Stack Sizing
 
@@ -146,8 +140,9 @@ Both strategies share the same per-instruction hooks:
 
 - `CALL_CODE_HOOKS()` fetches the next opcode and runs
   `CODE_FETCH_HOOK` (used by the debugger gem).
-- `RETURN_IF_TASK_STOPPED()` is a no-op unless
-  `MRB_USE_TASK_SCHEDULER` is enabled.
+- `RETURN_IF_TASK_STOPPED()` compiles to nothing unless the
+  `mruby-task` gem is built in (`MRB_USE_TASK_SCHEDULER`); see that
+  gem's README for the scheduler itself.
 
 The dispatch loop is wrapped in `MRB_TRY`/`MRB_CATCH` for exception
 handling (see [Exception Handling](#exception-handling)).
@@ -403,47 +398,6 @@ Fibers cannot yield across C function boundaries. You cannot call
 `mrb_fiber_yield` at return). This is because C call frames cannot
 be suspended and resumed.
 
-## Task Scheduler
-
-With `MRB_USE_TASK_SCHEDULER` (the `mruby-task` gem), the VM gains a
-preemptive multitasking layer built on the same `mrb_context`
-machinery as fibers. Scheduler state lives in `mrb->task`
-(`mrb_task_state`): four task queues (dormant, ready, waiting,
-suspended), a tick counter, a `switching` flag, and a `main_task`
-wrapper for the root context.
-
-Each task owns an `mrb_context`, and `mrb_context::status` carries
-the task status via the `MRB_TASK_CREATED` / `MRB_TASK_STOPPED`
-aliases of `enum mrb_fiber_state`.
-
-### Preemption Point
-
-`RETURN_IF_TASK_STOPPED(mrb)` runs at every instruction boundary
-(from `NEXT` / `END_DISPATCH`). When a switch is pending, it
-restores `mrb->jmp` to `prev_jmp` and returns from `mrb_vm_exec()`,
-handing control back to the scheduler's `execute_task_vm`.
-
-A pending switch is **deferred** — not dropped — in several cases,
-because returning early there would leave the call info stack
-drifted:
-
-| Condition                | Why it defers                                                                |
-| ------------------------ | ---------------------------------------------------------------------------- |
-| `mrb->c == mrb->root_c`  | Root context is not a task; no frame to catch the return                     |
-| `mrb->exc` set           | An exception (or `RBreak`) is in flight and not yet consumed by `OP_EXCEPT`  |
-| `mrb->gc.iterating`      | A C-level ObjectSpace walk is active                                         |
-| `task_across_c_boundary` | Some frame on the context has `cci > 0`, i.e. a C function re-entered the VM |
-
-Deferral is bounded: each condition clears within a few
-instructions, so the switch happens at the next eligible boundary.
-A pending `MRB_TASK_STOPPED` is never deferred — the task is going
-away regardless.
-
-`task_across_c_boundary()` walks the call info stack looking for any
-frame with `cci > 0`, excluding `cibase` (the entry frame of the
-current `mrb_vm_exec`). `Task.pass` mirrors the same guard, but
-raises instead of deferring.
-
 ## GC Integration
 
 The VM saves the arena index at the start of the dispatch loop:
@@ -481,4 +435,3 @@ ensuring the incremental GC correctly tracks live references.
 | `include/mruby/irep.h`     | `mrb_irep`, catch handler table                                        |
 | `include/mruby/throw.h`    | `MRB_TRY`/`MRB_CATCH` macros                                           |
 | `mrbgems/mruby-fiber/src/` | `Fiber` methods and context switching                                  |
-| `mrbgems/mruby-task/src/`  | Task scheduler (`MRB_USE_TASK_SCHEDULER`)                              |
