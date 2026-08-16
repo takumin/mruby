@@ -11,6 +11,7 @@
 # This driver only consumes the index, and treats everything but the class,
 # method name, and C function as optional -- an index built some other way
 # (from a running VM, say) need not know a registration's source location.
+# Pass --index to read one that was written out earlier.
 #
 # Examples:
 #
@@ -68,6 +69,7 @@ opts = {
   dry_run: false,
   grep: nil,
   sources: MethodIndex::DEFAULT_SOURCES,
+  index: nil,
   list: false,
 }
 
@@ -90,6 +92,7 @@ parser = OptionParser.new do |o|
   o.on("--force", "record even if the binary looks uninstrumented") { opts[:force] = true }
   o.on("--dry-run", "resolve and print the uftrace command without running it") { opts[:dry_run] = true }
   o.on("--sources=GLOBS", "comma-separated C source globs") { |v| opts[:sources] = v.split(",") }
+  o.on("--index=PATH", "use a JSON index (tools/mruby_method_index.rb --format json)") { |v| opts[:index] = v }
   o.on("--grep=PATTERN", "filter --list output by method name") { |v| opts[:grep] = v }
   o.on("--list", "list resolved methods and their C entry points") { opts[:list] = true }
   o.on("-h", "--help") { puts o; exit 0 }
@@ -98,8 +101,12 @@ parser.parse!
 
 index =
   begin
-    MethodIndex.from_source(opts[:sources])
-  rescue ArgumentError => e
+    if opts[:index]
+      MethodIndex.from_json(opts[:index])
+    else
+      MethodIndex.from_source(opts[:sources])
+    end
+  rescue ArgumentError, Errno::ENOENT, JSON::ParserError => e
     abort e.message
   end
 

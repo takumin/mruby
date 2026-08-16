@@ -23,6 +23,7 @@
 #
 #   ruby tools/mruby_method_index.rb --class String
 #   ruby tools/mruby_method_index.rb --grep index
+#   ruby tools/mruby_method_index.rb --format json > index.json
 #
 # As a library:
 #
@@ -30,9 +31,15 @@
 #   index = MRuby::MethodIndex.from_source
 #   index.lookup("String#[]")     # => [Registration, ...]
 
+require "json"
+
 module MRuby
   module MethodIndex
     ROOT = File.expand_path("..", __dir__)
+
+    # Format of the JSON produced by #to_h.  Bump when a field changes
+    # meaning; adding an optional field does not need a bump.
+    FORMAT_VERSION = 1
 
     # Prefer the build system's own table so the two never drift.
     OPERATORS =
@@ -71,6 +78,21 @@ module MRuby
         "#{file}:#{line}" if file && line
       end
 
+      def to_h
+        {
+          "class" => klass, "singleton" => singleton, "name" => name,
+          "func" => func, "kind" => kind,
+          "file" => file, "line" => line, "via" => via, "alias_of" => alias_of,
+        }
+      end
+
+      def self.from_h(h)
+        new(
+          klass: h["class"], singleton: h["singleton"], name: h["name"],
+          func: h["func"], kind: h["kind"],
+          file: h["file"], line: h["line"], via: h["via"], alias_of: h["alias_of"]
+        )
+      end
     end
 
     # A resolved set of registrations plus the queries the drivers need.
@@ -118,6 +140,23 @@ module MRuby
         rows
       end
 
+      def to_h
+        {
+          "version" => FORMAT_VERSION,
+          "producer" => @producer,
+          "methods" => @registrations.map(&:to_h),
+        }
+      end
+
+      def self.from_h(h)
+        version = h["version"]
+        unless version == FORMAT_VERSION
+          raise ArgumentError, "unsupported index version #{version.inspect} (want #{FORMAT_VERSION})"
+        end
+
+        new(h.fetch("methods").map { |m| Registration.from_h(m) },
+            producer: h["producer"])
+      end
     end
 
     # Resolve source globs relative to the tree unless already absolute.
@@ -134,6 +173,9 @@ module MRuby
       Index.new(SourceScanner.new(files).registrations, producer: "c-source-scan")
     end
 
+    def self.from_json(path)
+      Index.from_h(JSON.parse(File.read(path)))
+    end
 
     # Shared by this CLI and method_uftrace.rb --list so the two cannot drift.
     def self.render_table(rows, out = $stdout)
@@ -147,6 +189,11 @@ module MRuby
       out.puts "\n#{rows.size} methods, #{rows.map(&:klass).uniq.size} classes"
     end
 
+    def self.render_tsv(rows, out = $stdout)
+      rows.each do |r|
+        out.puts [r.key, r.func, r.kind, r.location, r.via, r.alias_of].map(&:to_s).join("\t")
+      end
+    end
   end
 end
 
@@ -534,28 +581,43 @@ end
 if $PROGRAM_NAME == __FILE__
   require "optparse"
 
-  opts = { klass: nil, grep: nil, sources: nil }
+  opts = { format: "table", klass: nil, grep: nil, sources: nil, index: nil }
 
   OptionParser.new do |o|
     o.banner = "Usage: ruby tools/mruby_method_index.rb [options]"
+    o.on("--format=FMT", %w[table json tsv], "table (default), json, or tsv") { |v| opts[:format] = v }
     o.on("--class=NAME", "only this class") { |v| opts[:klass] = v }
     o.on("--grep=PATTERN", "filter by method name or C function") { |v| opts[:grep] = v }
     o.on("--sources=GLOBS", "comma-separated C source globs") { |v| opts[:sources] = v.split(",") }
+    o.on("--index=PATH", "read a previously written JSON index instead of scanning") { |v| opts[:index] = v }
     o.on("-h", "--help") { puts o; exit 0 }
   end.parse!
 
   index =
     begin
-      MRuby::MethodIndex.from_source(opts[:sources] || MRuby::MethodIndex::DEFAULT_SOURCES)
-    rescue ArgumentError => e
+      if opts[:index]
+        MRuby::MethodIndex.from_json(opts[:index])
+      else
+        MRuby::MethodIndex.from_source(opts[:sources] || MRuby::MethodIndex::DEFAULT_SOURCES)
+      end
+    rescue ArgumentError, Errno::ENOENT, JSON::ParserError => e
       abort e.message
     end
 
   rows = index.select(klass: opts[:klass], grep: opts[:grep])
+
+  if opts[:format] == "json"
+    puts JSON.pretty_generate(MRuby::MethodIndex::Index.new(rows, producer: index.producer).to_h)
+    exit 0
+  end
+
   if rows.empty?
     warn "nothing matched (known classes: #{index.classes.join(', ')})"
     exit 1
   end
 
-  MRuby::MethodIndex.render_table(rows)
+  case opts[:format]
+  when "tsv"   then MRuby::MethodIndex.render_tsv(rows)
+  else              MRuby::MethodIndex.render_table(rows)
+  end
 end
