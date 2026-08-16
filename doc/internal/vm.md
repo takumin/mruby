@@ -110,12 +110,12 @@ return n + 1 (skip self)
 
 ### Call Context Info (cci)
 
-| Value | Name            | Meaning                                    |
-| ----- | --------------- | ------------------------------------------ |
-| 0     | `CINFO_NONE`    | Called from the VM, without a C boundary   |
-| 1     | `CINFO_SKIP`    | The VM was ignited from C (entry frame)    |
-| 2     | `CINFO_DIRECT`  | Method called from C (`mrb_funcall` etc.)  |
-| 3     | `CINFO_RESUMED` | Resumed by `Fiber.yield` / fiber resume    |
+| Value | Name            | Meaning                                   |
+| ----- | --------------- | ----------------------------------------- |
+| 0     | `CINFO_NONE`    | Called from the VM, without a C boundary  |
+| 1     | `CINFO_SKIP`    | The VM was ignited from C (entry frame)   |
+| 2     | `CINFO_DIRECT`  | Method called from C (`mrb_funcall` etc.) |
+| 3     | `CINFO_RESUMED` | Resumed by `Fiber.yield` / fiber resume   |
 
 `cci` records how the frame was entered, which decides how a return
 or an exception leaves it. A `CINFO_NONE` frame returns inside the
@@ -205,7 +205,7 @@ visibility, as in CRuby. Only `OP_SEND`/`OP_SEND0`/`OP_SENDB` are
 checked — `OP_SSEND*` is a self call and skips the check.
 
 Private methods are only callable without an explicit receiver.
-Protected methods are callable when the *caller's* `self` is a kind
+Protected methods are callable when the _caller's_ `self` is a kind
 of the class the method was found in. Violations go through
 `vis_error()`, which raises `NoMethodError`.
 
@@ -328,15 +328,15 @@ correctness.
 
 ### Proc Types
 
-| Flag                | Value | Meaning                                |
-| ------------------- | ----- | -------------------------------------- |
-| `MRB_PROC_CFUNC_FL` | 128   | C function (not irep-based)            |
-| `MRB_PROC_STRICT`   | 256   | Lambda (strict argument check)         |
-| `MRB_PROC_ORPHAN`   | 512   | Outlived its yielding frame            |
-| `MRB_PROC_ENVSET`   | 1024  | `e` holds an `REnv`, not a class       |
-| `MRB_PROC_SCOPE`    | 2048  | Defines a new variable scope           |
-| `MRB_PROC_NOARG`    | 4096  | cfunc declared `MRB_ARGS_NONE()`       |
-| `MRB_PROC_ALIAS`    | 8192  | `body.mid` names the aliased method    |
+| Flag                | Value | Meaning                             |
+| ------------------- | ----- | ----------------------------------- |
+| `MRB_PROC_CFUNC_FL` | 128   | C function (not irep-based)         |
+| `MRB_PROC_STRICT`   | 256   | Lambda (strict argument check)      |
+| `MRB_PROC_ORPHAN`   | 512   | Outlived its yielding frame         |
+| `MRB_PROC_ENVSET`   | 1024  | `e` holds an `REnv`, not a class    |
+| `MRB_PROC_SCOPE`    | 2048  | Defines a new variable scope        |
+| `MRB_PROC_NOARG`    | 4096  | cfunc declared `MRB_ARGS_NONE()`    |
+| `MRB_PROC_ALIAS`    | 8192  | `body.mid` names the aliased method |
 
 `MRB_PROC_ORPHAN` is set when a block is captured past the lifetime
 of the method that yielded it — by `Proc.new`, by `Proc#dup`, or by
@@ -362,7 +362,7 @@ RESUMED     (a fiber that resumed another fiber)
 TRANSFERRED (entered via Fiber#transfer)
 ```
 
-`RESUMED` marks the *resuming* side of `Fiber#resume`: that context
+`RESUMED` marks the _resuming_ side of `Fiber#resume`: that context
 is neither running nor suspended, and resuming it again raises
 `FiberError`.
 
@@ -427,11 +427,11 @@ A pending switch is **deferred** — not dropped — in several cases,
 because returning early there would leave the call info stack
 drifted:
 
-| Condition                | Why it defers                          |
-| ------------------------ | -------------------------------------- |
-| `mrb->c == mrb->root_c`  | Root context is not a task; no frame to catch the return |
-| `mrb->exc` set           | An exception (or `RBreak`) is in flight and not yet consumed by `OP_EXCEPT` |
-| `mrb->gc.iterating`      | A C-level ObjectSpace walk is active   |
+| Condition                | Why it defers                                                                |
+| ------------------------ | ---------------------------------------------------------------------------- |
+| `mrb->c == mrb->root_c`  | Root context is not a task; no frame to catch the return                     |
+| `mrb->exc` set           | An exception (or `RBreak`) is in flight and not yet consumed by `OP_EXCEPT`  |
+| `mrb->gc.iterating`      | A C-level ObjectSpace walk is active                                         |
 | `task_across_c_boundary` | Some frame on the context has `cci > 0`, i.e. a C function re-entered the VM |
 
 Deferral is bounded: each condition clears within a few
@@ -471,14 +471,14 @@ ensuring the incremental GC correctly tracks live references.
 
 ## Source Files
 
-| File                          | Contents                                     |
-| ----------------------------- | -------------------------------------------- |
-| `src/vm.c`                    | Dispatch loop, method invocation, stack/frame management (~4000 lines) |
-| `src/class.c`                 | `mrb_vm_find_method`, method cache            |
-| `src/proc.c`                  | `RProc` construction, orphan handling         |
-| `include/mruby.h`             | `mrb_state`, `mrb_callinfo`, `mrb_context`    |
-| `include/mruby/proc.h`        | `RProc`, `REnv` structures and flags          |
-| `include/mruby/irep.h`        | `mrb_irep`, catch handler table               |
-| `include/mruby/throw.h`       | `MRB_TRY`/`MRB_CATCH` macros                  |
-| `mrbgems/mruby-fiber/src/`    | `Fiber` methods and context switching         |
-| `mrbgems/mruby-task/src/`     | Task scheduler (`MRB_USE_TASK_SCHEDULER`)     |
+| File                       | Contents                                                               |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `src/vm.c`                 | Dispatch loop, method invocation, stack/frame management (~4000 lines) |
+| `src/class.c`              | `mrb_vm_find_method`, method cache                                     |
+| `src/proc.c`               | `RProc` construction, orphan handling                                  |
+| `include/mruby.h`          | `mrb_state`, `mrb_callinfo`, `mrb_context`                             |
+| `include/mruby/proc.h`     | `RProc`, `REnv` structures and flags                                   |
+| `include/mruby/irep.h`     | `mrb_irep`, catch handler table                                        |
+| `include/mruby/throw.h`    | `MRB_TRY`/`MRB_CATCH` macros                                           |
+| `mrbgems/mruby-fiber/src/` | `Fiber` methods and context switching                                  |
+| `mrbgems/mruby-task/src/`  | Task scheduler (`MRB_USE_TASK_SCHEDULER`)                              |
