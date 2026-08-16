@@ -8,16 +8,25 @@
 # registered lives.  Methods are indexed per class, so `String#[]` and
 # `MatchData#[]` stay distinct.
 #
-# This driver only consumes the index, and treats everything but the class,
-# method name, and C function as optional -- an index built some other way
-# (from a running VM, say) need not know a registration's source location.
+# This driver only consumes the index, and treats everything but the class and
+# method name as optional -- an index built from a running VM knows no
+# registration site, and a method written in Ruby has no C function at all.
 # Pass --index to read one that was written out earlier.
+#
+# By default the index is built by reading the C sources, which describe every
+# build at once and so describe none of them exactly.  --runtime asks this
+# build's own method tables instead, and --merge takes the mapping from those
+# and the registration sites from the sources.  Either needs
+# build/host/bin/mruby-mtdump, which MRUBY_CONFIG=host-gprof rake builds.
 #
 # Examples:
 #
 #   ruby tools/method_uftrace.rb --list --class String
 #
 #   ruby tools/method_uftrace.rb --method 'String#[]' --expr '"あいう"[1]'
+#
+#   ruby tools/method_uftrace.rb --merge --method 'String#__aref' \
+#     --expr '"あいう"[1]'
 #
 #   ruby tools/method_uftrace.rb \
 #     --method 'String#rindex' \
@@ -70,6 +79,8 @@ opts = {
   grep: nil,
   sources: MethodIndex::DEFAULT_SOURCES,
   index: nil,
+  runtime: nil,
+  merge: false,
   list: false,
 }
 
@@ -93,6 +104,14 @@ parser = OptionParser.new do |o|
   o.on("--dry-run", "resolve and print the uftrace command without running it") { opts[:dry_run] = true }
   o.on("--sources=GLOBS", "comma-separated C source globs") { |v| opts[:sources] = v.split(","); opts[:sources_given] = true }
   o.on("--index=PATH", "use a JSON index (tools/mruby_method_index.rb --format json)") { |v| opts[:index] = v }
+  o.on("--runtime[=PATH]", "resolve through this build's method tables",
+       "(default: #{MethodIndex::DEFAULT_MTDUMP.sub(MRUBY_ROOT + '/', '')})") do |v|
+    opts[:runtime] = v || MethodIndex::DEFAULT_MTDUMP
+  end
+  o.on("--merge", "take the mapping from --runtime and the registration sites from the sources") do
+    opts[:merge] = true
+    opts[:runtime] ||= MethodIndex::DEFAULT_MTDUMP
+  end
   o.on("--grep=PATTERN", "filter --list output by method name") { |v| opts[:grep] = v }
   o.on("--list", "list resolved methods and their C entry points") { opts[:list] = true }
   o.on("-h", "--help") { puts o; exit 0 }
@@ -100,11 +119,18 @@ end
 parser.parse!
 
 abort "--sources has no effect with --index; the index is already built" if opts[:index] && opts[:sources_given]
+abort "--sources has no effect with --runtime; the tables are read, not scanned" if opts[:runtime] && !opts[:merge] && opts[:sources_given]
+abort "--index already holds a built index; --runtime would discard it" if opts[:index] && opts[:runtime]
 
 index =
   begin
     if opts[:index]
       MethodIndex.from_json(opts[:index])
+    elsif opts[:merge]
+      MethodIndex.merge(MethodIndex.from_runtime(opts[:runtime]),
+                        MethodIndex.from_source(opts[:sources]))
+    elsif opts[:runtime]
+      MethodIndex.from_runtime(opts[:runtime])
     else
       MethodIndex.from_source(opts[:sources])
     end
@@ -140,12 +166,32 @@ end
 
 # Several registrations can share a key (e.g. re-registered in a gem); the
 # distinct C functions are what matter.
-funcs = matches.map(&:func).uniq
+funcs = matches.map(&:func).compact.uniq
 if funcs.size > 1
   warn "#{matches.first.key} maps to multiple C functions: #{funcs.join(', ')}"
   warn "tracing the first; narrow with --sources if that is wrong"
 end
-info = matches.first
+info = matches.find(&:func) || matches.first
+
+# uftrace records C functions.  A method that has none is not a failure to
+# resolve, and saying "not found" about it would send the reader looking for a
+# symbol that was never supposed to exist.
+unless info.func
+  warn "#{info.key} has no C entry point."
+  case info.kind
+  when "proc"
+    warn "It is written in Ruby#{info.definition ? ", in #{info.definition}" : ''}, so the VM runs"
+    warn "bytecode for it and there is no function for uftrace to record.  Trace"
+    warn "one of the methods it calls, or --list the class to find the C half:"
+    warn "mruby-regexp, for one, keeps String#[]'s C function under String#__aref."
+  when "undef"
+    warn "It is undefined in this build; the table entry exists only to stop lookup."
+  else
+    warn "The index does not name one."
+  end
+  exit 2
+end
+
 root = info.func
 
 if opts[:expr] && opts[:script]
@@ -188,11 +234,17 @@ if symbols
     clones = symbols.grep(/\A#{Regexp.escape(root)}[.]/).uniq
     if clones.empty?
       warn "warning: #{root} is not in the symbol table of #{opts[:bin]}."
-      warn "         The index is built from the C sources, which do not say what"
-      warn "         this build configured: the function may be excluded by a #if,"
-      warn "         or belong to a gem this gembox leaves out.  Kernel#p, for one,"
-      warn "         is compiled out whenever mruby-io is present.  Failing that it"
-      warn "         was inlined, which an -O0 build (enable_debug) would keep."
+      if index.producer == "c-source-scan"
+        warn "         This index is built from the C sources, which do not say what"
+        warn "         this build configured: the function may be excluded by a #if,"
+        warn "         or belong to a gem this gembox leaves out.  Kernel#p, for one,"
+        warn "         is compiled out whenever mruby-io is present.  Pass --runtime"
+        warn "         to resolve through this build's own method tables instead."
+      else
+        warn "         The index was built from a different binary than the one being"
+        warn "         traced; rebuild both with the same config."
+      end
+      warn "         Failing that it was inlined, which an -O0 build (enable_debug) keeps."
     else
       warn "note: #{root} was cloned by the optimizer: #{clones.join(', ')}"
       warn "      tracing #{clones.first} instead"
@@ -316,6 +368,8 @@ if File.exist?(replay) && File.size(replay) < 64
   warn "    served by OP_GETIDX in src/vm.c.  Check the bytecode with:"
   warn "      #{mrbc.sub(MRUBY_ROOT + '/', '')} -v #{runner.sub(MRUBY_ROOT + '/', '')}"
   warn "  - the expression dispatches to a different class than #{info.klass}"
+  warn "  - another registration won: a gem's mrblib can redefine a method the C"
+  warn "    sources register, which only --runtime or --merge can see"
   warn "  - #{root} was inlined away; rebuild with enable_debug (-O0)"
 end
 
