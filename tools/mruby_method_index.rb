@@ -468,6 +468,16 @@ module MRuby
         mrb_define_singleton_method_id mrb_define_singleton_method
       ].freeze
 
+      # These define two methods, not one: mrb_define_module_function_id is
+      # mrb_define_class_method_id followed by mrb_define_private_method_id
+      # (src/class.c).  Math.acos and a private Math#acos are both real
+      # entries, and a method table reports both, so indexing only the
+      # singleton spelling leaves the other looking like a method this
+      # producer has never heard of.
+      MODULE_FUNCTION_DEFINERS = %w[
+        mrb_define_module_function_id mrb_define_module_function
+      ].freeze
+
       attr_reader :registrations
 
       def initialize(files)
@@ -747,6 +757,11 @@ module MRuby
             next unless desc && name && func =~ /\A[A-Za-z_]\w*\z/
 
             add(klass: desc[:name], singleton: singleton || desc[:singleton],
+                name: name, func: func, line: line, via: definer)
+
+            next unless MODULE_FUNCTION_DEFINERS.include?(definer)
+
+            add(klass: desc[:name], singleton: desc[:singleton],
                 name: name, func: func, line: line, via: definer)
           end
         end
