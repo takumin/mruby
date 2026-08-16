@@ -67,6 +67,7 @@ module MRuby
     Registration = Struct.new(
       :klass, :singleton, :name, :func, :kind,
       :file, :line, :via, :alias_of,
+      :def_file, :def_line,
       keyword_init: true
     ) do
       def key
@@ -78,11 +79,18 @@ module MRuby
         "#{file}:#{line}" if file && line
       end
 
+      # Where the C function itself is written, as "path:line".  Filled in
+      # from a binary's debug info, so it is nil until someone annotates.
+      def definition
+        "#{def_file}:#{def_line}" if def_file && def_line
+      end
+
       def to_h
         {
           "class" => klass, "singleton" => singleton, "name" => name,
           "func" => func, "kind" => kind,
           "file" => file, "line" => line, "via" => via, "alias_of" => alias_of,
+          "def_file" => def_file, "def_line" => def_line,
         }
       end
 
@@ -90,7 +98,8 @@ module MRuby
         new(
           klass: h["class"], singleton: h["singleton"], name: h["name"],
           func: h["func"], kind: h["kind"],
-          file: h["file"], line: h["line"], via: h["via"], alias_of: h["alias_of"]
+          file: h["file"], line: h["line"], via: h["via"], alias_of: h["alias_of"],
+          def_file: h["def_file"], def_line: h["def_line"]
         )
       end
     end
@@ -177,21 +186,75 @@ module MRuby
       Index.from_h(JSON.parse(File.read(path)))
     end
 
+    # func name => "path:line" for every C function the binary has debug info
+    # for.  build_config/host-gprof.rb enables debug info, so a -pg build
+    # carries this.
+    #
+    # A function's own location is not the same fact as where its method was
+    # registered -- in src/string.c the two sit 2300 lines apart -- and it is
+    # not a property of the index's producer either.  It comes from the
+    # build, which is why this is an annotation rather than a field any
+    # producer fills in.
+    #
+    # A static function name can occur in more than one file.  Such names are
+    # dropped rather than resolved to whichever came first: for a tool whose
+    # output is "go read this line", a confident wrong file is worse than no
+    # file at all.
+    def self.definition_sites(binary)
+      return {} unless binary && File.file?(binary)
+
+      out = IO.popen(["nm", "-l", "--defined-only", binary], err: File::NULL, &:read)
+      sites = {}
+      ambiguous = []
+      out.to_s.each_line do |line|
+        head, where = line.chomp.split("\t", 2)
+        next if where.nil? || where.empty?
+
+        name = head.to_s.split(/\s+/).last
+        path, _, lineno = where.rpartition(":")
+        next if name.nil? || path.empty? || lineno !~ /\A\d+\z/
+
+        site = [path.sub(%r{\A#{Regexp.escape(ROOT)}/}, ""), lineno.to_i]
+        ambiguous << name if sites.key?(name) && sites[name] != site
+        sites[name] = site
+      end
+      ambiguous.uniq.each { |n| sites.delete(n) }
+      sites
+    rescue SystemCallError
+      {}
+    end
+
+    # Fill in def_file/def_line from a binary.  Returns the index.
+    def self.annotate_definitions!(index, binary)
+      sites = definition_sites(binary)
+      index.registrations.each do |r|
+        site = sites[r.func]
+        r.def_file, r.def_line = site if site
+      end
+      index
+    end
+
     # Shared by this CLI and method_uftrace.rb --list so the two cannot drift.
     def self.render_table(rows, out = $stdout)
       kw = rows.map { |r| r.key.length }.max
       fw = rows.map { |r| r.func.length }.max
+      # The registration column is only padded once there is a column after
+      # it to line up against.
+      defs = rows.any?(&:definition)
+      lw = defs ? rows.map { |r| r.location.to_s.length }.max : 0
       rows.each do |r|
         note = r.alias_of ? "  (alias of #{r.alias_of})" : ""
-        where = r.location ? "  #{r.location}" : ""
-        out.puts format("%-#{kw}s  %-#{fw}s%s%s", r.key, r.func, where, note).rstrip
+        where = defs ? "  #{r.location.to_s.ljust(lw)}" : (r.location ? "  #{r.location}" : "")
+        defn = r.definition ? "  #{r.definition}" : ""
+        out.puts format("%-#{kw}s  %-#{fw}s%s%s%s", r.key, r.func, where, defn, note).rstrip
       end
       out.puts "\n#{rows.size} methods, #{rows.map(&:klass).uniq.size} classes"
     end
 
     def self.render_tsv(rows, out = $stdout)
       rows.each do |r|
-        out.puts [r.key, r.func, r.kind, r.location, r.via, r.alias_of].map(&:to_s).join("\t")
+        out.puts [r.key, r.func, r.kind, r.location, r.definition, r.via, r.alias_of]
+          .map(&:to_s).join("\t")
       end
     end
   end
@@ -581,7 +644,7 @@ end
 if $PROGRAM_NAME == __FILE__
   require "optparse"
 
-  opts = { format: "table", klass: nil, grep: nil, sources: nil, index: nil }
+  opts = { format: "table", klass: nil, grep: nil, sources: nil, index: nil, binary: nil }
 
   OptionParser.new do |o|
     o.banner = "Usage: ruby tools/mruby_method_index.rb [options]"
@@ -590,6 +653,7 @@ if $PROGRAM_NAME == __FILE__
     o.on("--grep=PATTERN", "filter by method name or C function") { |v| opts[:grep] = v }
     o.on("--sources=GLOBS", "comma-separated C source globs") { |v| opts[:sources] = v.split(",") }
     o.on("--index=PATH", "read a previously written JSON index instead of scanning") { |v| opts[:index] = v }
+    o.on("--binary=PATH", "add each C function's definition site from this build's debug info") { |v| opts[:binary] = v }
     o.on("-h", "--help") { puts o; exit 0 }
   end.parse!
 
@@ -603,6 +667,12 @@ if $PROGRAM_NAME == __FILE__
     rescue ArgumentError, Errno::ENOENT, JSON::ParserError => e
       abort e.message
     end
+
+  if opts[:binary]
+    abort "no such binary: #{opts[:binary]}" unless File.file?(opts[:binary])
+
+    MRuby::MethodIndex.annotate_definitions!(index, opts[:binary])
+  end
 
   rows = index.select(klass: opts[:klass], grep: opts[:grep])
 

@@ -186,7 +186,11 @@ if symbols
     clones = symbols.grep(/\A#{Regexp.escape(root)}[.]/).uniq
     if clones.empty?
       warn "warning: #{root} is not in the symbol table of #{opts[:bin]}."
-      warn "         It is probably inlined; an -O0 build (enable_debug) keeps it."
+      warn "         The index is built from the C sources, which do not say what"
+      warn "         this build configured: the function may be excluded by a #if,"
+      warn "         or belong to a gem this gembox leaves out.  Kernel#p, for one,"
+      warn "         is compiled out whenever mruby-io is present.  Failing that it"
+      warn "         was inlined, which an -O0 build (enable_debug) would keep."
     else
       warn "note: #{root} was cloned by the optimizer: #{clones.join(', ')}"
       warn "      tracing #{clones.first} instead"
@@ -194,6 +198,11 @@ if symbols
     end
   end
 end
+
+# Where the C function is written, as opposed to where the method was
+# registered.  In src/string.c the two sit 2300 lines apart, and this is the
+# one you want open while reading a trace.
+MethodIndex.annotate_definitions!(index, bin) if have_bin
 
 safe_class = info.klass.gsub("::", ".").gsub(/[^A-Za-z0-9_.]+/, "_")
 # Operators get the same directory name mruby's own presym table gives them,
@@ -220,6 +229,7 @@ record_cmd += ["-F", root, "-d", datadir, "--", bin, runner]
 
 puts "Method      : #{info.key}"
 puts "C root      : #{root}#{root == info.func ? '' : " (was #{info.func})"}"
+puts "Defined     : #{info.definition}" if info.definition
 puts "Registered  : #{info.location} via #{info.via}" if info.location
 puts "Alias of    : #{info.alias_of}" if info.alias_of
 puts "Binary      : #{bin}"
@@ -276,6 +286,7 @@ File.write(File.join(outdir, "meta.txt"), [
   "method=#{info.key}",
   "c_root=#{root}",
   "c_func=#{info.func}",
+  ("definition=#{info.definition}" if info.definition),
   ("registration=#{info.location}" if info.location),
   ("via=#{info.via}" if info.via),
   ("alias_of=#{info.alias_of}" if info.alias_of),
