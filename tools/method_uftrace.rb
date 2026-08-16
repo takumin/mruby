@@ -91,13 +91,15 @@ parser = OptionParser.new do |o|
   o.on("--[no-]patch-all", "use uftrace dynamic full patching -P. (default: yes)") { |v| opts[:patch_all] = v }
   o.on("--force", "record even if the binary looks uninstrumented") { opts[:force] = true }
   o.on("--dry-run", "resolve and print the uftrace command without running it") { opts[:dry_run] = true }
-  o.on("--sources=GLOBS", "comma-separated C source globs") { |v| opts[:sources] = v.split(",") }
+  o.on("--sources=GLOBS", "comma-separated C source globs") { |v| opts[:sources] = v.split(","); opts[:sources_given] = true }
   o.on("--index=PATH", "use a JSON index (tools/mruby_method_index.rb --format json)") { |v| opts[:index] = v }
   o.on("--grep=PATTERN", "filter --list output by method name") { |v| opts[:grep] = v }
   o.on("--list", "list resolved methods and their C entry points") { opts[:list] = true }
   o.on("-h", "--help") { puts o; exit 0 }
 end
 parser.parse!
+
+abort "--sources has no effect with --index; the index is already built" if opts[:index] && opts[:sources_given]
 
 index =
   begin

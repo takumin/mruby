@@ -94,9 +94,17 @@ module MRuby
         }
       end
 
+      # The four identifying fields are required.  A producer that omits one
+      # is reporting a method it cannot actually name, and letting that
+      # through only moves the failure to whoever reads the record.
+      REQUIRED = %w[class name func].freeze
+
       def self.from_h(h)
+        missing = REQUIRED.reject { |k| h[k] }
+        raise ArgumentError, "index entry #{h.inspect} is missing #{missing.join(', ')}" unless missing.empty?
+
         new(
-          klass: h["class"], singleton: h["singleton"], name: h["name"],
+          klass: h["class"], singleton: !!h["singleton"], name: h["name"],
           func: h["func"], kind: h["kind"],
           file: h["file"], line: h["line"], via: h["via"], alias_of: h["alias_of"],
           def_file: h["def_file"], def_line: h["def_line"]
@@ -163,8 +171,10 @@ module MRuby
           raise ArgumentError, "unsupported index version #{version.inspect} (want #{FORMAT_VERSION})"
         end
 
-        new(h.fetch("methods").map { |m| Registration.from_h(m) },
-            producer: h["producer"])
+        methods = h["methods"]
+        raise ArgumentError, "index has no methods array" unless methods.is_a?(Array)
+
+        new(methods.map { |m| Registration.from_h(m) }, producer: h["producer"])
       end
     end
 
@@ -644,7 +654,7 @@ end
 if $PROGRAM_NAME == __FILE__
   require "optparse"
 
-  opts = { format: "table", klass: nil, grep: nil, sources: nil, index: nil, binary: nil }
+  opts = { format: "table", klass: nil, grep: nil, sources: nil, index: nil, binary: nil, producer: false }
 
   OptionParser.new do |o|
     o.banner = "Usage: ruby tools/mruby_method_index.rb [options]"
@@ -653,6 +663,7 @@ if $PROGRAM_NAME == __FILE__
     o.on("--grep=PATTERN", "filter by method name or C function") { |v| opts[:grep] = v }
     o.on("--sources=GLOBS", "comma-separated C source globs") { |v| opts[:sources] = v.split(",") }
     o.on("--index=PATH", "read a previously written JSON index instead of scanning") { |v| opts[:index] = v }
+    o.on("--producer", "print which producer made the index, then exit") { opts[:producer] = true }
     o.on("--binary=PATH", "add each C function's definition site from this build's debug info") { |v| opts[:binary] = v }
     o.on("-h", "--help") { puts o; exit 0 }
   end.parse!
@@ -667,6 +678,11 @@ if $PROGRAM_NAME == __FILE__
     rescue ArgumentError, Errno::ENOENT, JSON::ParserError => e
       abort e.message
     end
+
+  if opts[:producer]
+    puts "#{index.producer || 'unknown'}\t#{index.registrations.size} methods"
+    exit 0
+  end
 
   if opts[:binary]
     abort "no such binary: #{opts[:binary]}" unless File.file?(opts[:binary])
