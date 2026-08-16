@@ -136,13 +136,9 @@ Two dispatch strategies are available:
 - **Switch-based** (`MRB_USE_VM_SWITCH_DISPATCH`): a standard
   `switch(insn)` statement. Default on MSVC and other compilers.
 
-Both strategies share the same per-instruction hooks:
-
-- `CALL_CODE_HOOKS()` fetches the next opcode and runs
-  `CODE_FETCH_HOOK` (used by the debugger gem).
-- `RETURN_IF_TASK_STOPPED()` compiles to nothing unless the
-  `mruby-task` gem is built in (`MRB_USE_TASK_SCHEDULER`); see that
-  gem's README for the scheduler itself.
+Both strategies advance through `CALL_CODE_HOOKS()`, which fetches
+the next opcode and runs `CODE_FETCH_HOOK` (used by the debugger
+gem).
 
 The dispatch loop is wrapped in `MRB_TRY`/`MRB_CATCH` for exception
 handling (see [Exception Handling](#exception-handling)).
