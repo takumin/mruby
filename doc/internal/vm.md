@@ -72,7 +72,7 @@ mrb_callinfo
 +-- u.keep_context  NULL marks a fiber switch (internal use)
 ```
 
-The low 3 bits of `vis` are copied into the frame's `REnv` when one
+The low 4 bits of `vis` are copied into the frame's `REnv` when one
 is created; from that point the env's copy takes precedence
 (`MRB_ENV_COPY_FLAGS_FROM_CI`).
 
@@ -350,7 +350,7 @@ CREATED --> RUNNING --> SUSPENDED --> TERMINATED
                   (yield/resume)
 
 RESUMED     (a fiber that resumed another fiber)
-TRANSFERRED (entered via Fiber#transfer)
+TRANSFERRED (a fiber that transferred control to another fiber)
 ```
 
 `RESUMED` marks the _resuming_ side of `Fiber#resume`: that context
