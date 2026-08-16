@@ -97,17 +97,26 @@ return n + 1 (skip self)
 
 ### Call Context Info (cci)
 
-| Value | Name            | Meaning                               |
-| ----- | --------------- | ------------------------------------- |
-| 0     | `CINFO_NONE`    | Normal VM-to-VM call                  |
-| 1     | `CINFO_DIRECT`  | Explicit VM call (block, lambda.call) |
-| 2     | `CINFO_SKIP`    | Skip frame in stack traces            |
-| 3     | `CINFO_RESUMED` | Fiber resumed (stop execution)        |
+`cci` records how the frame was entered, which is also what tells
+you whether the frame has a C stack frame behind it:
+
+| Value | Name            | Meaning                                          |
+| ----- | --------------- | ------------------------------------------------ |
+| 0     | `CINFO_NONE`    | Entered by the VM itself, no C frame added       |
+| 1     | `CINFO_SKIP`    | A nested `mrb_vm_exec()` was ignited from C      |
+| 2     | `CINFO_DIRECT`  | Method called from C (`mrb_funcall` and friends) |
+| 3     | `CINFO_RESUMED` | Fiber resumed across a C call boundary           |
+
+`CINFO_DIRECT` is also the value `cipush()` is called with from
+`OP_SEND`, but the send path overwrites it with `CINFO_NONE` before
+invoking the method, so frames created by bytecode always read as
+`CINFO_NONE`. `mrb_funcall_with_block()` and `exec_irep()` promote
+their frame to `CINFO_SKIP` right before calling `mrb_run()`.
 
 ## Dispatch Loop
 
-The main loop in `mrb_vm_run()` decodes and dispatches opcodes.
-Two dispatch strategies are available:
+The main loop is `mrb_vm_exec()`; `mrb_vm_run()` only prepares the
+stack and calls it. Two dispatch strategies are available:
 
 - **Computed goto** (default on GCC/Clang): a jump table of label
   addresses (`optable[]`) for direct dispatch. Faster due to
@@ -132,6 +141,8 @@ Array (varargs mode).
 
 ```c
 ci = cipush(mrb, a, CINFO_DIRECT, NULL, NULL, blk, mid, argc);
+...
+ci->cci = CINFO_NONE;   /* before the method is invoked */
 ```
 
 The new frame's stack starts at the previous frame's stack + `a`
@@ -153,15 +164,100 @@ The method cache is invalidated when classes are modified
 ### 4. Invoke
 
 - **Ruby method** (irep-based): extend the stack to `irep->nregs`,
-  set `ci->pc` to `irep->iseq`, and jump to the new bytecode.
+  set `ci->pc` to `irep->iseq`, and `JUMP` to the new bytecode.
+  This stays inside the same `mrb_vm_exec()` invocation: no C
+  recursion, so Ruby call depth costs call-info entries, not C
+  stack.
 - **C function**: call `func(mrb, recv)` directly, then pop the
-  call frame and store the return value.
+  call frame and store the return value. The C function runs on
+  top of the `mrb_vm_exec()` frame, and re-enters the VM through a
+  nested `mrb_vm_exec()` if it calls back into Ruby.
 
 ### 5. Visibility Check
 
 Private methods are only callable without an explicit receiver.
 Protected methods are callable from the same class hierarchy.
 Violations raise `NoMethodError`.
+
+## Stack Traces: C Frames and VM Frames
+
+The two stacks do not line up one to one:
+
+- Ruby-to-Ruby calls fold into a single `mrb_vm_exec()` C frame,
+  so the call-info stack can be hundreds of frames deep while the
+  C backtrace shows one `mrb_vm_exec`.
+- A C function that calls back into Ruby (`mrb_funcall`,
+  `mrb_yield`, `Fiber#resume` from C, ...) starts a nested
+  `mrb_vm_exec()`, adding a C frame in the middle of the Ruby
+  call chain.
+- `Fiber#resume` issued from bytecode does _not_ start a nested
+  `mrb_vm_exec()`: `fiber_switch()` only swaps `mrb->c`, and the
+  running dispatch loop picks up the new context. That is why a
+  fiber needs no C stack of its own.
+
+`cci` is the join key: walking `mrb->c->ci` downwards, every frame
+with `CINFO_SKIP` or `CINFO_RESUMED` is the entry frame of one
+`mrb_vm_exec` C frame, and every `cfunc` frame corresponds to the
+C frames between two `mrb_vm_exec`s.
+
+### Reading a frame's source position
+
+`ci->pc` has already been advanced past the operands of the
+instruction being executed, so a location lookup uses `ci->pc[-1]`:
+
+```c
+idx = ci->pc - 1 - irep->iseq;
+mrb_debug_get_position(mrb, irep, idx, &lineno, &filename);
+```
+
+C-implemented methods have no irep. `pack_backtrace()` in
+`src/backtrace.c` therefore reports them at the caller's position,
+which is why a Ruby backtrace shows a cfunc frame with the line
+number of the Ruby code that called it.
+
+### GDB helper
+
+`tools/gdb/mruby_vm.py` merges both views. It needs a build with
+`conf.enable_debug` (for example `build_config/host-debug.rb`):
+
+```console
+$ gdb -x tools/gdb/mruby_vm.py --args build/host/bin/mruby foo.rb
+(gdb) break mrb_exc_raise
+(gdb) run
+(gdb) mrbbt      # unified C + VM backtrace
+(gdb) mrbci      # raw call-info dump (mrbci mrb->c->prev for a fiber)
+```
+
+`mrbbt` prints C frames and call-info frames in one list, marks
+each `mrb_vm_exec` with how many Ruby frames were folded into it,
+and shows the `cci` of every VM frame.
+
+### Instruction-level trace
+
+`code_fetch_hook` runs before every dispatched instruction when the
+build defines `MRB_USE_DEBUG_HOOK`. Reading `mrb->c->ci - mrb->c->cibase`
+inside the hook shows the VM call depth changing without the C stack
+moving:
+
+```c
+static void
+trace_hook(mrb_state *mrb, const struct mrb_irep *irep,
+           const mrb_code *pc, mrb_value *regs)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  int32_t line; const char *file;
+
+  mrb_debug_get_position(mrb, irep, (uint32_t)(pc - irep->iseq), &line, &file);
+  fprintf(stderr, "ci=%d cci=%d op=%d %s:%d\n",
+          (int)(ci - mrb->c->cibase), ci->cci, *pc, file, (int)line);
+}
+...
+mrb->code_fetch_hook = trace_hook;
+```
+
+`mrbgems/mruby-bin-debugger` (`mrdb`) is built on the same hook and
+provides interactive stepping. `mruby -v` (or `mrbc -v`) dumps the
+disassembly the `pc` values index into.
 
 ## Exception Handling
 
@@ -206,7 +302,9 @@ When an exception occurs:
 3. If a `rescue` handler is found: jump to handler code
 4. If no handler: pop the call frame (`cipop`) and repeat with
    the parent frame
-5. `CINFO_DIRECT` frames are destroyed during propagation
+5. If the popped frame was `CINFO_SKIP`, the exception has to leave
+   this `mrb_vm_exec()` invocation: `mrb->jmp` is restored to the
+   caller's jmpbuf and `MRB_THROW` re-raises it there
 
 ## Block and Closure Handling
 
@@ -317,9 +415,11 @@ ensuring the incremental GC correctly tracks live references.
 
 ## Source Files
 
-| File                    | Contents                                       |
-| ----------------------- | ---------------------------------------------- |
-| `src/vm.c`              | Dispatch loop, method invocation (~1900 lines) |
-| `include/mruby.h`       | `mrb_state`, `mrb_callinfo`, `mrb_context`     |
-| `include/mruby/proc.h`  | `RProc`, `REnv` structures                     |
-| `include/mruby/throw.h` | `MRB_TRY`/`MRB_CATCH` macros                   |
+| File                    | Contents                                   |
+| ----------------------- | ------------------------------------------ |
+| `src/vm.c`              | Dispatch loop, method invocation           |
+| `src/backtrace.c`       | Packing/decoding Ruby-level backtraces     |
+| `include/mruby.h`       | `mrb_state`, `mrb_callinfo`, `mrb_context` |
+| `include/mruby/proc.h`  | `RProc`, `REnv` structures                 |
+| `include/mruby/throw.h` | `MRB_TRY`/`MRB_CATCH` macros               |
+| `tools/gdb/mruby_vm.py` | GDB commands for unified C + VM backtraces |
