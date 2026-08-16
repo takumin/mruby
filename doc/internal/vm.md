@@ -230,7 +230,54 @@ $ gdb -x tools/gdb/mruby_vm.py --args build/host/bin/mruby foo.rb
 
 `mrbbt` prints C frames and call-info frames in one list, marks
 each `mrb_vm_exec` with how many Ruby frames were folded into it,
-and shows the `cci` of every VM frame.
+and shows the `cci` of every VM frame. C frames that the dispatch
+loop called without pushing a call-info frame (inline opcodes and
+VM helpers) are marked as such.
+
+### Which code implements a method
+
+Three different things can answer one Ruby call site, and only the last one
+appears in a Ruby backtrace:
+
+1. an **inline opcode** — `OP_GETIDX`, `OP_ADD`, ... call a C function straight
+   from the dispatch loop, with no method lookup and no call-info frame;
+2. a **C method** — an entry in the method table (`mrb_str_upcase`);
+3. a **Ruby method** — bytecode from `mrblib` or a gem's `mrblib`.
+
+`mrbimpl` resolves a name the way the VM's method lookup does:
+
+```console
+(gdb) mrbimpl String#[]
+String#[]
+  defined in: String
+  Ruby method: mrbgems/mruby-regexp/mrblib/string_regexp.rb:399
+  note: the VM may answer this inline via OP_GETIDX/OP_GETIDX0 ...
+(gdb) mrbimpl String#slice     # follows aliases
+(gdb) mrbimpl String.new       # singleton (class) methods
+```
+
+`String#[]` is the case where all three appear at once. `mrbbt` at a breakpoint
+on the C function shows which one actually ran — `str[0]` never reaches the
+method table:
+
+```text
+(gdb) break mrb_str_aref            # str[0]
+  C   #0   mrb_str_aref     src/string.c:1723   <- inline from the VM (no call-info frame)
+  C   #1   vm_op_getidx0    src/vm.c:2155       <- inline from the VM (no call-info frame)
+  VM  ci[0 ] (toplevel)     aref.rb:2           cci=NONE   in C #2
+  C   #2   mrb_vm_exec      src/vm.c:2638       <- 1 Ruby frame(s) folded into this C frame
+
+(gdb) break mrb_str_aref_m          # str[1, 2]
+  C   #0   mrb_str_aref_m   src/string.c:1786
+  VM  ci[2 ] __aref         <cfunc mrb_str_aref_m>   cci=NONE
+  VM  ci[1 ] []             string_regexp.rb:407     cci=NONE   in C #1
+  VM  ci[0 ] (toplevel)     aref.rb:3                cci=NONE   in C #1
+  C   #1   mrb_vm_exec      src/vm.c:3030            <- 2 Ruby frame(s) folded ...
+```
+
+Because the inline path only checks that the receiver's class is exactly
+`String`, redefining `String#[]` does not affect `str[0]` — see "Operator
+modification" in [../limitations.md](../limitations.md).
 
 ### Instruction-level trace
 

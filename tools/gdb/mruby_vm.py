@@ -7,6 +7,7 @@ Usage (on a build made with `conf.enable_debug`):
     (gdb) run
     (gdb) mrbbt          # unified C + VM backtrace
     (gdb) mrbci          # raw call-info dump
+    (gdb) mrbimpl String#[]   # what implements a method
 
 The VM runs Ruby-to-Ruby calls without recursing into C (`mrb_vm_exec` loops
 via `JUMP`), so many Ruby frames live inside a single C frame; a C function
@@ -23,7 +24,17 @@ CINFO_NONE, CINFO_SKIP, CINFO_DIRECT, CINFO_RESUMED = 0, 1, 2, 3
 CCI_NAME = {CINFO_NONE: "NONE", CINFO_SKIP: "SKIP",
             CINFO_DIRECT: "DIRECT", CINFO_RESUMED: "RESUMED"}
 MRB_PROC_CFUNC_FL = 128
+MRB_PROC_ALIAS = 8192
+MRB_METHOD_FUNC_FL = 1 << 24
 VM_EXEC = "mrb_vm_exec"
+
+# Methods the VM may answer inline, without consulting the method table.
+INLINE_OPS = {
+    "[]": "OP_GETIDX/OP_GETIDX0 (Array, Hash, String receivers)",
+    "[]=": "OP_SETIDX (Array, Hash receivers)",
+    "+": "OP_ADD/OP_ADDI", "-": "OP_SUB/OP_SUBI", "*": "OP_MUL", "/": "OP_DIV",
+    "<": "OP_LT", "<=": "OP_LE", ">": "OP_GT", ">=": "OP_GE", "==": "OP_EQ",
+}
 
 
 def find_mrb(arg):
@@ -177,6 +188,13 @@ class MrbBacktrace(gdb.Command):
                 continue
 
             host = next_vm_exec(cf, i)
+            if host is not None and host > i:
+                # C called straight from the dispatch loop: an inline opcode
+                # (OP_GETIDX, OP_ADD, ...) or a VM helper. No call-info frame
+                # is pushed for these, so they exist only on the C stack.
+                for fr in cf[i:host]:
+                    print(c_line(fr, "  <- inline from the VM (no call-info frame)"))
+                i = host
             folded += 1
             print("  VM  ci[%-2d] %-22s %-30s cci=%-6s %s"
                   % (f.index, f.label(), f.where(), CCI_NAME.get(f.cci, "?"),
@@ -210,5 +228,105 @@ class MrbCallinfo(gdb.Command):
                      f.where(), f.idx if f.idx is not None else "-"))
 
 
+def symbol_of(value):
+    """Render a function pointer as `name` when GDB can resolve it."""
+    text = str(value)
+    return text.split("<", 1)[1].rstrip(">") if "<" in text else text
+
+
+class MrbImpl(gdb.Command):
+    """mrbimpl Class#method | Class.method - show the code implementing a method.
+
+    Resolves the method the way the VM does (`mrb_method_search_vm`) and reports
+    whether it lands on a C function, a cfunc-backed proc, or Ruby bytecode.
+    Requires a live inferior; the class must already be defined at this point.
+    """
+
+    def __init__(self):
+        super(MrbImpl, self).__init__("mrbimpl", gdb.COMMAND_DATA)
+
+    @staticmethod
+    def class_name(mrb, cls):
+        """Name of an RClass; singleton classes have no path, so fall back."""
+        try:
+            name = gdb.parse_and_eval("mrb_class_name(%d, (struct RClass*)%d)"
+                                      % (int(mrb), cls))
+            if int(name):
+                return name.string()
+        except gdb.error:
+            pass
+        return "0x%x" % cls
+
+    @staticmethod
+    def parse(spec):
+        for sep, singleton in (("#", False), (".", True)):
+            if sep in spec:
+                cls, _, meth = spec.partition(sep)
+                return cls.strip(), meth.strip(), singleton
+        parts = spec.split(None, 1)
+        if len(parts) != 2:
+            raise gdb.GdbError("usage: mrbimpl Class#method (or Class.method)")
+        return parts[0], parts[1].strip(), False
+
+    def invoke(self, arg, from_tty):
+        mrb = find_mrb("")
+        cls_name, meth, singleton = self.parse(arg.strip())
+
+        if not int(gdb.parse_and_eval('mrb_class_defined(%d, "%s")' % (int(mrb), cls_name))):
+            raise gdb.GdbError("class %s is not defined (yet) in this process" % cls_name)
+        cls = gdb.parse_and_eval('mrb_class_get(%d, "%s")' % (int(mrb), cls_name))
+        start = cls["c"] if singleton else cls
+        sym = int(gdb.parse_and_eval('mrb_intern_cstr(%d, "%s")' % (int(mrb), meth)))
+
+        # mrb_method_search_vm() needs an in/out RClass**; borrow inferior memory.
+        # Everything read out of it must be turned into Python values before the
+        # free(), because gdb.Value reads memory lazily.
+        cp = gdb.parse_and_eval("(struct RClass**)malloc(sizeof(void*))")
+        try:
+            gdb.parse_and_eval("*(struct RClass**)%d = (struct RClass*)%d"
+                               % (int(cp), int(start)))
+            m = gdb.parse_and_eval("mrb_method_search_vm(%d, (struct RClass**)%d, %d)"
+                                   % (int(mrb), int(cp), sym))
+            owner = int(gdb.parse_and_eval("*(struct RClass**)%d" % int(cp)))
+            flags = int(m["flags"])
+            target = int(m["as"]["proc"])
+            func = symbol_of(m["as"]["func"]) if flags & MRB_METHOD_FUNC_FL else None
+            aliased = None
+            if target and not func:
+                proc = m["as"]["proc"]
+                if int(proc["flags"]) & MRB_PROC_ALIAS:
+                    aliased = sym_name(mrb, proc["body"]["mid"])
+                    proc = proc["upper"]      # the alias target carries the code
+                pflags = int(proc["flags"]) if int(proc) else 0
+                cfunc = symbol_of(proc["body"]["func"]) \
+                    if pflags & MRB_PROC_CFUNC_FL else None
+                irep = int(proc["body"]["irep"]) if int(proc) and not cfunc else 0
+        finally:
+            gdb.parse_and_eval("(void)free((void*)%d)" % int(cp))
+
+        print("%s%s%s" % (cls_name, "." if singleton else "#", meth))
+        if target == 0:
+            print("  undefined")
+            return
+        print("  defined in: %s" % self.class_name(mrb, owner))
+        if aliased:
+            print("  alias of: %s" % aliased)
+
+        if func:
+            print("  C function: %s" % func)
+        elif cfunc:
+            print("  C function: %s (via RProc 0x%x)" % (cfunc, target))
+        else:
+            pos = position(mrb, irep, 0) if irep else None
+            print("  Ruby method: %s (irep 0x%x)"
+                  % ("%s:%d" % (shorten(pos[0]), pos[1]) if pos else "<no debug info>",
+                     irep))
+        if meth in INLINE_OPS:
+            print("  note: the VM may answer this inline via %s, bypassing this\n"
+                  "        entry entirely - break on the C function to be sure"
+                  % INLINE_OPS[meth])
+
+
 MrbBacktrace()
 MrbCallinfo()
+MrbImpl()
