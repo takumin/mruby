@@ -11,6 +11,13 @@ MRuby::Build.new do |conf|
 
   # include all core GEMs
   conf.gembox 'full-core'
+
+  # The tracer times calls with QueryPerformanceCounter on Windows and with
+  # clock_gettime everywhere else, so the Windows half of that is compiled
+  # nowhere but here. ci/gcc-clang carries the gem for the same reason on the
+  # other side.
+  conf.gem :core => 'mruby-trace'
+
   conf.compilers.each do |c|
     c.defines += %w(MRB_GC_FIXED_ARENA)
   end

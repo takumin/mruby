@@ -27,6 +27,17 @@ MRuby::Build.new('bintest') do |conf|
   # include all core GEMs
   conf.gembox 'full-core'
   conf.gem :core => 'mruby-bin-debugger'
+
+  # The one build here that compiles the VM's call frame hooks, which the gem
+  # turns on through MRB_USE_CALL_HOOK. It rides on this build because the
+  # tracer's own coverage is split: its gem tests run in a bare state, and the
+  # rest -- reading a real script's stacks -- needs an interpreter to run, so
+  # only a bintest build exercises the whole of it. ci/msvc carries it too, for
+  # the timestamp path written against Windows. Fibers get their own stacks in
+  # the tracer and full-core has no mruby-fiber, so that part stays with
+  # build_config/host-trace.rb, which builds both.
+  conf.gem :core => 'mruby-trace'
+
   conf.compilers.each do |c|
     c.defines += %w(MRB_GC_FIXED_ARENA)
   end
