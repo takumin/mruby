@@ -21,8 +21,8 @@ tool knows:
 - **whether the method exists in this build.** `Kernel#p` is written in
   `src/kernel.c` behind `#ifndef HAVE_MRUBY_IO_GEM`, so a build that includes
   mruby-io does not have it. A text scanner indexes it anyway.
-- **what an alias points at.** Aliases are entries in the table, so they need
-  no matching up by name.
+- **what an alias points at.** An alias is an entry in the table holding the
+  proc it forwards to, so it is followed rather than matched up by name.
 
 What the tables cannot report is where a registration was _written_: they hold
 a function pointer, not a source line. The source scan supplies that, and
@@ -33,9 +33,9 @@ a function pointer, not a source line. The source scan supplies that, and
 ```console
 $ MRUBY_CONFIG=host-gprof rake
 $ build/host/bin/mruby-mtdump | head -3
-!mtdump  1
+!mtdump  2
 !anchor  mrb_open  0x55e2a1b7c440
-m  Array  #  &  cfunc  0x55e2a1b8e310  rom
+m  Array  #  &  cfunc  0x55e2a1b8e310  rom  -
 ```
 
 (The separator is a tab; it is shown here as spaces.)
@@ -55,12 +55,23 @@ tab separated:
 
 | field     |                                                                                                  |
 | --------- | ------------------------------------------------------------------------------------------------ |
-| `class`   | owning class, e.g. `String`, `Socket::Option`                                                    |
-| separator | `#` for an instance method, `.` for a singleton method                                           |
-| `name`    | method name                                                                                      |
-| kind      | `cfunc`, `proc`, `alias`, or `undef`                                                             |
-| target    | runtime address for `cfunc`, `file:line` for `proc`, the aliased name for `alias`, `-` otherwise |
-| origin    | `rom` if served from an `MRB_MT_ENTRY` table, else `heap`                                        |
+| `class`      | owning class, e.g. `String`, `Socket::Option`                                    |
+| separator    | `#` for an instance method, `.` for a singleton method                           |
+| `name`       | method name                                                                      |
+| kind         | `cfunc`, `proc`, or `undef`                                                      |
+| target       | runtime address for `cfunc`, `file:line` for `proc`, `-` otherwise               |
+| origin       | `rom` if served from an `MRB_MT_ENTRY` table, else `heap`                        |
+| aliased-from | the name this entry was aliased from, or `-`                                     |
+
+An alias is reported as the body it resolves to, not as an indirection to
+chase: `kind` and `target` describe what would actually run, and the name it
+was aliased from is a column of its own. That resolution follows the alias
+proc's `upper`, which is what the VM does before it runs the method, so it
+works even when the method aliased from lives in another class —
+`Enumerator::Lazy#force` is aliased from `entries`, which is `Enumerable`'s.
+
+`kind` is `alias` only for an alias with no proc under it at all, which
+nothing in a freshly opened state produces.
 
 Addresses are runtime addresses, and mean nothing on their own under a
 position-independent executable. The `!anchor` line gives the runtime address

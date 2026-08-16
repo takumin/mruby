@@ -292,7 +292,7 @@ puts "Method      : #{info.key}"
 puts "C root      : #{root}#{root == info.func ? '' : " (was #{info.func})"}"
 puts "Defined     : #{info.definition}" if info.definition
 puts "Registered  : #{info.location} via #{info.via}" if info.location
-puts "Alias of    : #{info.alias_of}" if info.alias_of
+puts "Aliased from: #{info.alias_of}" if info.alias_of
 puts "Binary      : #{bin}"
 puts "Expression  : #{opts[:expr]}" if opts[:expr]
 puts "Output      : #{outdir}"

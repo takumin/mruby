@@ -13,7 +13,8 @@
 #   klass singleton name         always
 #   func                         C entry point, when the method has one
 #   kind                         cfunc / proc / alias / undef, when known
-#   file line via alias_of       where the registration was written, when known
+#   file line via                where the registration was written, when known
+#   alias_of                     the name this method was aliased from
 #   def_file def_line            where the body is written, when known
 #
 # Two producers exist:
@@ -739,7 +740,7 @@ module MRuby
     # bin/mruby: they are two links of the same library and place the same
     # functions differently.  Only the resulting names cross between them.
     class RuntimeDump
-      DUMP_VERSION = 1
+      DUMP_VERSION = 2
 
       # nm's letters for code: text, and weak text.
       CODE_TYPES = "tTwW"
@@ -756,7 +757,6 @@ module MRuby
         @unresolved = []
         @stats = {}
         parse(dump || capture(binary))
-        resolve_aliases!
       end
 
       private
@@ -825,13 +825,16 @@ module MRuby
       end
 
       def record(fields, by_addr, bias)
-        _, klass, sep, name, kind, target, origin = fields
+        _, klass, sep, name, kind, target, origin, alias_of = fields
         reg = Registration.new(
           klass: unescape(klass), singleton: sep == ".", name: unescape(name),
-          kind: kind, rom: origin == "rom" ? true : origin == "heap" ? false : nil
+          kind: kind, rom: origin == "rom" ? true : origin == "heap" ? false : nil,
+          alias_of: alias_of == "-" ? nil : unescape(alias_of)
         )
         target = unescape(target)
 
+        # An alias is already reported as the body it resolves to, so these
+        # are the only kinds that carry one.
         case kind
         when "cfunc"
           sym = by_addr[Integer(target, 16) - bias]
@@ -847,8 +850,6 @@ module MRuby
             reg.def_file = relative(Regexp.last_match(1))
             reg.def_line = Regexp.last_match(2).to_i
           end
-        when "alias"
-          reg.alias_of = target
         end
 
         reg
@@ -881,32 +882,6 @@ module MRuby
       def better_symbol?(a, b)
         rank = ->(n) { [n.include?(".") ? 1 : 0, n.length, n] }
         (rank.call(a) <=> rank.call(b)) < 0
-      end
-
-      # An alias entry forwards to a name, not to a body.  Follow it to the
-      # method it ends at and adopt what that one dispatches to, keeping
-      # alias_of so the indirection stays visible.
-      def resolve_aliases!
-        by_key = @registrations.group_by { |r| [r.klass, r.singleton, r.name] }
-
-        @registrations.each do |r|
-          next unless r.kind == "alias"
-
-          seen = { r.name => true }
-          target = r
-          while target && target.kind == "alias"
-            nxt = (by_key[[r.klass, r.singleton, target.alias_of]] || []).first
-            break if nxt.nil? || seen[nxt.name]
-
-            seen[nxt.name] = true
-            target = nxt
-          end
-          next if target.nil? || target.equal?(r) || target.kind == "alias"
-
-          r.func = target.func
-          r.kind = target.kind
-          r.def_file, r.def_line = target.def_file, target.def_line
-        end
       end
     end
   end

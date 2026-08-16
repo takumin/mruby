@@ -35,7 +35,7 @@
 #include <mruby/proc.h>
 #include <mruby/variable.h>
 
-#define MTDUMP_FORMAT_VERSION 1
+#define MTDUMP_FORMAT_VERSION 2
 
 /* The symbol the reader resolves every other address against.  Any function
 ** with external linkage would do; mrb_open is here in every build. */
@@ -195,12 +195,15 @@ dump_entry(mrb_state *mrb, mrb_sym sym, mrb_method_t m, void *data)
   /* Wide enough for a source path; snprintf truncates rather than overruns
   ** if some build ever exceeds it. */
   char target[1024];
+  char alias_of[512];
   int rom;
 
   if (!name) {
     st->unnamed_syms++;
     return 0;
   }
+
+  strcpy(alias_of, "-");
 
   if (MRB_METHOD_UNDEF_P(m)) {
     /* Explicitly undefined: the entry exists so lookup stops here. */
@@ -215,16 +218,34 @@ dump_entry(mrb_state *mrb, mrb_sym sym, mrb_method_t m, void *data)
     const struct RProc *p = MRB_METHOD_PROC(m);
 
     if (MRB_PROC_ALIAS_P(p)) {
-      /* Forwards to another name rather than to a body of its own. */
+      /* An alias proc carries the name it was defined from in body.mid and
+      ** the proc it forwards to in upper.  Following upper is what the VM
+      ** itself does before it runs the method (MRB_PROC_RESOLVE_ALIAS in
+      ** src/vm.c), so it lands on the body that will actually execute --
+      ** which the name cannot do, since the method it forwards to need not
+      ** be in this table at all.  Enumerator::Lazy#force is aliased from
+      ** entries, and entries lives in Enumerable.
+      **
+      ** Report the resolved body as the entry, and keep the name it was
+      ** aliased from in a column of its own. */
       mrb_int alias_len = 0;
       const char *alias = mrb_sym_name_len(mrb, p->body.mid, &alias_len);
-      kind = "alias";
+
       if (alias) {
-        snprintf(target, sizeof(target), "%.*s", (int)alias_len, alias);
+        snprintf(alias_of, sizeof(alias_of), "%.*s", (int)alias_len, alias);
       }
-      else {
-        strcpy(target, "-");
+      /* mrb_alias_method never aliases an alias -- it copies the entry -- so
+      ** this walks once.  Loop anyway rather than assume it. */
+      while (p && MRB_PROC_ALIAS_P(p)) {
+        p = p->upper;
       }
+    }
+
+    if (!p) {
+      /* An alias with nothing under it.  Nothing in a freshly opened state
+      ** produces one, and reporting it is better than dereferencing NULL. */
+      kind = "alias";
+      strcpy(target, "-");
     }
     else if (MRB_PROC_CFUNC_P(p)) {
       kind = "cfunc";
@@ -257,7 +278,9 @@ dump_entry(mrb_state *mrb, mrb_sym sym, mrb_method_t m, void *data)
   put_field(st->out, name, (size_t)name_len);
   fprintf(st->out, "\t%s\t", kind);
   put_field(st->out, target, strlen(target));
-  fprintf(st->out, "\t%s\n", rom == 1 ? "rom" : rom == 0 ? "heap" : "-");
+  fprintf(st->out, "\t%s\t", rom == 1 ? "rom" : rom == 0 ? "heap" : "-");
+  put_field(st->out, alias_of, strlen(alias_of));
+  fputc('\n', st->out);
 
   st->methods++;
   return 0;
@@ -341,7 +364,7 @@ usage(FILE *out, const char *prog)
     "\n"
     "Dump this build's method tables as TSV.  One line per method:\n"
     "\n"
-    "  m <class> <#|.> <name> <cfunc|proc|alias|undef> <target> <rom|heap>\n"
+    "  m <class> <#|.> <name> <cfunc|proc|undef> <target> <rom|heap> <aliased-from>\n"
     "\n"
     "A cfunc target is a runtime address, to be read against the !anchor\n"
     "line and `nm %s`.  Consumed by tools/mruby_method_index.rb --runtime.\n",
