@@ -6,23 +6,36 @@
 # This is the lookup half of tools/method_uftrace.rb, split out so that the
 # index can be produced, inspected, and compared on its own.
 #
-# An index is a list of Registration records.  Four fields are always present
-# and identify the method; the rest are best-effort and depend on where the
+# An index is a list of Registration records.  Three fields identify a method
+# and are always present; the rest are best-effort and depend on where the
 # index came from:
 #
-#   klass singleton name func   always
-#   kind                        "cfunc" or "proc" (Ruby-level), when known
-#   file line via alias_of      where the registration was written, when known
+#   klass singleton name         always
+#   func                         C entry point, when the method has one
+#   kind                         cfunc / proc / alias / undef, when known
+#   file line via alias_of       where the registration was written, when known
+#   def_file def_line            where the body is written, when known
 #
-# One producer exists today: SourceScanner, which reads the C sources.  It
-# fills in the registration site but cannot see a build's actual
-# configuration.  Consumers must therefore treat the optional fields as
-# absent-by-default rather than assume this producer.
+# Two producers exist:
+#
+#   SourceScanner  reads the C sources.  It knows where a registration was
+#                  written, and guesses the rest: it cannot see which branches
+#                  of a #if survive, which gems a gembox includes, or which
+#                  class a ROM table is installed on.
+#   RuntimeDump    reads a build's own method tables through
+#                  mrbgems/mruby-bin-mtdump.  It knows exactly what exists and
+#                  what each method dispatches to, and knows nothing about
+#                  where any of it was written.
+#
+# The two are complements, not rivals; .merge takes the mapping from one and
+# the provenance from the other.  Consumers should treat the optional fields
+# as absent-by-default rather than assume a producer.
 #
 # Usage:
 #
 #   ruby tools/mruby_method_index.rb --class String
 #   ruby tools/mruby_method_index.rb --grep index
+#   ruby tools/mruby_method_index.rb --runtime --merge --class String
 #   ruby tools/mruby_method_index.rb --format json > index.json
 #
 # As a library:
@@ -39,7 +52,10 @@ module MRuby
 
     # Format of the JSON produced by #to_h.  Bump when a field changes
     # meaning; adding an optional field does not need a bump.
-    FORMAT_VERSION = 1
+    #
+    # 2: func became optional.  A method written in Ruby has no C entry point
+    #    to name, and version 1 had no way to say so.
+    FORMAT_VERSION = 2
 
     # Prefer the build system's own table so the two never drift.
     OPERATORS =
@@ -62,12 +78,12 @@ module MRuby
 
     DEFAULT_SOURCES = ["src/*.c", "mrbgems/*/src/*.c"].freeze
 
-    # klass/singleton/name/func are the identity; everything else is optional
-    # and may be nil depending on the producer.
+    # klass/singleton/name are the identity; everything else is optional and
+    # may be nil depending on the producer.
     Registration = Struct.new(
       :klass, :singleton, :name, :func, :kind,
       :file, :line, :via, :alias_of,
-      :def_file, :def_line,
+      :def_file, :def_line, :rom,
       keyword_init: true
     ) do
       def key
@@ -79,10 +95,18 @@ module MRuby
         "#{file}:#{line}" if file && line
       end
 
-      # Where the C function itself is written, as "path:line".  Filled in
-      # from a binary's debug info, so it is nil until someone annotates.
+      # Where the body itself is written, as "path:line".  For a C function
+      # this comes from a binary's debug info, so it is nil until someone
+      # annotates; for a method written in Ruby the runtime producer reads it
+      # out of the irep.
       def definition
         "#{def_file}:#{def_line}" if def_file && def_line
+      end
+
+      # What to trace.  A method written in Ruby has no C entry point, and
+      # saying so is more use than an empty column.
+      def entry
+        func || (kind == "proc" ? "(ruby)" : "-")
       end
 
       def to_h
@@ -90,14 +114,17 @@ module MRuby
           "class" => klass, "singleton" => singleton, "name" => name,
           "func" => func, "kind" => kind,
           "file" => file, "line" => line, "via" => via, "alias_of" => alias_of,
-          "def_file" => def_file, "def_line" => def_line,
+          "def_file" => def_file, "def_line" => def_line, "rom" => rom,
         }
       end
 
-      # The four identifying fields are required.  A producer that omits one
-      # is reporting a method it cannot actually name, and letting that
-      # through only moves the failure to whoever reads the record.
-      REQUIRED = %w[class name func].freeze
+      # The identifying fields are required.  A producer that omits one is
+      # reporting a method it cannot actually name, and letting that through
+      # only moves the failure to whoever reads the record.
+      #
+      # `func` is not among them: a method written in Ruby has no C function,
+      # and demanding one would only invite a producer to invent it.
+      REQUIRED = %w[class name].freeze
 
       def self.from_h(h)
         missing = REQUIRED.reject { |k| h[k] }
@@ -107,7 +134,7 @@ module MRuby
           klass: h["class"], singleton: !!h["singleton"], name: h["name"],
           func: h["func"], kind: h["kind"],
           file: h["file"], line: h["line"], via: h["via"], alias_of: h["alias_of"],
-          def_file: h["def_file"], def_line: h["def_line"]
+          def_file: h["def_file"], def_line: h["def_line"], rom: h["rom"]
         )
       end
     end
@@ -152,7 +179,7 @@ module MRuby
         rows = rows.select { |r| r.klass == klass } if klass
         if grep
           re = grep.is_a?(Regexp) ? grep : Regexp.new(grep, Regexp::IGNORECASE)
-          rows = rows.select { |r| r.name =~ re || r.func =~ re }
+          rows = rows.select { |r| r.name =~ re || r.func.to_s =~ re }
         end
         rows
       end
@@ -194,6 +221,47 @@ module MRuby
 
     def self.from_json(path)
       Index.from_h(JSON.parse(File.read(path)))
+    end
+
+    # Default location of the dumper built by build_config/host-gprof.rb.
+    DEFAULT_MTDUMP = File.join(ROOT, "build", "host", "bin", "mruby-mtdump")
+
+    def self.from_runtime(binary = DEFAULT_MTDUMP)
+      dump = RuntimeDump.new(binary)
+      unless dump.unresolved.empty?
+        warn "#{dump.unresolved.size} C entry points have no symbol at their address:"
+        dump.unresolved.first(10).each { |u| warn "  #{u}" }
+      end
+      Index.new(dump.registrations, producer: "vm-method-table")
+    end
+
+    # Take the mapping from one index and the provenance from another.
+    #
+    # The runtime dump is authoritative about what exists and what it
+    # dispatches to; it reads the tables the VM will use.  The source scan is
+    # the only producer that knows where a registration was written, because
+    # a method table holds a function pointer and not a source line.
+    #
+    # A scan record is grafted on only when it agrees about the C function.
+    # Where it does not, it is a record about some other registration -- the
+    # method being #ifdef'd out of this build, say -- and its file and line
+    # would send a reader to the wrong place.  Those disagreements are what
+    # a differential check between the two producers is for; this merge
+    # simply declines to paper over them.
+    def self.merge(runtime, source)
+      scanned = source.registrations.group_by { |r| [r.klass, r.singleton, r.name] }
+
+      merged = runtime.registrations.map do |r|
+        s = (scanned[[r.klass, r.singleton, r.name]] || []).find { |c| c.func == r.func }
+        next r.dup unless s
+
+        m = r.dup
+        m.file, m.line, m.via = s.file, s.line, s.via
+        m.alias_of ||= s.alias_of
+        m
+      end
+
+      Index.new(merged, producer: "#{runtime.producer}+#{source.producer}")
     end
 
     # func name => "path:line" for every C function the binary has debug info
@@ -247,7 +315,7 @@ module MRuby
     # Shared by this CLI and method_uftrace.rb --list so the two cannot drift.
     def self.render_table(rows, out = $stdout)
       kw = rows.map { |r| r.key.length }.max
-      fw = rows.map { |r| r.func.length }.max
+      fw = rows.map { |r| r.entry.length }.max
       # The registration column is only padded once there is a column after
       # it to line up against.
       defs = rows.any?(&:definition)
@@ -256,14 +324,14 @@ module MRuby
         note = r.alias_of ? "  (alias of #{r.alias_of})" : ""
         where = defs ? "  #{r.location.to_s.ljust(lw)}" : (r.location ? "  #{r.location}" : "")
         defn = r.definition ? "  #{r.definition}" : ""
-        out.puts format("%-#{kw}s  %-#{fw}s%s%s%s", r.key, r.func, where, defn, note).rstrip
+        out.puts format("%-#{kw}s  %-#{fw}s%s%s%s", r.key, r.entry, where, defn, note).rstrip
       end
       out.puts "\n#{rows.size} methods, #{rows.map(&:klass).uniq.size} classes"
     end
 
     def self.render_tsv(rows, out = $stdout)
       rows.each do |r|
-        out.puts [r.key, r.func, r.kind, r.location, r.definition, r.via, r.alias_of]
+        out.puts [r.key, r.entry, r.kind, r.location, r.definition, r.via, r.alias_of]
           .map(&:to_s).join("\t")
       end
     end
@@ -649,12 +717,210 @@ module MRuby
   end
 end
 
+# -------------------------------------------------------- runtime producer
+
+module MRuby
+  module MethodIndex
+    # Builds an index from a build's own method tables.
+    #
+    # mrbgems/mruby-bin-mtdump opens an mrb_state and writes out every class's
+    # table; this reads that back.  Nothing here is inferred: the owning class
+    # is the table the method is in, a method exists only if this build
+    # registered it, and an alias is an entry rather than a name to match up.
+    #
+    # The one thing that does need work is turning a function pointer into a
+    # name.  The dump reports runtime addresses, which say nothing on their
+    # own once the loader has placed a position-independent executable
+    # somewhere, so it also reports the runtime address of one named anchor
+    # function.  The difference between the two is the load bias, and
+    # subtracting it puts every other address back where `nm` can name it.
+    #
+    # Addresses are resolved against the dumper's own binary, not against
+    # bin/mruby: they are two links of the same library and place the same
+    # functions differently.  Only the resulting names cross between them.
+    class RuntimeDump
+      DUMP_VERSION = 1
+
+      # nm's letters for code: text, and weak text.
+      CODE_TYPES = "tTwW"
+
+      ESCAPES = { "t" => "\t", "n" => "\n", "r" => "\r", "\\" => "\\" }.freeze
+
+      attr_reader :registrations, :stats, :unresolved
+
+      # `dump` is for feeding in text that was captured earlier; by default
+      # the binary is run.
+      def initialize(binary, dump: nil)
+        @binary = binary
+        @registrations = []
+        @unresolved = []
+        @stats = {}
+        parse(dump || capture(binary))
+        resolve_aliases!
+      end
+
+      private
+
+      def capture(binary)
+        unless File.file?(binary) && File.executable?(binary)
+          raise ArgumentError, <<~MSG.chomp
+            method table dumper not found: #{binary}
+            Build one with:  MRUBY_CONFIG=host-gprof rake
+          MSG
+        end
+
+        out = IO.popen([binary], &:read)
+        raise ArgumentError, "#{binary} exited #{$?.exitstatus}" unless $?.success?
+
+        out
+      end
+
+      def unescape(s)
+        s.to_s.gsub(/\\(.)/) { ESCAPES[Regexp.last_match(1)] || Regexp.last_match(1) }
+      end
+
+      def relative(path)
+        path.sub(%r{\A#{Regexp.escape(ROOT)}/}, "")
+      end
+
+      def parse(text)
+        version = nil
+        anchor = nil
+        rows = []
+
+        text.each_line do |line|
+          fields = line.chomp.split("\t", -1)
+          case fields[0]
+          when "!mtdump"
+            version = fields[1].to_i
+          when "!anchor"
+            anchor = [fields[1], Integer(fields[2], 16)]
+          when "!stats"
+            fields.drop(1).each do |f|
+              k, _, v = f.partition("=")
+              @stats[k] = v.to_i
+            end
+          when "m"
+            rows << fields
+          end
+        end
+
+        unless version == DUMP_VERSION
+          raise ArgumentError,
+                "unsupported mtdump version #{version.inspect} (want #{DUMP_VERSION})"
+        end
+        raise ArgumentError, "#{@binary}: dump has no !anchor line" unless anchor
+        raise ArgumentError, "#{@binary}: dump has no methods" if rows.empty?
+
+        by_addr, by_name = symbols
+        base = by_name[anchor[0]]
+        unless base
+          raise ArgumentError,
+                "#{@binary}: anchor symbol #{anchor[0]} is not in the symbol table; " \
+                "the binary is stripped, or is not the one that produced the dump"
+        end
+        bias = anchor[1] - base
+
+        rows.each { |fields| @registrations << record(fields, by_addr, bias) }
+      end
+
+      def record(fields, by_addr, bias)
+        _, klass, sep, name, kind, target, origin = fields
+        reg = Registration.new(
+          klass: unescape(klass), singleton: sep == ".", name: unescape(name),
+          kind: kind, rom: origin == "rom" ? true : origin == "heap" ? false : nil
+        )
+        target = unescape(target)
+
+        case kind
+        when "cfunc"
+          sym = by_addr[Integer(target, 16) - bias]
+          if sym
+            reg.func = sym
+          else
+            # Every entry in a -g build should be named.  Keep the record --
+            # the method does exist -- and say so rather than drop it.
+            @unresolved << "#{reg.key} #{target}"
+          end
+        when "proc"
+          if target =~ /\A(.*):(\d+)\z/
+            reg.def_file = relative(Regexp.last_match(1))
+            reg.def_line = Regexp.last_match(2).to_i
+          end
+        when "alias"
+          reg.alias_of = target
+        end
+
+        reg
+      end
+
+      # [addr => name, name => addr] for the code symbols of @binary.
+      def symbols
+        by_addr = {}
+        by_name = {}
+        out = IO.popen(["nm", "--defined-only", @binary], err: File::NULL, &:read)
+        out.to_s.each_line do |line|
+          addr, type, name = line.split(" ", 3)
+          next unless name && addr =~ /\A\h+\z/ && type.length == 1 && CODE_TYPES.include?(type)
+
+          name = name.strip
+          a = addr.to_i(16)
+          by_name[name] ||= a
+          cur = by_addr[a]
+          by_addr[a] = name if cur.nil? || better_symbol?(name, cur)
+        end
+        [by_addr, by_name]
+      rescue SystemCallError => e
+        raise ArgumentError, "cannot read the symbol table of #{@binary}: #{e.message}"
+      end
+
+      # Two names can sit at one address -- a weak alias, or an optimizer
+      # clone next to the function it came from.  Prefer the plain name, and
+      # otherwise pick by a rule rather than by whichever nm printed first, so
+      # that two runs agree.
+      def better_symbol?(a, b)
+        rank = ->(n) { [n.include?(".") ? 1 : 0, n.length, n] }
+        (rank.call(a) <=> rank.call(b)) < 0
+      end
+
+      # An alias entry forwards to a name, not to a body.  Follow it to the
+      # method it ends at and adopt what that one dispatches to, keeping
+      # alias_of so the indirection stays visible.
+      def resolve_aliases!
+        by_key = @registrations.group_by { |r| [r.klass, r.singleton, r.name] }
+
+        @registrations.each do |r|
+          next unless r.kind == "alias"
+
+          seen = { r.name => true }
+          target = r
+          while target && target.kind == "alias"
+            nxt = (by_key[[r.klass, r.singleton, target.alias_of]] || []).first
+            break if nxt.nil? || seen[nxt.name]
+
+            seen[nxt.name] = true
+            target = nxt
+          end
+          next if target.nil? || target.equal?(r) || target.kind == "alias"
+
+          r.func = target.func
+          r.kind = target.kind
+          r.def_file, r.def_line = target.def_file, target.def_line
+        end
+      end
+    end
+  end
+end
+
 # ------------------------------------------------------------------- CLI
 
 if $PROGRAM_NAME == __FILE__
   require "optparse"
 
-  opts = { format: "table", klass: nil, grep: nil, sources: nil, index: nil, binary: nil, producer: false }
+  opts = {
+    format: "table", klass: nil, grep: nil, sources: nil, index: nil,
+    binary: nil, producer: false, runtime: nil, merge: false,
+  }
 
   OptionParser.new do |o|
     o.banner = "Usage: ruby tools/mruby_method_index.rb [options]"
@@ -663,17 +929,35 @@ if $PROGRAM_NAME == __FILE__
     o.on("--grep=PATTERN", "filter by method name or C function") { |v| opts[:grep] = v }
     o.on("--sources=GLOBS", "comma-separated C source globs") { |v| opts[:sources] = v.split(",") }
     o.on("--index=PATH", "read a previously written JSON index instead of scanning") { |v| opts[:index] = v }
+    o.on("--runtime[=PATH]", "build the index from a build's method tables",
+         "(default: #{MRuby::MethodIndex::DEFAULT_MTDUMP.sub(MRuby::MethodIndex::ROOT + '/', '')})") do |v|
+      opts[:runtime] = v || MRuby::MethodIndex::DEFAULT_MTDUMP
+    end
+    o.on("--merge", "take the mapping from --runtime and the registration sites from the source scan") do
+      opts[:merge] = true
+      opts[:runtime] ||= MRuby::MethodIndex::DEFAULT_MTDUMP
+    end
     o.on("--producer", "print which producer made the index, then exit") { opts[:producer] = true }
     o.on("--binary=PATH", "add each C function's definition site from this build's debug info") { |v| opts[:binary] = v }
     o.on("-h", "--help") { puts o; exit 0 }
   end.parse!
 
+  abort "--index already holds a built index; --runtime would discard it" if opts[:index] && opts[:runtime]
+
   index =
     begin
+      sources = opts[:sources] || MRuby::MethodIndex::DEFAULT_SOURCES
       if opts[:index]
         MRuby::MethodIndex.from_json(opts[:index])
+      elsif opts[:merge]
+        MRuby::MethodIndex.merge(
+          MRuby::MethodIndex.from_runtime(opts[:runtime]),
+          MRuby::MethodIndex.from_source(sources)
+        )
+      elsif opts[:runtime]
+        MRuby::MethodIndex.from_runtime(opts[:runtime])
       else
-        MRuby::MethodIndex.from_source(opts[:sources] || MRuby::MethodIndex::DEFAULT_SOURCES)
+        MRuby::MethodIndex.from_source(sources)
       end
     rescue ArgumentError, Errno::ENOENT, JSON::ParserError => e
       abort e.message
