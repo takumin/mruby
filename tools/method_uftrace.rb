@@ -220,6 +220,10 @@ datadir = File.join(outdir, "data")
 runner = File.join(outdir, "case.rb")
 
 record_cmd = ["uftrace", "record"]
+# --srcline is a record-time option: it decides whether the source line of
+# each call is stored at all.  Passing it only to replay, as this once did,
+# leaves the SOURCE column empty no matter what replay asks for.
+record_cmd << "--srcline"
 record_cmd << "-P." if opts[:patch_all]
 record_cmd << "-l" if opts[:nest_libcall]
 record_cmd << "-a" if opts[:auto_args]
