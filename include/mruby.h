@@ -189,6 +189,22 @@ typedef struct {
   } u;
 } mrb_callinfo;
 
+#ifdef MRB_USE_CALL_HOOK
+/**
+ * Function pointer type for the call frame hooks of `mrb_state`.
+ *
+ * The enter hook runs when a call frame is pushed, before the method is
+ * looked up; `ci->mid` and `ci->proc` are not filled in yet at that point.
+ * The leave hook runs just before the frame is popped, when both are known.
+ * Frames of the whole call stack (`mrb->c->cibase` up to `ci`) are still
+ * alive while either hook runs.
+ *
+ * @param mrb The mruby state
+ * @param ci The call frame being entered or left
+ */
+typedef void (*mrb_call_hook_func)(mrb_state *mrb, const mrb_callinfo *ci);
+#endif
+
 enum mrb_fiber_state {
   MRB_FIBER_CREATED = 0,
   MRB_FIBER_RUNNING,
@@ -369,6 +385,12 @@ struct mrb_state {
 #ifdef MRB_USE_DEBUG_HOOK
   void (*code_fetch_hook)(mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs);
   void (*debug_op_hook)(mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs);
+#endif
+
+#ifdef MRB_USE_CALL_HOOK
+  mrb_call_hook_func call_enter_hook;
+  mrb_call_hook_func call_leave_hook;
+  void *call_hook_ud;                     /* auxiliary data for the call hooks */
 #endif
 
 #ifdef MRB_BYTECODE_DECODE_OPTION

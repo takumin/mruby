@@ -51,6 +51,15 @@ end
 - Fetch hook will be called before any OP.
 - Debug OP hook will be called when dispatching `OP_DEBUG`.
 
+`MRB_USE_CALL_HOOK`
+
+- When defined the call frame hooks will be enabled.
+- When using them set the function pointer `call_enter_hook` and/or `call_leave_hook` of `mrb_state`; `call_hook_ud` is free for the hooks to keep their own data in.
+- Enter hook will be called when a call frame is pushed, before the method is looked up, so `ci->mid` and `ci->proc` are not filled in yet.
+- Leave hook will be called just before a call frame is popped, when both are known.
+- The whole call stack, `mrb->c->cibase` up to the frame in hand, is alive while either hook runs.
+- Profilers and tracers use these; **mrbgems/mruby-trace** is one.
+
 `MRB_DEBUG`
 
 - When defined `mrb_assert*` macro will be defined with macros from `<assert.h>`.

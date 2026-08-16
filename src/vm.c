@@ -382,6 +382,18 @@ mrb_vm_ci_env_clear(mrb_state *mrb, mrb_callinfo *ci)
 
 #define BLK_PTR(b) ((mrb_proc_p(b)) ? mrb_proc_ptr(b) : NULL)
 
+#ifdef MRB_USE_CALL_HOOK
+#define CALL_ENTER_HOOK(mrb, ci) do { \
+  if ((mrb)->call_enter_hook) (mrb)->call_enter_hook((mrb), (ci)); \
+} while (0)
+#define CALL_LEAVE_HOOK(mrb, ci) do { \
+  if ((mrb)->call_leave_hook) (mrb)->call_leave_hook((mrb), (ci)); \
+} while (0)
+#else
+#define CALL_ENTER_HOOK(mrb, ci) ((void)0)
+#define CALL_LEAVE_HOOK(mrb, ci) ((void)0)
+#endif
+
 static inline mrb_callinfo*
 cipush(mrb_state *mrb, mrb_int push_stacks, uint8_t cci, struct RClass *target_class,
        const struct RProc *proc, struct RProc *blk, mrb_sym mid, uint16_t argc)
@@ -411,6 +423,7 @@ cipush(mrb_state *mrb, mrb_int push_stacks, uint8_t cci, struct RClass *target_c
   ci->cci = cci;
   ci->vis = MRB_METHOD_PUBLIC_FL;
   ci->u.target_class = target_class;
+  CALL_ENTER_HOOK(mrb, ci);
 
   return ci;
 }
@@ -510,6 +523,8 @@ cipop(mrb_state *mrb)
 {
   struct mrb_context *c = mrb->c;
   mrb_callinfo *ci = c->ci;
+
+  CALL_LEAVE_HOOK(mrb, ci);
 
   /* Fast path: no env and no blk (most common for simple method calls) */
   if (mrb_likely((!ci->u.env || ci->u.env->tt != MRB_TT_ENV) && !ci->blk)) {
@@ -2995,6 +3010,7 @@ RETRY_TRY_BLOCK:
           if (f == mrb_attr_reader && ci->n == 0 &&
               mrb_symbol_p(name = MRB_PROC_ENV(p)->stack[0])) {
             mrb_value va = mrb_iv_get(mrb, recv, mrb_symbol(name));
+            CALL_LEAVE_HOOK(mrb, ci);
             mrb->c->ci--;       /* fresh frame: no env, no blk */
             ci = mrb->c->ci;
             regs[a] = va;
@@ -3005,6 +3021,7 @@ RETRY_TRY_BLOCK:
               mrb_symbol_p(name = MRB_PROC_ENV(p)->stack[0])) {
             mrb_value va = regs[1];
             mrb_obj_iv_set_force(mrb, mrb_obj_ptr(recv), mrb_symbol(name), va);
+            CALL_LEAVE_HOOK(mrb, ci);
             mrb->c->ci--;       /* fresh frame: no env, no blk */
             ci = mrb->c->ci;
             regs[a] = va;
