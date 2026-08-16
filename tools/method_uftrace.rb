@@ -209,11 +209,14 @@ MethodIndex.annotate_definitions!(index, bin) if have_bin
 safe_class = info.klass.gsub("::", ".").gsub(/[^A-Za-z0-9_.]+/, "_")
 # Operators get the same directory name mruby's own presym table gives them,
 # so String#[] lands in aref and Integer#** in pow.
+# Underscores the name itself carries are kept: gems park the C half of a
+# method under a __-prefixed name -- String#rindex is Ruby in a full-core
+# build and its C function answers to String#__rindex -- and trimming them
+# would drop the two traces in the same directory.
 safe_method = MethodIndex::OPERATORS[info.name] ||
   info.name
     .gsub("!", "_bang").gsub("?", "_p").gsub("=", "_set")
     .gsub(/[^A-Za-z0-9_.-]+/, "_")
-    .gsub(/\A_+|_+\z/, "")
 safe_method = "s_#{safe_method}" if info.singleton
 safe_method = "method" if safe_method.empty?
 
