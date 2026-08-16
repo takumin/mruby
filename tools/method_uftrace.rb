@@ -293,6 +293,10 @@ puts "C root      : #{root}#{root == info.func ? '' : " (was #{info.func})"}"
 puts "Defined     : #{info.definition}" if info.definition
 puts "Registered  : #{info.location} via #{info.via}" if info.location
 puts "Aliased from: #{info.alias_of}" if info.alias_of
+# The recording is of a C function, not of a method: every method reaching it
+# lands in the same trace, and nothing in the output says which one was
+# called.  Worth knowing before reading a graph of mrb_do_nothing.
+puts "Shared with : #{info.shared_with.join(', ')}" if info.shared_with
 puts "Binary      : #{bin}"
 puts "Expression  : #{opts[:expr]}" if opts[:expr]
 puts "Output      : #{outdir}"
@@ -351,6 +355,7 @@ File.write(File.join(outdir, "meta.txt"), [
   ("registration=#{info.location}" if info.location),
   ("via=#{info.via}" if info.via),
   ("alias_of=#{info.alias_of}" if info.alias_of),
+  ("shared_with=#{info.shared_with.join(' ')}" if info.shared_with),
   ("expr=#{opts[:expr]}" if opts[:expr]),
   ("script=#{opts[:script]}" if opts[:script]),
   "runs=#{opts[:runs]}",

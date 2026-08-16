@@ -16,6 +16,8 @@
 #   file line via                where the registration was written, when known
 #   alias_of                     the name this method was aliased from
 #   def_file def_line            where the body is written, when known
+#   shared_with                  other names of the same class reaching the
+#                                same C function; derived, see Index
 #
 # Two producers exist:
 #
@@ -84,7 +86,7 @@ module MRuby
     Registration = Struct.new(
       :klass, :singleton, :name, :func, :kind,
       :file, :line, :via, :alias_of,
-      :def_file, :def_line, :rom,
+      :def_file, :def_line, :rom, :shared_with,
       keyword_init: true
     ) do
       def key
@@ -116,6 +118,7 @@ module MRuby
           "func" => func, "kind" => kind,
           "file" => file, "line" => line, "via" => via, "alias_of" => alias_of,
           "def_file" => def_file, "def_line" => def_line, "rom" => rom,
+          "shared_with" => shared_with,
         }
       end
 
@@ -135,7 +138,8 @@ module MRuby
           klass: h["class"], singleton: !!h["singleton"], name: h["name"],
           func: h["func"], kind: h["kind"],
           file: h["file"], line: h["line"], via: h["via"], alias_of: h["alias_of"],
-          def_file: h["def_file"], def_line: h["def_line"], rom: h["rom"]
+          def_file: h["def_file"], def_line: h["def_line"], rom: h["rom"],
+          shared_with: h["shared_with"]
         )
       end
     end
@@ -147,12 +151,52 @@ module MRuby
       def initialize(registrations, producer:)
         @registrations = registrations.sort_by { |r| [r.klass, r.singleton ? 1 : 0, r.name] }
         @producer = producer
+        mark_shared_entries!
       end
 
       # key => [Registration, ...]
       def by_key
         @by_key ||= @registrations.group_by(&:key)
       end
+
+      # Which other methods of the same class reach the same C function.
+      #
+      # A method table holds a function pointer, and several names in one
+      # class can hold the same one.  Three different things produce that,
+      # and none of them can be told from the others by the pointer alone:
+      #
+      #   alias append push          # mrb_alias_method copies the entry
+      #                              # verbatim for a cfunc (src/class.c),
+      #                              # so no alias proc records the fact
+      #   Array#<< and Array#push    # two registrations, one implementation
+      #   Module#included, #extended # six distinct hooks, all mrb_do_nothing
+      #
+      # So this says what is true of all three -- these names arrive at one
+      # C function -- and does not guess a direction.  For the tracing tools
+      # that is the operative fact anyway: a trace of mrb_hash_has_key cannot
+      # tell you whether Hash#key?, #has_key?, #include? or #member? was
+      # called, and a method whose registration site is missing because it
+      # was aliased in mrblib is explained by the name it shares.
+      #
+      # Derived rather than reported by a producer, so it is recomputed for
+      # every index.  It unions with what a record already carries: .merge
+      # adds the names only the sources know about, and a file written after
+      # that carries them where a fresh scan of these records would not.
+      def mark_shared_entries!
+        @registrations
+          .select { |r| r.func && r.kind != "proc" }
+          .group_by { |r| [r.klass, r.singleton, r.func] }
+          .each_value do |group|
+            names = group.map(&:name).uniq.sort
+            next if names.size < 2
+
+            group.each do |r|
+              others = names - [r.name]
+              r.shared_with = ((r.shared_with || []) | others).sort unless others.empty?
+            end
+          end
+      end
+      private :mark_shared_entries!
 
       def classes
         @classes ||= @registrations.map(&:klass).uniq.sort
@@ -251,12 +295,26 @@ module MRuby
     # simply declines to paper over them.
     def self.merge(runtime, source)
       scanned = source.registrations.group_by { |r| [r.klass, r.singleton, r.name] }
+      by_func = source.registrations.group_by { |r| [r.klass, r.singleton, r.func] }
 
       merged = runtime.registrations.map do |r|
-        s = (scanned[[r.klass, r.singleton, r.name]] || []).find { |c| c.func == r.func }
-        next r.dup unless s
-
         m = r.dup
+
+        # A name the sources register this C function under, other than this
+        # one.  The runtime pass finds most of these on its own, but not when
+        # the name it was aliased from has since been replaced: mruby-regexp
+        # takes `alias __aref []` and then defines String#[] in Ruby, so the
+        # table has no other cfunc entry left holding mrb_str_aref_m.  The
+        # scan still remembers which name it was written under.
+        if m.func
+          others = (by_func[[m.klass, m.singleton, m.func]] || [])
+                   .map(&:name).uniq - [m.name]
+          m.shared_with = ((m.shared_with || []) | others).sort unless others.empty?
+        end
+
+        s = (scanned[[r.klass, r.singleton, r.name]] || []).find { |c| c.func == r.func }
+        next m unless s
+
         m.file, m.line, m.via = s.file, s.line, s.via
         m.alias_of ||= s.alias_of
         m
@@ -322,7 +380,9 @@ module MRuby
       defs = rows.any?(&:definition)
       lw = defs ? rows.map { |r| r.location.to_s.length }.max : 0
       rows.each do |r|
-        note = r.alias_of ? "  (alias of #{r.alias_of})" : ""
+        note = +""
+        note << "  (aliased from #{r.alias_of})" if r.alias_of
+        note << "  (shared with #{r.shared_with.join(', ')})" if r.shared_with
         where = defs ? "  #{r.location.to_s.ljust(lw)}" : (r.location ? "  #{r.location}" : "")
         defn = r.definition ? "  #{r.definition}" : ""
         out.puts format("%-#{kw}s  %-#{fw}s%s%s%s", r.key, r.entry, where, defn, note).rstrip
@@ -332,8 +392,8 @@ module MRuby
 
     def self.render_tsv(rows, out = $stdout)
       rows.each do |r|
-        out.puts [r.key, r.entry, r.kind, r.location, r.definition, r.via, r.alias_of]
-          .map(&:to_s).join("\t")
+        out.puts [r.key, r.entry, r.kind, r.location, r.definition, r.via,
+                  r.alias_of, r.shared_with&.join(" ")].map(&:to_s).join("\t")
       end
     end
   end
