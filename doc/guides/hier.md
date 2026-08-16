@@ -56,4 +56,6 @@
     |   +- 📁 t/                mruby test cases.
     |
     +- 📁 tools/                Helper scripts used when building mruby.
+        |
+        +- 📁 audit/            Cases and runner for the String / Regexp behavior audit.
 ```
