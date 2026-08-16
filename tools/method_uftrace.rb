@@ -618,14 +618,14 @@ if symbols
 end
 
 safe_class = info.klass.gsub("::", ".").gsub(/[^A-Za-z0-9_.]+/, "_")
-safe_method = info.name
-  .gsub("[]=", "aset").gsub("[]", "aref")
-  .gsub("<=>", "cmp").gsub("===", "eqq").gsub("==", "eq").gsub("=~", "match")
-  .gsub("<<", "lshift").gsub(">>", "rshift")
-  .gsub("!", "_bang").gsub("?", "_p").gsub("=", "_set")
-  .gsub(/[^A-Za-z0-9_.-]+/, "_")
-  .gsub(/\A_+|_+\z/, "")
-safe_method = info.singleton ? "s_#{safe_method}" : safe_method
+# Operators get the same directory name mruby's own presym table gives them,
+# so String#[] lands in aref and Integer#** in pow.
+safe_method = OPERATORS[info.name] ||
+  info.name
+    .gsub("!", "_bang").gsub("?", "_p").gsub("=", "_set")
+    .gsub(/[^A-Za-z0-9_.-]+/, "_")
+    .gsub(/\A_+|_+\z/, "")
+safe_method = "s_#{safe_method}" if info.singleton
 safe_method = "method" if safe_method.empty?
 
 outdir = File.expand_path(File.join(opts[:out], safe_class, safe_method))
