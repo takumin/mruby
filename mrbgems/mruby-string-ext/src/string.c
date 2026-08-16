@@ -1440,7 +1440,7 @@ static mrb_bool
 str_folds_beyond_ascii(mrb_value str)
 {
   struct RString *s = mrb_str_ptr(str);
-  return RSTR_CODERANGE(s) != MRB_STR_CODERANGE_7BIT && !RSTR_BINARY_P(s);
+  return !RSTR_SINGLE_BYTE_P(s);
 }
 
 /* Fold the one side the tables have nothing to say about. Only one of the two
