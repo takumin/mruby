@@ -386,6 +386,73 @@ When debugging mode is enabled
   - Because `-g` flag would be added to `mrbc` runner.
     - You can have better backtrace of mruby scripts with this.
 
+### Build information
+
+A build normally leaves nothing in its binaries to say which sources it came
+from. To record that, add the following:
+
+```ruby
+conf.enable_build_info
+```
+
+The commit the tree was at and a digest over the sources that went into the
+target are then written into the binaries, and can be read back three ways:
+
+```console
+$ strings build/host/bin/mruby | grep mruby-build-info:
+mruby-build-info:1 target=host commit=<sha1> dirty=0 source-digest=sha256:<hex>
+
+$ build/host/bin/mruby -e 'puts MRUBY_BUILD_INFO'   # also MRUBY_BUILD_COMMIT,
+mruby-build-info:1 target=host commit=...           # MRUBY_BUILD_SOURCE_DIGEST
+```
+
+and from C, with `MRB_USE_BUILD_INFO` defined, through `mrb_build_info()`,
+`mrb_build_commit()`, `mrb_build_source_digest()` and `mrb_build_dirty()` in
+`mruby/build_info.h`.
+
+The `strings` route is the one that keeps working when the binary cannot be
+run: a target built for another machine, or one left behind by a run that died
+part way through.
+
+The digest covers the sources this target is built from: `include`, `src`,
+`mrblib`, the build system in `lib` and `tasks`, and the directory of every gem
+in the build. It does not cover how they were built, so two builds of the same
+sources with different compiler flags share a digest and differ as binaries.
+What the digest is taken over is written to `<build_dir>/source_manifest.sha256`
+in `sha256sum` format; two builds whose digests differ can be diffed there down
+to the file that changed.
+
+`dirty` reports whether the tree carried changes the commit does not describe
+(`unknown` when there is no git to ask). It is the readable warning that the
+commit alone does not pin the sources down; the digest is what actually does.
+
+The values are location independent, so recording them does not stop a build
+from being reproducible. What it does cost is that a commit changes the
+binaries whether or not it touched anything that gets compiled, and that each
+`rake` invocation reads the sources through to compute the digest.
+
+### Reproducible builds
+
+Two builds of the same sources produce identical binaries already, as long as
+they are built at the same path. The default `-g` writes the compile directory
+into the debug information, and `__FILE__` in assertions writes the path into
+the binary itself, so a build made under a different path differs.
+
+Mapping the tree root to a fixed name takes the path back out:
+
+```ruby
+conf.compilers.each { |c| c.flags << "-ffile-prefix-map=#{conf.root}=/mruby" }
+```
+
+This needs GCC 8 or later, or Clang 10 or later. Older compilers have
+`-fdebug-prefix-map`, which covers the debug information but leaves `__FILE__`
+alone.
+
+`build_config/reproducible.rb` is a configuration with both this and
+`enable_build_info` in it, which together make binaries that can be compared
+across machines and traced back to the sources they came from — what it takes
+to hold a benchmark result against the code that produced it.
+
 ## Cross-Compilation
 
 mruby can also be cross-compiled from one platform to another. To achieve
