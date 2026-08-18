@@ -344,8 +344,7 @@ regexp_check_byte_pos(mrb_state *mrb, mrb_value self)
 }
 
 /* Publish `obj` and the thirteen names derived from its offsets, the
-   counterpart of clear_match_globals(). Kept apart from create_matchdata() so
-   that an existing MatchData can be republished without rebuilding it. */
+   counterpart of clear_match_globals(). */
 static void
 set_match_globals(mrb_state *mrb, mrb_value obj, mrb_value str, int *captures, int num_captures)
 {
@@ -1087,20 +1086,6 @@ matchdata_byte_end(mrb_state *mrb, mrb_value self)
   return mrb_int_value(mrb, pos);
 }
 
-/* Private: republish $~ and the thirteen names derived from it. Used by the
-   mrblib loops that drive Regexp.__byte_search themselves, where the failing
-   call that ends the loop clears the match the loop is supposed to leave behind.
-   The names other than $~ are not assignable from Ruby, so restoring them
-   has to come from here. */
-static mrb_value
-matchdata_set_globals(mrb_state *mrb, mrb_value self)
-{
-  mrb_match_data *md = DATA_GET_PTR(mrb, self, &matchdata_type, mrb_match_data);
-  if (!md) return mrb_nil_value();
-  set_match_globals(mrb, self, md->source, md->captures, md->num_captures);
-  return self;
-}
-
 /*
  * MatchData#pre_match / #post_match
  */
@@ -1774,7 +1759,6 @@ mrb_mruby_regexp_gem_init(mrb_state *mrb)
   mrb_define_method(mrb, md, "end", matchdata_end, MRB_ARGS_REQ(1));
   mrb_define_method(mrb, md, "__byte_begin", matchdata_byte_begin, MRB_ARGS_REQ(1));
   mrb_define_method(mrb, md, "__byte_end", matchdata_byte_end, MRB_ARGS_REQ(1));
-  mrb_define_method(mrb, md, "__set_globals", matchdata_set_globals, MRB_ARGS_NONE());
   mrb_define_method(mrb, md, "pre_match", matchdata_pre, MRB_ARGS_NONE());
   mrb_define_method(mrb, md, "post_match", matchdata_post, MRB_ARGS_NONE());
   mrb_define_method(mrb, md, "named_captures", matchdata_named_captures, MRB_ARGS_NONE());
