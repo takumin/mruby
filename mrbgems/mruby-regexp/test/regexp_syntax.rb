@@ -1310,6 +1310,16 @@ assert("Regexp - octal and hex escapes") do
   assert_equal 0, (/[\x41]/ =~ "A")
   assert_equal 0, (/[\101]/ =~ "A")
   assert_equal 0, (/\x7/ =~ "\a")
+
+  # three octal digits can spell more than a byte, which is refused rather
+  # than folded to one, inside a class and out
+  assert_kind_of Regexp, Regexp.new('\377')
+  assert_raise_with_message(RegexpError, "invalid escape code: /\\400/") do
+    Regexp.new('\400')
+  end
+  assert_raise_with_message(RegexpError, "invalid escape code: /[\\400]/") do
+    Regexp.new('[\400]')
+  end
 end
 
 assert("Regexp - a digit escape is a backreference or an octal escape by the group count") do
