@@ -540,10 +540,11 @@ regexp_s_search(mrb_state *mrb, mrb_value klass)
  * Internal: the byte-offset search the mrblib loops of `gsub`, `split` and
  * `byteindex` drive themselves. No position normalization, because the
  * callers already work in byte space, and no operand conversion, because
- * they always pass a String. The subject is the one the loop holds fixed, so
- * the check reads the flag core left on it after the first turn. `checked`
- * carries the same meaning as in `__search`: `gsub` sets it for a block over
- * a quoted String pattern.
+ * they always pass a String. The subject is the one the loop holds, so the
+ * check reads the flag core left on it after the first turn, and walks it
+ * again only where a block has written to it in between. `checked` carries
+ * the same meaning as in `__search`: `gsub` sets it for a block over a quoted
+ * String pattern.
  */
 static mrb_value
 regexp_s_byte_search(mrb_state *mrb, mrb_value klass)

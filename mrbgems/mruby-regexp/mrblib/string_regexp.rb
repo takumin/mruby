@@ -149,18 +149,31 @@ class String
     # Whether a substitution happened is a question about the match, not about
     # the result: `"aaa".sub!(/a/, "a")` returns self even though the string is
     # unchanged.  A full search and not `match?`, so a failed match clears $~.
-    return nil unless Regexp.__search(pattern, self, 0, literal)
-    # `sub` matches again and publishes its own $~ over this one, leaving the
-    # caller the match `sub` would have left, a block's own matches included.
-    # The resolved pattern takes the place of the original argument so that a
-    # String is not quoted and compiled a second time; a literal goes down as
-    # the String it was instead, since that is what tells `sub` to leave the
-    # subject unread, and quoting it twice is the price of saying so.
-    # Overwriting `self` afterwards is safe: a MatchData snapshots its subject,
-    # so $~ keeps describing the string as it was matched.
-    down = literal ? args[0] : pattern
-    str = args.length == 2 ? self.sub(down, args[1], &block) : self.sub(down, &block)
-    self.replace(str)
+    md = Regexp.__search(pattern, self, 0, literal)
+    return nil unless md
+    if args.length == 2
+      # `sub` matches again and publishes its own $~ over this one, leaving
+      # the caller the match `sub` would have left.  The resolved pattern
+      # takes the place of the original argument so that a String is not
+      # quoted and compiled a second time; a literal goes down as the String
+      # it was instead, since that is what tells `sub` to leave the subject
+      # unread, and quoting it twice is the price of saying so.  Overwriting
+      # `self` afterwards is safe: a MatchData snapshots its subject, so $~
+      # keeps describing the string as it was matched.
+      return self.replace(self.sub(literal ? args[0] : pattern, args[1]))
+    end
+    # The block form does not go down to `sub`, which builds its answer from
+    # the snapshot the MatchData holds, because CRuby's `rb_str_sub_bang`
+    # builds it from the receiver as the block left it: `s = "hello";
+    # s.sub!(/l/) { s.upcase!; "X" }` is "HEXLO" there, where `sub` on the
+    # same receiver is "heXlo".  It refuses a block that changed the length
+    # first, as `gsub` does, so the offsets of the match still name the bytes
+    # they named.  $~ stays what the search above published, or whatever the
+    # block put there.
+    len = self.bytesize
+    val = block.call(md[0]).to_s
+    raise RuntimeError, "string modified" if self.bytesize != len
+    self.replace(self.byteslice(0, md.__byte_begin(0)) + val + self.byteslice(md.__byte_end(0)..-1))
   end
 
   def gsub(*args, &block)
@@ -188,21 +201,33 @@ class String
     pos = 0
     len = self.bytesize
     binary = Regexp.__binary_string?(self)
-    # The loop normally ends on a failed __byte_search, which clears $~ and
-    # the thirteen names that go with it. CRuby leaves the last match behind,
-    # so keep it and republish it below. A gsub that matched nothing has
-    # nothing to restore and keeps the cleared state, as CRuby does.
+    # The block can reach the receiver, and CRuby's `str_gsub` answers for a
+    # block that changes it in three ways this loop follows. It refuses one
+    # that changed the length (`str_mod_check` compares the buffer pointer
+    # too, which nothing here can read; the length is what remains of the
+    # test), so the offsets a match answered with still name the same bytes.
+    # It reads the stretch before a match, the next match and the step over
+    # an empty one from the string the block left, so `s = "hello"; s.gsub(/l/)
+    # { s.tr!("h", "H"); "X" }` is "HeXXo" and not "heXXo": the copy of what
+    # lies before a match waits until the block has run. And it searches once
+    # more from `last`, the offset the final match was found from, on the
+    # string as it stands at the end: that is the match it leaves in $~, or
+    # nil where the block wrote the match away. The search also republishes
+    # what the failed one that ends the loop clears; a gsub that matched
+    # nothing keeps that cleared state, as in CRuby.
     last = nil
     while pos <= len
       md = Regexp.__byte_search(pattern, self, pos, literal)
       break unless md
-      last = md
+      last = pos
       # gsub works in byte space (match pos, byteslice). begin/end report
       # character offsets (CRuby-compatible), so use the byte accessors.
       match_start = md.__byte_begin(0)
       match_end = md.__byte_end(0)
+      val = block.call(md[0]).to_s
+      raise RuntimeError, "string modified" if self.bytesize != len
       parts << self.byteslice(pos, match_start - pos)
-      parts << block.call(md[0]).to_s
+      parts << val
       if match_start == match_end
         if match_end < len
           if binary
@@ -222,7 +247,7 @@ class String
       end
     end
     parts << self.byteslice(pos..-1)
-    last.__set_globals if last
+    Regexp.__byte_search(pattern, self, last, literal) if last
     parts.join
   end
 
