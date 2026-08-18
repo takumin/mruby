@@ -612,6 +612,90 @@ assert("Regexp extended mode (x flag)") do
   end
 end
 
+assert("Regexp - free-spacing does not reach into an escape") do
+  # The pass that removes /x whitespace and (?#...) groups runs before the
+  # parser, so bytes it removes from inside an escape leave the parser a
+  # different escape. CRuby reads the escape as written and rejects it,
+  # and so must the pass: it steps over the whole escape, digits included.
+  x = Regexp::EXTENDED
+
+  # \uXXXX is exactly four hex digits, and \u{...} keeps its own spaces
+  ["\\u {61 62}", "\\u1 234", "\\u12 34", "\\u00 61", "\\u\t{61 62}",
+   "\\u 0061", "[\\u12 34]"].each do |pat|
+    assert_raise_with_message(RegexpError, "invalid Unicode escape: /#{pat}/") do
+      Regexp.new(pat, x)
+    end
+  end
+  ["\\u(?#c){61}", "\\u12(?#c)34"].each do |pat|
+    assert_raise_with_message(RegexpError, "invalid Unicode escape: /#{pat}/") do
+      Regexp.new(pat)
+    end
+  end
+  # nothing after \u is "too short", a wrong byte after it "invalid"; the
+  # byte the pass would remove is still the byte that is reported
+  assert_raise_with_message(RegexpError, "invalid Unicode escape: /\\u /") do
+    Regexp.new("\\u ", x)
+  end
+  assert_raise_with_message(RegexpError, "too short escape sequence: /\\u/") do
+    Regexp.new("\\u", x)
+  end
+  assert_equal ["ab"], Regexp.new("\\u0061 \\u0062", x).match("ab").to_a
+  assert_equal ["ab"], Regexp.new("\\u0061(?#c)\\u0062").match("ab").to_a
+  assert_equal ["ab"], Regexp.new("\\u{ 61  62 }", x).match("ab").to_a
+  assert_equal ["ab"], Regexp.new("\\u{61}(?#c)\\u{62}").match("ab").to_a
+  assert_raise(RegexpError) { Regexp.new("\\u{61(?#c)62}") }
+  assert_raise(RegexpError) { Regexp.new("\\u{61 #c\n62}", x) }
+
+  # \x is one or two hex digits, and needs the one; the pass writes a
+  # one-digit escape as two so that a digit it brings next cannot join it
+  assert_raise_with_message(RegexpError, "invalid hex escape: /\\x 61/") do
+    Regexp.new("\\x 61", x)
+  end
+  assert_raise_with_message(RegexpError, "invalid hex escape: /\\x(?#c)61/") do
+    Regexp.new("\\x(?#c)61")
+  end
+  assert_equal ["\x061"], Regexp.new("\\x6 1", x).match("\x061").to_a
+  assert_equal ["\x061"], Regexp.new("\\x6(?#c)1").match("\x061").to_a
+  assert_nil Regexp.new("\\x6 1", x).match("a")
+  assert_equal ["\x06"], Regexp.new("[\\x6 1]", x).match("\x06").to_a
+  assert_equal ["1"], Regexp.new("[\\x6 1]", x).match("1").to_a
+
+  # \0 is up to three octal digits, and is written at full width the same way
+  assert_equal ["\x0061"], Regexp.new("\\0 61", x).match("\x0061").to_a
+  assert_equal ["\x061"], Regexp.new("\\06 1", x).match("\x061").to_a
+  assert_equal ["\x0061"], Regexp.new("\\0(?#c)61").match("\x0061").to_a
+  assert_nil Regexp.new("\\0 61", x).match("1")
+
+  # a group name is the raw bytes up to its terminator, whitespace included,
+  # so the pass leaves it alone: the name is "a b" whether it is declared or
+  # referenced, and a comment written inside it is still removed
+  assert_equal ["a b"], Regexp.new("(?<a b>x)", x).names
+  assert_equal ["a b"], Regexp.new("(?'a b'x)", x).names
+  assert_equal "xx", Regexp.new("(?<a b>x)\\k<a b>", x).match("xx")[0]
+  assert_equal "xx", Regexp.new("(?'a b'x)\\k'a b'", x).match("xx")[0]
+  assert_raise_with_message(RegexpError,
+                            "undefined name <a b> reference: /(?<ab>x)\\k<a b>/") do
+    Regexp.new("(?<ab>x)\\k<a b>", x)
+  end
+  assert_raise_with_message(RegexpError,
+                            "undefined name <ab> reference: /(?<a b>x)\\k<ab>/") do
+    Regexp.new("(?<a b>x)\\k<ab>", x)
+  end
+  assert_equal ["ab"], Regexp.new("(?<a(?#c)b>x)\\k<a(?#c)b>").names
+  assert_equal ["ab"], Regexp.new("(?<ab#c\n>x)\\k<ab#c\n>", x).names
+  assert_equal "xx", Regexp.new("(?<ab#c\n>x)\\k<ab#c\n>", x).match("xx")[0]
+
+  # a `\k` that whitespace follows is the letter k, and stays one after the
+  # whitespace goes; a comment between `\k` and its '<' is removed before
+  # the escape is read, as CRuby's own pre-pass removes it
+  assert_equal "xk<ab>", Regexp.new("(?<ab>x)\\k <ab>", x).match("xk<ab>")[0]
+  assert_equal "xk<ab>", Regexp.new("(?<ab>x)\\k\n<ab>", x).match("xk<ab>")[0]
+  assert_equal "xx", Regexp.new("(?<ab>x)\\k(?#c)<ab>").match("xx")[0]
+  assert_equal "xx", Regexp.new("(?<ab>x)\\k#c\n<ab>", x).match("xx")[0]
+  # inside a class the escape is the letter and the space is a member
+  assert_equal [" "], Regexp.new("[\\k<a b>]", x).match(" ").to_a
+end
+
 assert("Regexp - empty pattern") do
   assert_true //.match?("")
   assert_true //.match?("abc")
