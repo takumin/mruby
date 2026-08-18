@@ -437,6 +437,38 @@ first that passes it), and a baseline taken against a build that reads or
 classifies its strings differently. Both are why this is a task to run rather
 than a job in the workflows, which use whatever CRuby a runner ships.
 
+## Comparing with CRuby
+
+`tools/differential/` runs random patterns under CRuby and under one or more
+mruby binaries and reports where the answers part, in the shape of the
+differential tables in this gem's pull requests. It needs a CRuby to be the
+reference and an mruby built with mruby-io (the default gembox has it):
+
+```console
+$ bash mrbgems/mruby-regexp/tools/differential/differential.sh -n 10000 -s 2 -- \
+    master=build-master/host/bin/mruby branch=build/host/bin/mruby
+```
+
+`gen.rb` writes the cases from a seed, so a run can be repeated, and takes
+the alphabet, the nesting depth and the set of features to draw from
+(lookarounds, backreferences, atomic groups, repetitions whose body can match
+empty, and so on; `--list-features` names them, and `-w` leaves some out).
+`run.rb` is the same file under CRuby and under mruby, and prints each case's
+`MatchData#to_a` or why there is none. `compare.rb` sorts the cases by which
+runs disagree with CRuby: with a master and a branch, the cases only the
+branch answers differently are what the branch changed, and the ones both
+answer differently are the engine's standing differences. Patterns this gem
+refuses and matches CRuby cannot finish are counted, not compared, and the
+report starts with them.
+
+Two things to know when reading the report. This gem answers its step and
+recursion limits as no match, so a `nil` that only mruby gives may be a limit
+rather than a wrong answer. And `differential.sh` caps the address space of
+every run (`MEM_MB`, 1 GB by default): a pattern that would make Onigmo grow
+its stack without bound is what the cap is for, and under it CRuby raises
+`RegexpError`, which is recorded and left out of the comparison, where
+without it the match takes the machine.
+
 ## License
 
 MIT License. See the mruby license file for details.
