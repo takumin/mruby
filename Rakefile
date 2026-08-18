@@ -47,6 +47,7 @@ end
 
 # load custom rules
 load "#{MRUBY_ROOT}/tasks/core.rake"
+load "#{MRUBY_ROOT}/tasks/build_info.rake"
 load "#{MRUBY_ROOT}/tasks/mrblib.rake"
 load "#{MRUBY_ROOT}/tasks/mrbgems.rake"
 load "#{MRUBY_ROOT}/tasks/libmruby.rake"

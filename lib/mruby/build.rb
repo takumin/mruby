@@ -4,6 +4,7 @@ require "mruby/build/command"
 autoload :Find, "find"
 
 module MRuby
+  autoload :BuildInfo, "mruby/build_info"
   autoload :Gem, "mruby/gem"
   autoload :Lockfile, "mruby/lockfile"
   autoload :Presym, "mruby/presym"
@@ -154,6 +155,7 @@ module MRuby
         @cxx_exception_disabled = false
         @cxx_abi_enabled = false
         @enable_bintest = false
+        @enable_build_info = false
         @enable_test = false
         @enable_lock = true
         @enable_benchmark = true
@@ -351,6 +353,28 @@ EOS
 
     def root
       MRUBY_ROOT
+    end
+
+    def build_info_enabled?
+      @enable_build_info
+    end
+
+    # Record where this build came from in the binaries it produces: the commit
+    # the tree was at, and a digest over the sources that went into it. Reading
+    # them back needs no run of the binary:
+    #
+    #   strings build/host/bin/mruby | grep mruby-build-info:
+    #
+    # and `MRUBY_BUILD_INFO`, `MRUBY_BUILD_COMMIT` and
+    # `MRUBY_BUILD_SOURCE_DIGEST` carry the same values to Ruby, as
+    # `mrb_build_info()` and friends do to C.
+    #
+    # Every recorded value is location independent, so this leaves a build
+    # reproducible. What it costs is that a commit changes the binary whether
+    # or not it touched anything that gets compiled.
+    def enable_build_info
+      compilers.each { |c| c.internal_defines += %w(MRB_USE_BUILD_INFO) }
+      @enable_build_info = true
     end
 
     def enable_test
