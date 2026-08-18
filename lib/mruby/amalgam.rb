@@ -25,6 +25,7 @@ module MRuby
       mruby/khash.h
       mruby/endian.h
       mruby/presym.h
+      mruby/build_info.h
       mruby/compile.h
     ].freeze
 
@@ -621,6 +622,12 @@ module MRuby
       mrblib_path = "#{@build.build_dir}/mrblib/mrblib.c"
       if File.exist?(mrblib_path)
         write_source_content(f, "mrblib.c", mrblib_path)
+      end
+
+      # build_info.c - provenance of the build, when it was asked for
+      build_info_path = "#{@build.build_dir}/build_info.c"
+      if File.exist?(build_info_path)
+        write_source_content(f, "build_info.c", build_info_path)
       end
     end
 
