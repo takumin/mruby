@@ -378,6 +378,24 @@ to one only the branch gives up on. The candidates go through
 `differential.sh` (`CASES` hands it a cases file), so the cap, the timeout and
 the resume after a kill are a full run's.
 
+The alphabet a generated case draws from is two characters, which says
+nothing about what the classes match. `classes.sh` covers that from the other
+side: it walks every codepoint under CRuby and under each mruby and reports
+the classes whose membership parts, the POSIX brackets with their negations
+and the shorthands, each on its own and inside a class.
+
+```console
+$ bash mrbgems/mruby-regexp/tools/differential/classes.sh -- \
+    master=build-master/host/bin/mruby branch=build/host/bin/mruby
+```
+
+This one wants an mruby whose strings index by character: mruby-encoding is
+what defines `MRB_UTF8_STRING`, the default gembox does not carry it, and a
+build reading its strings as bytes answers every class within ASCII, which
+parts from CRuby everywhere and says nothing about the tables. The `full-core`
+gembox carries both that gem and mruby-io. A walk is one process per run over
+the whole of Unicode; `-m` narrows it while a difference is being chased.
+
 ## License
 
 MIT License. See the mruby license file for details.
