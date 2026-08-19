@@ -6,20 +6,29 @@
 # The first file is the reference. Every file must come from the same cases
 # file, so that line N is the same case in each; a run that ends early (killed,
 # not resumed) is compared as far as it goes. A case is left out of the
-# comparison when any run answered ERR or LIMIT for it, and the counts of
-# those are printed per run, with the messages a run refused patterns with.
+# comparison only when the reference answered ERR or LIMIT for it, since there
+# is then nothing to compare against; the count of those is printed with the
+# messages. An mruby that answers ERR or LIMIT where the reference has an
+# answer disagrees with it, and the case stays in: it is sorted with the ERR
+# or LIMIT as that run's answer, so a pattern one mruby refuses and another
+# answers is still compared for the one that answers. The messages each mruby
+# refused patterns with are counted per run and printed first.
 #
-# The cases that remain are sorted by which runs disagree with the reference:
-# none, or one set of the runs. With two mrubies, master and a branch, the
-# set {branch} is what the branch changed away from CRuby and {master} what it
-# changed towards CRuby; {master, branch} is what neither answers as CRuby
-# does. Each set is printed with its count and, unless -a asks for every line,
-# its first few cases with what each run answered.
+# The cases are sorted by what each run does against the reference: answers
+# the same, answers differently, ERR or LIMIT. With two mrubies, master and a
+# branch, "branch differs" is what the branch changed away from CRuby and
+# "master differs" what it changed towards CRuby; "master, branch differ" is
+# what neither answers as CRuby does, and "master ERR, branch differs" is what
+# the branch made compile and answers differently, which "master, branch
+# differ" would hide if the case were dropped. Each set is printed with its
+# count and, unless -a asks for every line, its first few cases with what each
+# run answered.
 #
 # Options
 #   -s, --show N       cases to print per set (5)
 #   -a, --all          print every differing case, tab-separated:
-#                      set, pattern, subject, reference answer, run answers...
+#                      set (run=status,...), pattern, subject, reference
+#                      answer, run answers...
 #   -m, --match REGEX  only cases whose pattern matches (a Ruby regexp)
 
 require 'optparse'
@@ -42,8 +51,9 @@ def split3(line)
   [pat, subj || "", ans || ""]
 end
 
-def excluded?(ans)
-  ans.start_with?("ERR", "LIMIT")
+# ERR or LIMIT for an answer that is one, nil for an answer to compare.
+def kind(ans)
+  ans.start_with?("ERR", "LIMIT") ? ans.split(" ", 2)[0] : nil
 end
 
 # Sanity: the same case on every line that all runs reached.
@@ -65,44 +75,69 @@ else
   puts "cases: #{n}"
 end
 
-# Refusals and limits per run.
-excluded = Array.new(runs.size) { Hash.new(0) }
+# What each run does against the reference on a case, in the order the sets
+# are listed in.
+STATUS = %w[same differs ERR LIMIT].freeze
+
+# Refusals and limits per run; the reference's leave the case out.
+messages = Array.new(runs.size) { Hash.new(0) }
+left_out = 0
 compared = 0
 sets = Hash.new { |h, k| h[k] = [] }
 n.times do |i|
   answers = runs.map { |r| split3(r[i]) }
   pat, subj = answers[0][0], answers[0][1]
   next if opts[:match] && pat !~ opts[:match]
-  out = false
-  answers.each_with_index do |(_, _, ans), k|
-    if excluded?(ans)
-      kind, msg = ans.split(" ", 2)
-      excluded[k]["#{kind}: #{msg}"] += 1
-      out = true
+  status = answers.each_with_index.map do |(_, _, ans), k|
+    if (kd = kind(ans))
+      messages[k]["#{kd}: #{ans.split(' ', 2)[1]}"] += 1
+      kd
+    elsif ans == answers[0][2]
+      "same"
+    else
+      "differs"
     end
   end
-  next if out
+  if kind(answers[0][2])
+    left_out += 1
+    next
+  end
   compared += 1
-  differing = (1...runs.size).select { |k| answers[k][2] != answers[0][2] }
-  sets[differing] << [pat, subj, answers.map { |a| a[2] }]
+  sets[status[1..]] << [pat, subj, answers.map { |a| a[2] }]
 end
 
 names.each_with_index do |name, k|
-  next if excluded[k].empty?
-  total = excluded[k].values.sum
-  puts "#{name}: #{total} left out"
-  excluded[k].sort_by { |_, c| -c }.each { |msg, c| puts "  #{c}  #{msg}" }
+  next if messages[k].empty?
+  total = messages[k].values.sum
+  puts "#{name}: #{total} #{k == 0 ? 'left out' : 'not answered'}"
+  messages[k].sort_by { |_, c| -c }.each { |msg, c| puts "  #{c}  #{msg}" }
 end
 puts "compared: #{compared}"
 
-keys = sets.keys.sort_by { |k| [k.size, k] }
+# "master ERR, branch differs from cruby": the runs grouped by what they do,
+# in the order the runs were given, and "from <reference>" after a group that
+# differs.
+def label(status, names)
+  return "same as #{names[0]} everywhere" if status.all? { |s| s == "same" }
+  parts = (status.uniq - ["same"]).map do |s|
+    who = status.each_index.select { |j| status[j] == s }.map { |j| names[j + 1] }
+    if s == "differs"
+      "#{who.join(', ')} #{who.size == 1 ? 'differs' : 'differ'} from #{names[0]}"
+    else
+      "#{who.join(', ')} #{s}"
+    end
+  end
+  parts.join(", ")
+end
+
+keys = sets.keys.sort_by { |k| [k.count { |s| s != "same" }, k.map { |s| STATUS.index(s) }] }
 keys.each do |k|
   cases = sets[k]
-  label = k.empty? ? "same as #{names[0]} everywhere" : "#{k.map { |j| names[j] }.join(', ')} differ from #{names[0]}"
-  puts "#{label}: #{cases.size}"
-  next if k.empty?
+  puts "#{label(k, names)}: #{cases.size}"
+  next if k.all? { |s| s == "same" }
   if opts[:all]
-    cases.each { |pat, subj, ans| puts ([k.map { |j| names[j] }.join(","), pat, subj] + ans).join("\t") }
+    set = k.each_index.reject { |j| k[j] == "same" }.map { |j| "#{names[j + 1]}=#{k[j]}" }.join(",")
+    cases.each { |pat, subj, ans| puts ([set, pat, subj] + ans).join("\t") }
   else
     cases.first(opts[:show]).each do |pat, subj, ans|
       puts "  #{pat}\t#{subj}"

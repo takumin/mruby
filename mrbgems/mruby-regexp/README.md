@@ -348,9 +348,11 @@ empty, and so on; `--list-features` names them, and `-w` leaves some out).
 `MatchData#to_a` or why there is none. `compare.rb` sorts the cases by which
 runs disagree with CRuby: with a master and a branch, the cases only the
 branch answers differently are what the branch changed, and the ones both
-answer differently are the engine's standing differences. Patterns this gem
-refuses and matches CRuby cannot finish are counted, not compared, and the
-report starts with them.
+answer differently are the engine's standing differences. A pattern an mruby
+refuses is sorted with the refusal as that run's answer, so what one mruby
+refuses and another answers is still compared for the one that answers, and
+the report starts with the count of refusals per run; a match CRuby cannot
+finish is counted and left out.
 
 Two things to know when reading the report. This gem answers its step and
 recursion limits as no match, so a `nil` that only mruby gives may be a limit
