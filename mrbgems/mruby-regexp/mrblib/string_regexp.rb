@@ -118,9 +118,9 @@ class String
     literal = String === pattern
     # A replacement argument wins over the block, as in CRuby.  A literal goes
     # to `__sub_lit`, which searches for its bytes without compiling anything
-    # to search with: what a compiled pattern would be needed for is the
-    # `$~` a match publishes, and that one is quoted there, once a match has
-    # something to report.
+    # to search with.  What a compiled pattern would be needed for is the
+    # Regexp the `$~` it publishes names, and `MatchData#regexp` quotes that
+    # one where CRuby quotes it: on the first call that asks for it.
     if argc == 2
       replacement = args[1].to_s
       return Regexp.__sub_lit(pattern, self, replacement) if literal

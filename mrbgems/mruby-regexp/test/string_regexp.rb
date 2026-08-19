@@ -827,8 +827,8 @@ assert("String#sub / #gsub search a String pattern without compiling one") do
   assert_equal "X", "abc".gsub("abc", "X")
   assert_equal "--", "aaaa".gsub("aa", "-")
 
-  # What a compiled pattern is still needed for is the match the call leaves
-  # behind, which names the quoted literal as CRuby's does.
+  # What a compiled pattern is still asked for is the Regexp the match names,
+  # which is the quoted literal as CRuby's is.
   "a.c".gsub(".", "X")
   assert_equal "\\.", $~.regexp.source
   assert_equal ".", $~[0]
@@ -840,13 +840,6 @@ assert("String#sub / #gsub search a String pattern without compiling one") do
   # The last match, not the first, as everywhere else.
   "a.c.e".gsub(".", "X")
   assert_equal 3, $~.begin(0)
-
-  # The same literal answers the same compiled pattern twice, which is what
-  # CRuby's own cache answers for `rb_reg_regcomp(rb_reg_quote(pat))`.
-  "abc".gsub("b", "X")
-  first = $~.regexp
-  "zbz".gsub("b", "Y")
-  assert_true first.equal?($~.regexp)
 
   # Matching nothing clears, as it does everywhere else.
   /b(c)/ =~ "abcd"
@@ -921,13 +914,90 @@ assert("String#sub! / #gsub! with a String pattern answer the one search they ma
   assert_equal 3, $~.begin(0)
 end
 
-assert("String#gsub with a block whose block replaces the subject") do
-  # The loop is in C and reads the subject afresh every turn, so a block that
-  # replaces it under the walk cannot leave the search reading bytes that were
-  # freed. What comes out of such a call is not worth pinning down; that it
-  # comes out at all is.
+assert("String#gsub refuses a block that resizes the subject") do
+  # Every offset the walk holds is an offset into the subject the search was
+  # given, so a block that changed its length left them pointing at nothing
+  # the caller meant. CRuby raises RuntimeError there, and so does this.
   s = "aaaa".dup
-  assert_kind_of String, s.gsub(/a/) { s.replace("b"); "-" }
+  assert_raise(RuntimeError) { s.gsub(/a/) { s << "aaaa"; "-" } }
   s = "aaaa".dup
-  assert_kind_of String, s.gsub(/a/) { s << "aaaa"; "-" }
+  assert_raise(RuntimeError) { s.gsub(/a/) { s.replace("b"); "-" } }
+  s = "aaaa".dup
+  assert_raise(RuntimeError) { s.gsub!(/a/) { s << "a"; "-" } }
+  # A literal pattern reaches the same walk.
+  s = "aaaa".dup
+  assert_raise(RuntimeError) { s.gsub("a") { s << "a"; "-" } }
+  # The message CRuby raises with.
+  s = "aaaa".dup
+  begin
+    s.gsub(/a/) { s << "a"; "-" }
+  rescue RuntimeError => e
+    assert_equal "string modified", e.message
+  end
+
+  # A block that rewrote the bytes without moving any of them left the offsets
+  # standing, and CRuby goes on reading the subject the block left behind: the
+  # `a` before the match is read after the block ran, not before it.
+  s = "abc".dup
+  assert_equal "A-C", s.gsub(/b/) { s.upcase!; "-" }
+  assert_equal "ABC", s
+  # Long enough not to sit inside the string object, where mruby answers a
+  # write into it with a buffer of its own.
+  s = ("abcb" * 20).dup
+  assert_equal "A-CB" + ("ABCB" * 19), s.gsub(/b/) { s.upcase!; "-" }
+  s = "aaaa".dup
+  assert_equal "-bbb", s.gsub(/a/) { s.replace("bbbb"); "-" }
+end
+
+assert("MatchData#regexp compiles a literal pattern only when asked for one") do
+  # Nothing compiled a pattern to search with, so the Regexp the match names is
+  # built out of the bytes it matched, the first time something asks. The same
+  # literal asked for twice running answers the same object, which is what
+  # CRuby's `rb_reg_regcomp` answers for the same quoted pattern.
+  "abc".gsub("b", "X")
+  first = $~.regexp
+  "zbz".gsub("b", "Y")
+  assert_true first.equal?($~.regexp)
+
+  # One entry, as CRuby keeps one: a literal asked for in between drops it.
+  "abc".gsub("b", "X")
+  first = $~.regexp
+  "abc".gsub("c", "Y")
+  $~.regexp
+  "zbz".gsub("b", "Z")
+  assert_false first.equal?($~.regexp)
+
+  # A call that never asks compiles nothing, so it cannot drop what the entry
+  # holds either.
+  "abc".gsub("b", "X")
+  first = $~.regexp
+  "abc".gsub("c", "Y")
+  "zbz".gsub("b", "Z")
+  assert_true first.equal?($~.regexp)
+
+  # A match answers the same Regexp however often it is asked, the entry
+  # behind it having moved on.
+  "abc".gsub("b", "X")
+  md = $~
+  first = md.regexp
+  "abc".gsub("c", "Y")
+  $~.regexp
+  assert_true first.equal?(md.regexp)
+
+  # The literal reaches the entry as it was matched, so a pattern modified
+  # afterwards cannot answer for what it used to spell.
+  pattern = "b".dup
+  "abc".gsub(pattern, "X")
+  first = $~.regexp
+  pattern << "c"
+  "zbz".gsub("b", "Y")
+  assert_true first.equal?($~.regexp)
+  assert_equal "b", first.source
+
+  # A literal has no groups, so a name reaches none, as in CRuby.
+  "a.c".sub(".", "-")
+  assert_equal({}, $~.named_captures)
+  assert_raise(IndexError) { $~[:x] }
+  "abc".sub("", "-")
+  assert_equal "", $~.regexp.source
 end

@@ -1182,14 +1182,63 @@ matchdata_string(mrb_state *mrb, mrb_value self)
   return md->source;
 }
 
+/* The Regexp a match against a literal String pattern reports itself as. The
+   searches such a pattern reaches need no compiled pattern and build none, so
+   the one asked for here is compiled on the spot, and the last one compiled is
+   kept: CRuby keeps exactly one too, in `rb_reg_regcomp`, which is the cache
+   `MatchData#regexp` reaches there for the same quoted pattern. Two entries
+   would answer where CRuby compiles afresh, so the count is the compatible
+   part and not an accident of sizing.
+
+   The pair hangs off the `Regexp` class, so the GC reaches both, under names
+   `instance_variables` does not report. The literal is stored frozen, so a
+   caller that goes on to modify the string it passed cannot turn the entry it
+   left behind into a hit for something else. */
+static mrb_value
+re_quoted_regexp(mrb_state *mrb, mrb_value lit)
+{
+  struct RClass *re_class = mrb_class_get_id(mrb, MRB_SYM(Regexp));
+  mrb_value klass = mrb_obj_value(re_class);
+  mrb_value key = mrb_iv_get(mrb, klass, MRB_SYM(__quoted_literal));
+  mrb_value hit = mrb_iv_get(mrb, klass, MRB_SYM(__quoted_regexp));
+
+  if (mrb_string_p(key) && !mrb_nil_p(hit) && mrb_str_equal(mrb, key, lit)) {
+    return hit;
+  }
+
+  mrb_value source = re_escape_str(mrb, lit);
+  mrb_value re = mrb_obj_new(mrb, re_class, 1, &source);
+  mrb_iv_set(mrb, klass, MRB_SYM(__quoted_regexp), re);
+  mrb_iv_set(mrb, klass, MRB_SYM(__quoted_literal), mrb_str_dup_frozen(mrb, lit));
+  return re;
+}
+
 /*
  * MatchData#regexp - the Regexp used
+ *
+ * A literal String pattern leaves none behind: `__sub_lit` and `__gsub_lit`
+ * search for its bytes without compiling anything to search with, so the
+ * Regexp it names is built here, out of the bytes the match reports, the first
+ * time something asks for one -- which is what CRuby does with a match against
+ * a String pattern, down to the memo the answer is kept in. A call that never
+ * asks pays for no compile at all.
  */
 static mrb_value
 matchdata_regexp(mrb_state *mrb, mrb_value self)
 {
   mrb_match_data *md = DATA_GET_PTR(mrb, self, &matchdata_type, mrb_match_data);
   if (!md) return mrb_nil_value();
+  if (mrb_nil_p(md->regexp)) {
+    /* Group 0 of a literal match spans the pattern itself, and a literal
+       match is the only thing that arrives here without a Regexp. */
+    mrb_value lit = re_byte_substr(mrb, md->source, md->captures[0],
+                                   md->captures[1] - md->captures[0]);
+    mrb_value re = re_quoted_regexp(mrb, lit);
+    /* The instance variable is what keeps it reachable: the struct beside it
+       is C-allocated and the GC does not scan it. */
+    mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "regexp"), re);
+    md->regexp = re;
+  }
   return md->regexp;
 }
 
@@ -1500,55 +1549,17 @@ re_cat_bytes(mrb_state *mrb, mrb_value result, const char *p, mrb_int len, mrb_b
   }
 }
 
-/* How many quoted literals `re_quoted_regexp()` keeps compiled before it drops
-   what it has. A literal pattern is nearly always one of a handful written
-   into the program text, so a small table answers almost every call; the cap
-   is what keeps a loop over generated literals from growing it without end. */
-#define RE_QUOTED_CACHE_MAX 64
-
-/* The Regexp a literal String pattern reports itself as in `$~`. The searches
-   above need no compiled pattern, but the MatchData a match publishes names
-   one, so it is built here -- once per distinct literal rather than once per
-   call, which is what CRuby's own compiled-pattern cache does for the same
-   `rb_reg_regcomp(rb_reg_quote(pat))`. The table hangs off the Regexp class,
-   so the GC reaches everything in it, and `mrb_hash_set()` freezes a copy of
-   the key, so a caller that goes on to modify the pattern it passed cannot
-   reach the entry it left behind. */
-static mrb_value
-re_quoted_regexp(mrb_state *mrb, mrb_value lit)
-{
-  struct RClass *re_class = mrb_class_get_id(mrb, MRB_SYM(Regexp));
-  mrb_value klass = mrb_obj_value(re_class);
-  mrb_value cache = mrb_iv_get(mrb, klass, MRB_SYM(__quoted_cache));
-
-  if (!mrb_hash_p(cache)) {
-    cache = mrb_hash_new(mrb);
-    mrb_iv_set(mrb, klass, MRB_SYM(__quoted_cache), cache);
-  }
-  else {
-    mrb_value hit = mrb_hash_get(mrb, cache, lit);
-    if (!mrb_nil_p(hit)) return hit;
-    if (mrb_hash_size(mrb, cache) >= RE_QUOTED_CACHE_MAX) {
-      mrb_hash_clear(mrb, cache);
-    }
-  }
-
-  mrb_value source = re_escape_str(mrb, lit);
-  mrb_value re = mrb_obj_new(mrb, re_class, 1, &source);
-  mrb_hash_set(mrb, cache, lit, re);
-  return re;
-}
-
 /* Publish the one match a literal substitution leaves behind. The offsets are
    the whole of it: a literal has no groups, so group 0 is the only one there
-   is to report. */
+   is to report. No Regexp goes with it, because nothing here compiled one:
+   `MatchData#regexp` builds it out of these offsets if anything ever asks. */
 static void
-re_lit_matchdata(mrb_state *mrb, mrb_value lit, mrb_value str, mrb_int beg, mrb_int end)
+re_lit_matchdata(mrb_state *mrb, mrb_value str, mrb_int beg, mrb_int end)
 {
   int captures[2];
   captures[0] = (int)beg;
   captures[1] = (int)end;
-  create_matchdata(mrb, re_quoted_regexp(mrb, lit), str, captures, 2);
+  create_matchdata(mrb, mrb_nil_value(), str, captures, 2);
 }
 
 /*
@@ -1622,7 +1633,7 @@ regexp_s_gsub_lit(mrb_state *mrb, mrb_value klass)
 
   if (pos < slen) re_cat_bytes(mrb, result, s + pos, slen - pos, binary);
 
-  re_lit_matchdata(mrb, lit, str, captures[0], captures[1]);
+  re_lit_matchdata(mrb, str, captures[0], captures[1]);
   re_mark_spliced(result, str, replacement, TRUE);
   return result;
 }
@@ -1664,7 +1675,7 @@ regexp_s_sub_lit(mrb_state *mrb, mrb_value klass)
   }
   if (end < slen) re_cat_bytes(mrb, result, s + end, slen - end, binary);
 
-  re_lit_matchdata(mrb, lit, str, beg, end);
+  re_lit_matchdata(mrb, str, beg, end);
   re_mark_spliced(result, str, replacement, TRUE);
   return result;
 }
@@ -1682,6 +1693,11 @@ regexp_s_sub_lit(mrb_state *mrb, mrb_value klass)
  * them, all around one `mrb_yield` that C can make directly.  The block still
  * reads what it read there: every match is published before the block sees it,
  * which is why a MatchData is built per turn here as it was there.
+ *
+ * What it does not keep from there is the walk over a subject the block
+ * shortened or lengthened underneath it.  The mrblib loop asked `self` again
+ * for every piece and answered something for any block at all; CRuby refuses
+ * such a walk with `RuntimeError`, and so does this one.
  */
 static mrb_value
 regexp_s_gsub_block(mrb_state *mrb, mrb_value klass)
@@ -1707,33 +1723,37 @@ regexp_s_gsub_block(mrb_state *mrb, mrb_value klass)
      the block matched on its way. */
   mrb_value last_md = mrb_nil_value();
   mrb_int pos = 0;
-  /* The subject's length as the walk started, which is where the walk ends.
-     The mrblib loop this replaced took its bound before the first block call
-     and kept it, so a block that grows the subject it is walking cannot keep
-     the walk going for ever; reading the length afresh for the bound as well
-     as for the bytes would let it. */
-  mrb_int limit = RSTRING_LEN(str);
+  /* The subject the walk is bounded by. Every turn checks it against the
+     subject the block hands back, so it holds for the whole walk. */
+  const char *s = RSTRING_PTR(str);
+  mrb_int slen = RSTRING_LEN(str);
   int ai = mrb_gc_arena_save(mrb);
 
-  while (pos <= limit) {
-    /* The bytes, unlike the bound, are read afresh each turn: the block runs
-       between two of them and can replace them under the walk, which the
-       mrblib loop allowed by asking `self` again for every piece it took. */
-    const char *s = RSTRING_PTR(str);
-    mrb_int slen = RSTRING_LEN(str);
-    if (pos > slen) break;
-
+  while (pos <= slen) {
     memset(captures, -1, sizeof(int) * cap_size);
     if (mrb_re_exec(mrb, pat, s, slen, pos, captures, cap_size, binary) == 0) break;
     mrb_int beg = captures[0], end = captures[1];
 
-    if (beg > pos) re_cat_bytes(mrb, result, s + pos, beg - pos, binary);
     mrb_value matched = re_byte_substr(mrb, str, beg, end - beg);
     last_md = create_matchdata(mrb, re, str, captures, cap_size);
-    mrb_str_cat_str(mrb, result, mrb_obj_as_string(mrb, mrb_yield(mrb, block, matched)));
-
+    mrb_value piece = mrb_obj_as_string(mrb, mrb_yield(mrb, block, matched));
+    /* What the block did to the subject while it had it. A block that changed
+       its length changed where every offset the walk holds points, and CRuby
+       refuses to go on there -- `str_mod_check`, raising RuntimeError -- so
+       this does too. A block that rewrote the bytes in place left the offsets
+       standing, and CRuby reads the bytes it left; the buffer they sit in can
+       have moved under mruby's copy-on-write, so the subject is read afresh
+       here rather than through the pointer the search was given. */
+    if (RSTRING_LEN(str) != slen) {
+      mrb_raise(mrb, E_RUNTIME_ERROR, "string modified");
+    }
     s = RSTRING_PTR(str);
-    slen = RSTRING_LEN(str);
+
+    /* After the block and not before it, as in CRuby: the bytes before the
+       match are taken from the subject as the block left it. */
+    if (beg > pos) re_cat_bytes(mrb, result, s + pos, beg - pos, binary);
+    mrb_str_cat_str(mrb, result, piece);
+
     /* A zero-width match carries the character it stood before, so that the
        next search starts past a place the pattern would answer at again. */
     if (beg == end) {
@@ -1757,8 +1777,8 @@ regexp_s_gsub_block(mrb_state *mrb, mrb_value klass)
     mrb_gc_protect(mrb, last_md);
   }
 
-  if (pos < RSTRING_LEN(str)) {
-    re_cat_bytes(mrb, result, RSTRING_PTR(str) + pos, RSTRING_LEN(str) - pos, binary);
+  if (pos < slen) {
+    re_cat_bytes(mrb, result, s + pos, slen - pos, binary);
   }
 
   if (mrb_nil_p(last_md)) {
