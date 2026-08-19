@@ -43,6 +43,8 @@
 #   lookaround-capture  a capture group may open inside a lookahead
 #   backref             `\1`..`\9` to a group closed earlier in the pattern
 #   atomic              `(?>...)`
+#   possessive          `*+` `++` `?+`, in place of the lazy mark; an interval
+#                       takes neither, since `{n,m}+` is a repeat of a repeat
 #
 # All features are on unless -f or -w says otherwise. Every pattern compiles
 # under CRuby; what this gem refuses is reported by compare.rb.
@@ -50,7 +52,7 @@
 require 'optparse'
 
 FEATURES = %w[lazy interval class anchor empty lookahead lookbehind
-              lookaround-capture backref atomic].freeze
+              lookaround-capture backref atomic possessive].freeze
 
 opts = {
   seed: 1, count: 1000, depth: 2, quantify: 0.5, alphabet: "ab",
@@ -108,7 +110,9 @@ end
 ANCHORS = %w[^ $ \A \z \Z \b \B].freeze
 
 # Quantifiers, with the mark of whether the result can match empty. Intervals
-# are drawn small so that a subject of a few characters can satisfy them.
+# are drawn small so that a subject of a few characters can satisfy them. A
+# `?` after any of them makes it lazy; a `+` after `*`, `+` or `?` makes it
+# possessive, and after an interval it is another repeat, so it is not drawn.
 def quantifier
   q, empty =
     case rand(on?("interval") ? 6 : 3)
@@ -119,7 +123,11 @@ def quantifier
     when 4 then n = rand(0..2); ["{#{n},}", n == 0]
     else        n = rand(0..1); m = n + rand(1..2); ["{#{n},#{m}}", n == 0]
     end
-  q += "?" if on?("lazy") && rand < 0.4
+  if on?("lazy") && rand < 0.4
+    q += "?"
+  elsif on?("possessive") && %w[* + ?].include?(q) && rand < 0.4
+    q += "+"
+  end
   [q, empty]
 end
 
