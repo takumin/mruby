@@ -471,6 +471,22 @@ its stack without bound is what the cap is for, and under it CRuby raises
 `RegexpError`, which is recorded and left out of the comparison, where
 without it the match takes the machine.
 
+A case the report names is shrunk by `minimize.rb`, which cuts at the pattern
+and the subject for as long as the runs go on parting the same way:
+
+```console
+$ ruby mrbgems/mruby-regexp/tools/differential/minimize.rb \
+    '((?:\w{0,}?|()){2}(\2))' bbbb -- \
+    master=build-master/host/bin/mruby branch=build/host/bin/mruby
+```
+
+What it holds fixed is the reading `compare.rb` gives each run, not the
+answers themselves: a case both mrubies answer differently shrinks to one
+they both answer differently, and a case only the branch gives up on shrinks
+to one only the branch gives up on. The candidates go through
+`differential.sh` (`CASES` hands it a cases file), so the cap, the timeout and
+the resume after a kill are a full run's.
+
 ## License
 
 MIT License. See the mruby license file for details.
