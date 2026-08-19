@@ -17,6 +17,11 @@
 # run's address space in MB (1024), TIMEOUT bounds each run in seconds (600,
 # when timeout(1) exists), COMPARE_OPTS goes to compare.rb.
 #
+# CASES names a cases file to run in place of a generated one, so that a hand
+# written list, or the candidates minimize.rb draws from a case, goes through
+# the same runs; gen.rb is not called then and the gen options are refused.
+# NO_COMPARE=1 stops before compare.rb and leaves the outputs to be read.
+#
 # A run that dies (the timeout, a crash) is resumed after the case it died on,
 # which is recorded as LIMIT killed; the address-space cap is what keeps a
 # runaway match on either side from taking the machine, and under it CRuby
@@ -41,7 +46,12 @@ done
 [ $# -ge 1 ] || { echo "usage: $0 [gen options --] [name=]mruby..." >&2; exit 2; }
 
 mkdir -p "$OUT"
-"$RUBY" "$here/gen.rb" ${gen_opts[@]+"${gen_opts[@]}"} > "$OUT/cases.txt" || exit 1
+if [ -n "${CASES:-}" ]; then
+  [ ${#gen_opts[@]} -eq 0 ] || { echo "$0: CASES takes the cases, so gen options are refused" >&2; exit 2; }
+  cp "$CASES" "$OUT/cases.txt" || exit 1
+else
+  "$RUBY" "$here/gen.rb" ${gen_opts[@]+"${gen_opts[@]}"} > "$OUT/cases.txt" || exit 1
+fi
 total=$(grep -c . "$OUT/cases.txt")
 
 bound=()
@@ -75,4 +85,5 @@ for arg in "$@"; do
   run "$bin" "$OUT/$name.out"
   outs+=("$OUT/$name.out")
 done
+[ -n "${NO_COMPARE:-}" ] && exit 0
 "$RUBY" "$here/compare.rb" ${compare_opts[@]+"${compare_opts[@]}"} "$OUT/cruby.out" "${outs[@]}"
