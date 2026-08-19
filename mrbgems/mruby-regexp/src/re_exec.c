@@ -632,8 +632,10 @@ lookbehind_start(const mrb_regexp_pattern *pat, const char *str,
    group's body may be tried for it, so the frames between that end and the
    RE_ATOMIC that opened the group hand BT_CUT of the group's depth up
    unchanged, undoing their captures as they go, and the frame that ran that
-   RE_ATOMIC turns it into BT_FAIL. A cut never reaches a lookaround from
-   inside its sub-pattern: the RE_ATOMIC that absorbs it is in there too.
+   RE_ATOMIC turns it into BT_FAIL. A lookaround runs its sub-pattern the
+   same way, the text after it going on inside the sub-pattern's frames from
+   the RE_LOOK_END (see there), so a cut can pass through one; the opener
+   absorbs its own depth like an RE_ATOMIC and hands any other up.
    The fourth answer, BT_LIMIT, is a frame giving up at the recursion or step
    limit. A frame that gets it hands it up; a SPLIT takes it as that branch
    failing and answers with its other branch, as it would with a failure.
@@ -658,17 +660,21 @@ typedef struct {
   int *captures;
   int ncap;
   int steps;
-  /* Per pc, the offset the running iteration of the loop that pc keys began
-     at, or -1 while none is running. A repetition whose body can match empty
-     has to stop once an iteration ends where it began, or it would go round
-     at the same position until a limit refused it and answer with whatever
-     the alternatives left inside the limit produce. Onigmo stops it with a
-     null check around the body; this array is that check's memory. The pc
-     that keys a loop is its marked head for e* (the SPLIT/SPLITNG whose
-     offset is the exit; the JMP closing the body reads the record) and its
-     marked back edge for e+ (the SPLIT/SPLITNG at the end of the body, which
-     both writes and reads it); see mark_empty_loops(). */
-  int *iter_at;
+  /* Per pc, the offset the frame that pc keys was entered at, or -1 while
+     none is running; what a record means is what its pc is. For the edge of
+     a repetition whose body can match empty it is where the running
+     iteration began: such a repetition has to stop once an iteration ends
+     where it began, or it would go round at the same position until a limit
+     refused it and answer with whatever the alternatives left inside the
+     limit produce. Onigmo stops it with a null check around the body; this
+     array is that check's memory. The pc that keys a loop is its marked head
+     for e* (the SPLIT/SPLITNG whose offset is the exit; the JMP closing the
+     body reads the record) and its marked back edge for e+ (the
+     SPLIT/SPLITNG at the end of the body, which both writes and reads it);
+     see mark_empty_loops(). For the RE_LOOK_END of a lookaround it is where
+     the lookaround was entered, which is where the text after it goes on
+     from; see bt_look(). */
+  int *entered_at;
   mrb_bool binary;
 } bt_state;
 
@@ -684,11 +690,41 @@ static int bt_match(bt_state *m, const char *sp, uint32_t pc, int depth);
 static int
 bt_iter(bt_state *m, const char *sp, uint32_t pc, uint32_t key, int depth)
 {
-  int old = m->iter_at[key];
-  m->iter_at[key] = (int)(sp - m->str);
+  int old = m->entered_at[key];
+  m->entered_at[key] = (int)(sp - m->str);
   int r = bt_match(m, sp, pc, depth);
-  m->iter_at[key] = old;
+  m->entered_at[key] = old;
   return r;
+}
+
+/* Run the sub-pattern of the lookaround whose opener is at pc: it begins at
+   `body` and matches from `from`, which is sp for a lookahead and the
+   rewound start for a lookbehind. The record of sp lasts as long as the
+   frame, as an iteration's does in bt_iter(); the RE_LOOK_END closing the
+   sub-pattern reads it (see there).
+
+   The answer is the sub-pattern's, and the cut of this lookaround's depth
+   is what the sub-pattern matching comes back as: for a negative lookaround
+   from the RE_LOOK_END itself, and the answer is BT_MATCH, with every
+   capture the sub-pattern wrote undone on the way up; for a positive one
+   from the text after the lookaround failing, which the RE_LOOK_END ran
+   inside the sub-pattern's frames, so the sub-pattern matched once and that
+   was its only match: BT_FAIL, the captures undone the same way. BT_MATCH
+   from a positive one is the whole pattern having matched through that
+   text. Everything else, a failure, a limit or another group's cut, goes up
+   as it is. */
+static int
+bt_look(bt_state *m, const char *sp, const char *from, uint32_t pc,
+        uint32_t body, int depth)
+{
+  uint32_t end = m->pat->code[pc].offset - 1;
+  re_inst end_inst = m->pat->code[end];
+  int old = m->entered_at[end];
+  m->entered_at[end] = (int)(sp - m->str);
+  int r = bt_match(m, from, body, depth);
+  m->entered_at[end] = old;
+  if (r != BT_CUT(end_inst.offset)) return r;
+  return end_inst.a ? BT_MATCH : BT_FAIL;
 }
 
 /*
@@ -755,12 +791,12 @@ bt_match(bt_state *m, const char *sp, uint32_t pc, int depth)
 
     case RE_JMP:
       /* A backward jump closes e* and returns to its head. When the head is
-         marked, the body can match empty and iter_at[head] holds where the
+         marked, the body can match empty and entered_at[head] holds where the
          iteration that just ended began (see bt_iter()): an iteration that
          ended where it began matched empty, and the repetition stops here,
          taking the head's exit and keeping what the iteration captured, as
          Onigmo's null check does. */
-      if (inst.a && m->iter_at[inst.offset] == (int)(sp - str)) {
+      if (inst.a && m->entered_at[inst.offset] == (int)(sp - str)) {
         pc = pat->code[inst.offset].offset;
         break;
       }
@@ -780,7 +816,7 @@ bt_match(bt_state *m, const char *sp, uint32_t pc, int depth)
           pc = inst.offset;
           break;
         }
-        if (m->iter_at[pc] == (int)(sp - str)) { pc++; break; }
+        if (m->entered_at[pc] == (int)(sp - str)) { pc++; break; }
         int r = bt_match(m, sp, pc + 1, depth + 1);
         if (r != BT_FAIL && r != BT_LIMIT) return r;
         return bt_iter(m, sp, inst.offset, pc, depth + 1);
@@ -803,7 +839,7 @@ bt_match(bt_state *m, const char *sp, uint32_t pc, int depth)
           if (r != BT_FAIL && r != BT_LIMIT) return r;
           return bt_iter(m, sp, pc + 1, pc, depth + 1);
         }
-        if (m->iter_at[pc] == (int)(sp - str)) { pc++; break; }
+        if (m->entered_at[pc] == (int)(sp - str)) { pc++; break; }
         int r = bt_iter(m, sp, inst.offset, pc, depth + 1);
         if (r != BT_FAIL && r != BT_LIMIT) return r;
         pc++;
@@ -910,21 +946,19 @@ bt_match(bt_state *m, const char *sp, uint32_t pc, int depth)
       break;
 
     case RE_LOOKAHEAD:
-      {
-        /* A sub-pattern answers BT_MATCH, BT_FAIL or BT_LIMIT, never a cut.
-           The two failures go up as they are; the four lookarounds only
-           differ in what a match means. */
-        int r = bt_match(m, sp, pc + 1, depth + 1);
-        if (r != BT_MATCH) return r;
-        pc = inst.offset;
-      }
-      break;
+      /* A positive lookaround never goes on in this frame: its RE_LOOK_END
+         has run the text after it, so the sub-pattern's answer is the
+         frame's, whichever it is. */
+      return bt_look(m, sp, sp, pc, pc + 1, depth + 1);
 
     case RE_NEG_LOOKAHEAD:
       {
-        int r = bt_match(m, sp, pc + 1, depth + 1);
+        /* The sub-pattern matching is the assertion failing; the sub-pattern
+           running out of alternatives is the assertion holding, and the text
+           after it goes on here. A limit goes up as it is. */
+        int r = bt_look(m, sp, sp, pc, pc + 1, depth + 1);
         if (r == BT_MATCH) return BT_FAIL;
-        if (r == BT_LIMIT) return r;
+        if (r != BT_FAIL) return r;
         pc = inst.offset;
       }
       break;
@@ -933,24 +967,38 @@ bt_match(bt_state *m, const char *sp, uint32_t pc, int depth)
       {
         const char *back = lookbehind_start(pat, str, str_end, sp, pc, binary);
         if (!back) return BT_FAIL;  /* not enough text before */
-        int r = bt_match(m, back, pc + 2, depth + 1);
-        if (r != BT_MATCH) return r;
-        pc = inst.offset;
+        return bt_look(m, sp, back, pc, pc + 2, depth + 1);
       }
-      break;
 
     case RE_NEG_LOOKBEHIND:
       {
         const char *back = lookbehind_start(pat, str, str_end, sp, pc, binary);
         if (back) {
-          int r = bt_match(m, back, pc + 2, depth + 1);
+          int r = bt_look(m, sp, back, pc, pc + 2, depth + 1);
           if (r == BT_MATCH) return BT_FAIL;
-          if (r == BT_LIMIT) return r;
+          if (r != BT_FAIL) return r;
         }
         /* if not enough text before, negative lookbehind succeeds */
         pc = inst.offset;
       }
       break;
+
+    case RE_LOOK_END:
+      {
+        /* The sub-pattern has matched. For a negative lookaround that is
+           the whole of its answer, and it goes up as a cut so that the
+           frames of the sub-pattern undo their captures and try no other
+           branch on the way; bt_look() reads it back as the match it is.
+           For a positive one the text after the lookaround goes on from
+           where the lookaround was entered, inside the sub-pattern's frames
+           as the text after an atomic group does (RE_ATOMIC_END): a failure
+           there is a cut, undone for and not backtracked into, since the
+           sub-pattern matching once is its only match. A limit goes up as
+           it is. */
+        if (inst.a) return BT_CUT(inst.offset);
+        int r = bt_match(m, str + m->entered_at[pc], pc + 1, depth + 1);
+        return (r == BT_FAIL) ? BT_CUT(inst.offset) : r;
+      }
 
     case RE_ATOMIC:
       {
@@ -990,9 +1038,9 @@ backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
   int ncap = pat->num_captures * 2;
   if (ncap == 0) ncap = 2;
 
-  /* One block: the capture slots, then an iteration record per pc. Every
-     record a search writes it undoes before returning (see bt_iter()), so
-     the array is filled once for all start positions. */
+  /* One block: the capture slots, then an entry record per pc. Every record
+     a search writes it undoes before returning (see bt_iter() and
+     bt_look()), so the array is filled once for all start positions. */
   int *caps = (int*)mrb_malloc(mrb, sizeof(int) * (ncap + pat->code_len));
   bt_state m;
   m.pat = pat;
@@ -1000,9 +1048,9 @@ backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
   m.str_end = str_end;
   m.captures = caps;
   m.ncap = ncap;
-  m.iter_at = caps + ncap;
+  m.entered_at = caps + ncap;
   m.binary = binary;
-  memset(m.iter_at, -1, sizeof(int) * pat->code_len);
+  memset(m.entered_at, -1, sizeof(int) * pat->code_len);
 
   for (const char *sp = str + start; sp <= str_end && sp <= start_cap; sp++) {
     /* Skip ahead using literal prefix or first-byte bitmap */

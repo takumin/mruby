@@ -40,12 +40,19 @@ enum re_opcode {
                         and by characters otherwise, and the sub-pattern body
                         starts past this instruction, at pc + 2. */
   RE_ATOMIC,         /* atomic group (?>...): offset = nesting depth of the
-                        group, 1 for an outermost one. The body follows and
+                        group, 1 for an outermost one, counting the
+                        lookarounds it is inside as well. The body follows and
                         ends at the RE_ATOMIC_END with the same depth; once
                         the body has matched, a failure after it fails the
                         whole group rather than backtracking into it. */
   RE_ATOMIC_END,     /* end of an atomic group's body: offset = the depth of
                         the RE_ATOMIC it closes */
+  RE_LOOK_END,       /* end of a lookaround's sub-pattern: offset = the depth
+                        of the lookaround, from the same count as RE_ATOMIC;
+                        a = 1 for a negative one. The instruction after it is
+                        the text after the lookaround, which is where the
+                        opener's `offset` points, so the opener finds its end
+                        at offset - 1. */
 };
 
 /* Bytecode instruction (4 bytes each for alignment) */

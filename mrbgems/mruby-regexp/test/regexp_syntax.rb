@@ -1293,6 +1293,45 @@ assert("Regexp - negative lookbehind at string start") do
   assert_equal "a", md[0]
 end
 
+assert("Regexp - a capture inside a lookaround is undone with the lookaround") do
+  # A lookaround's sub-pattern used to run in a call of its own, so once it
+  # had matched, the frames that could undo what it captured were gone, and
+  # backtracking past the lookaround left the capture written. A plain
+  # group's frames stay while the text after it runs, and undo.
+  assert_nil /(?:(a)b|)/.match("a")[1]
+  assert_nil /(?:(?=(a))b|)/.match("a")[1]
+  assert_nil /(?=(a))b|/.match("a")[1]
+  assert_nil /(?:(?=(a))b)?/.match("a")[1]
+  assert_nil /(?:(?=(a))b)*/.match("a")[1]
+  assert_nil /(?:(?<=(a))b|)c/.match("ac")[1]
+  # A negative lookaround's sub-pattern matching is the assertion failing,
+  # and what it captured on the way is undone with it.
+  assert_nil /(?!(a))|/.match("a")[1]
+  assert_nil /(?!(a))*/.match("a")[1]
+  assert_nil /(?!(a))?/.match("a")[1]
+  assert_equal ["a", nil], /(?!(a)b)a\1?/.match("ac").to_a
+  # A backreference to the leaked group consumed text, and the match itself
+  # changed.
+  assert_nil /(?:(?=(a))b|)\1/ =~ "aa"
+  assert_nil /(?:(?!(a))|a)\1/ =~ "aa"
+  assert_equal "ab", /(?:(?!(a))|a)\1?b/.match("aab")[0]
+  assert_nil /(?:(?=(a))a|b)\1/ =~ "ba"
+  # What a lookaround that holds captured stays, as before.
+  assert_equal "a", /(?=(a))a/.match("a")[1]
+  assert_equal ["b", "a"], /(?<=(a))b/.match("ab").to_a
+  assert_equal ["ab", "a"], /(?=(a|ab))\1b/.match("abb").to_a
+  # A positive lookaround's sub-pattern matches once: the text after it
+  # failing does not send it back for another branch, as in Onigmo.
+  assert_nil /(?=(a|ab))\1c/ =~ "abc"
+  assert_equal ["abc", nil], /(?:(?=(a|ab))\1c|abc)/.match("abc").to_a
+  # The text after a lookaround runs inside its sub-pattern's frames, so
+  # an atomic group's cut from that text passes through the lookaround on
+  # its way to the group, and the lookaround does not absorb it as its own.
+  assert_nil /(?>(?=a)ab|a)b/ =~ "ab"
+  assert_nil /(?>(?!x)ab|a)b/ =~ "ab"
+  assert_equal 0, /(?>(?=a)ab|a)c/ =~ "abc"
+end
+
 assert("Regexp - lookbehind over a class that can match a multibyte character") do
   # A class consumes exactly one character whatever its members are, so the
   # rewind steps back that many characters rather than assuming a byte each.
