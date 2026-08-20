@@ -285,6 +285,7 @@ gembox provides the class or feature you need:
 | Socket                | stdlib-io  | mruby-socket      |
 | Dir                   | stdlib-io  | mruby-dir         |
 | Errno                 | stdlib-io  | mruby-errno       |
+| Process               | stdlib-io  | mruby-process     |
 | Math                  | math       | mruby-math        |
 | Rational              | math       | mruby-rational    |
 | Complex               | math       | mruby-complex     |
