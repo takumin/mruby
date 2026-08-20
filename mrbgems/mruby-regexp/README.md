@@ -354,9 +354,10 @@ refuses and another answers is still compared for the one that answers, and
 the report starts with the count of refusals per run; a match CRuby cannot
 finish is counted and left out.
 
-Two things to know when reading the report. This gem answers its step and
-recursion limits as no match, so a `nil` that only mruby gives may be a limit
-rather than a wrong answer. And `differential.sh` caps the address space of
+Two things to know when reading the report. This gem raises `RegexpError`
+where a search gives up at its step or recursion limit, so a limit sorts
+under `LIMIT` for that run rather than hiding in what the search had found
+by then. And `differential.sh` caps the address space of
 every run (`MEM_MB`, 1 GB by default): a pattern that would make Onigmo grow
 its stack without bound is what the cap is for, and under it CRuby raises
 `RegexpError`, which is recorded and left out of the comparison, where
