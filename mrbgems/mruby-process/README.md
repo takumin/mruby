@@ -67,7 +67,7 @@ other to provide its own feature set:
 `IO.popen` is the one place the two capabilities meet, and it is served by
 `mruby-io`'s own private spawn/wait primitives rather than by anything here.
 There is no dependency in either direction; `mrbgem.rake` names `mruby-io` only
-as a *test* dependency, because waiting on a child process is only testable
+as a _test_ dependency, because waiting on a child process is only testable
 with a child, and `IO.popen` is how this build makes one.
 
 ### The HAL boundary
@@ -111,6 +111,12 @@ A `Process::Status` stores only the pid and the raw platform status, and asks
 the HAL afresh for every question about it. Nothing above the HAL ever holds a
 decoded copy that could disagree with the platform.
 
+The tests exercise that seam on POSIX only. On Windows, `mruby-io` hands out a
+process **handle** as `IO#pid` rather than a process ID, and its `IO.popen`
+sets `$?` through a branch that never fires, so there is nothing there to give
+`Process.waitpid` yet. Both are `mruby-io`'s to fix, and the issue keeps that
+cleanup separate from adding this gem.
+
 ### Decisions on the open design questions
 
 - **`waitpid` returns a raw status, decoded separately.** `Process::Status`
@@ -144,6 +150,8 @@ decoded copy that could disagree with the platform.
   implemented.
 - On Windows a wait status is the child's exit code and nothing more, so a
   status there always reads as exited — even for a process this gem terminated.
+- On Windows, `Process.waitpid` can only wait on a specific process; there is
+  no handle standing for "any child", so a pid of -1 fails with `ENOSYS`.
 
 ## Adding a port
 
