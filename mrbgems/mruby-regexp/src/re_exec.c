@@ -787,6 +787,27 @@ bt_push(bt_state *m, const char *sp, uint32_t pc)
   return TRUE;
 }
 
+/* Write `val` into `slot`, logging what stood there so that backtracking
+   past this point puts it back. FALSE is the search giving up, as in
+   bt_push() and for the same two reasons. */
+static mrb_bool
+bt_log(bt_state *m, int *slot, int val)
+{
+  if (!bt_room(m)) return FALSE;
+  if (m->undo_top == m->undo_capa) {
+    uint32_t capa = m->undo_capa ? m->undo_capa * 2 : 16;
+    re_undo *p = (re_undo*)mrb_realloc_simple(m->mrb, m->undo, sizeof(re_undo) * capa);
+    if (!p) return FALSE;
+    m->undo = p;
+    m->undo_capa = capa;
+  }
+  re_undo *u = &m->undo[m->undo_top++];
+  u->slot = slot;
+  u->old = *slot;
+  *slot = val;
+  return TRUE;
+}
+
 /* Take back every write logged above `top`. */
 static void
 bt_undo_to(bt_state *m, uint32_t top)
@@ -871,12 +892,13 @@ bt_look(bt_state *m, const char *sp, const char *from, uint32_t pc,
  * Backtracking engine for patterns with backreferences.
  *
  * A fork pushes a choice point and goes on with its first branch; a failure
- * pops one and goes on with the alternative it holds. The frame therefore
- * loops where it used to recurse, and what it may pop is what it pushed: the
- * heights the stacks stood at on entry are the floor, since below them is the
- * state of the frame that called this one, whose captures and iteration
- * records that frame undoes itself. Every answer but BT_MATCH leaves the
- * stacks as the frame found them.
+ * pops one and goes on with the alternative it holds, taking back the writes
+ * logged since it was pushed. The frame therefore loops where it used to
+ * recurse, and what it may pop is what it pushed: the heights the stacks
+ * stood at on entry are the floor, since below them is the state of the
+ * frame that called this one, whose iteration records that frame restores
+ * itself. Every answer but BT_MATCH leaves the stacks as the frame found
+ * them.
  *
  * Step-limited to prevent ReDoS.
  */
@@ -1026,20 +1048,15 @@ bt_match(bt_state *m, const char *sp, uint32_t pc, int depth)
             mrb_re_char_interior_p(str, sp, str_end)) {
           goto fail;
         }
-        if (slot < ncap) {
-          int old = captures[slot];
-          captures[slot] = (int)(sp - str);
-          int rr = bt_match(m, sp, pc + 1, depth + 1);
-          if (rr == BT_MATCH) return rr;
-          /* undone for a cut as for a failure: the group the cut fails may
-             be the one this slot was written inside */
-          captures[slot] = old;
-          if (rr == BT_FAIL) goto fail;
-          r = rr;
-          goto done;
-        }
-        goto fail;
+        if (slot >= ncap) goto fail;
+        /* The write is logged rather than recursed over: backtracking past
+           it puts the slot back, which is undone for a cut as for a failure
+           -- the group a cut fails may be the one this slot was written
+           inside -- and a match keeps it, the log unwinding for neither. */
+        if (!bt_log(m, &captures[slot], (int)(sp - str))) { r = BT_LIMIT; goto done; }
+        pc++;
       }
+      break;
 
     case RE_BOL:
       /* ^ always matches at a line start (see the Pike VM case); /m only
