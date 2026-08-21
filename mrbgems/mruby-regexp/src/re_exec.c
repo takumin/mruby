@@ -654,6 +654,14 @@ lookbehind_start(const mrb_regexp_pattern *pat, const char *str,
 #define BT_LIMIT 2
 #define BT_CUT(cut) (-(int)(cut))
 
+/* What taking a choice point does beyond resuming where it points. */
+enum re_cp_kind {
+  RE_CP_FORK,   /* nothing: a branch the search has not tried yet */
+  RE_CP_ITER    /* the branch begins an iteration of the loop its `group`
+                   keys, whose record is written when the branch is taken
+                   rather than when it was pushed (see bt_iter_begin()) */
+};
+
 /* A choice point: an alternative the search has not tried yet, as where the
    input stood (`sp`), which instruction takes the alternative (`pc`) and how
    tall the undo log was when it was pushed (`undo_top`). Backtracking pops
@@ -667,6 +675,8 @@ typedef struct {
   const char *sp;
   uint32_t pc;
   uint32_t undo_top;
+  uint32_t group;   /* what `kind` names, where it names something */
+  uint8_t kind;
 } re_cpoint;
 
 /* An undo record: one write the search must be able to take back, as the slot
@@ -770,7 +780,7 @@ bt_room(const bt_state *m)
    mrb_realloc_simple() rather than mrb_realloc() is what lets it be, a raising
    allocator longjmping past the mrb_free() in backtrack_exec(). */
 static mrb_bool
-bt_push(bt_state *m, const char *sp, uint32_t pc)
+bt_push(bt_state *m, const char *sp, uint32_t pc, uint8_t kind, uint32_t group)
 {
   if (!bt_room(m)) return FALSE;
   if (m->cp_top == m->cp_capa) {
@@ -784,6 +794,8 @@ bt_push(bt_state *m, const char *sp, uint32_t pc)
   c->sp = sp;
   c->pc = pc;
   c->undo_top = m->undo_top;
+  c->group = group;
+  c->kind = kind;
   return TRUE;
 }
 
@@ -830,30 +842,24 @@ bt_truncate(bt_state *m, uint32_t cp_top, uint32_t undo_top)
 
 static int bt_match(bt_state *m, const char *sp, uint32_t pc, int depth);
 
-/* Run the frame at pc as the start of an iteration of the loop `key` keys,
-   recording where it begins so that the edge closing the body can tell an
-   empty iteration. The record lasts exactly as long as the frame: the frame
-   that ran the edge into the body is the one that undoes it, so backtracking
-   out of an iteration finds the record of the one it lands in, and the
-   branch that begins an iteration is run this way rather than in place even
-   when it is the frame's last, so that there is one place to undo it. */
-static int
-bt_iter(bt_state *m, const char *sp, uint32_t pc, uint32_t key, int depth)
+/* Record that an iteration of the loop `key` keys begins at sp, so that the
+   edge closing the body can tell an iteration that matched empty. The two
+   records go on the undo log, so that backtracking out of an iteration puts
+   back the record of the one it lands in; the branch that begins an
+   iteration is written this way rather than in place when it is taken, so
+   that there is one place that writes them. */
+static mrb_bool
+bt_iter_begin(bt_state *m, uint32_t key, const char *sp)
 {
-  int old_at = m->entered_at[key], old_in = m->entered_in[key];
-  m->entered_at[key] = (int)(sp - m->str);
-  m->entered_in[key] = m->pass;
-  int r = bt_match(m, sp, pc, depth);
-  m->entered_at[key] = old_at;
-  m->entered_in[key] = old_in;
-  return r;
+  return bt_log(m, &m->entered_at[key], (int)(sp - m->str)) &&
+         bt_log(m, &m->entered_in[key], m->pass);
 }
 
 /* Run the sub-pattern of the lookaround whose opener is at pc: it begins at
    `body` and matches from `from`, which is sp for a lookahead and the
    rewound start for a lookbehind. The record of sp, and of the pass the
    lookaround is entered from, lasts as long as the frame, as an iteration's
-   does in bt_iter(); the RE_LOOK_END closing the sub-pattern reads it (see
+   does in bt_iter_begin(); the RE_LOOK_END closing the sub-pattern reads it (see
    there). The sub-pattern runs as a pass of its own, this frame's depth,
    which no pass still live has, so the records of the loops inside it that
    another run of the same sub-pattern may have left live are not taken for
@@ -970,7 +976,7 @@ bt_match(bt_state *m, const char *sp, uint32_t pc, int depth)
     case RE_JMP:
       /* A backward jump closes e* and returns to its head. When the head is
          marked, the body can match empty and entered_at[head] holds where the
-         iteration that just ended began (see bt_iter()): an iteration that
+         iteration that just ended began (see bt_iter_begin()): an iteration that
          ended where it began matched empty, and the repetition stops here,
          taking the head's exit and keeping what the iteration captured, as
          Onigmo's null check does. */
@@ -989,24 +995,17 @@ bt_match(bt_state *m, const char *sp, uint32_t pc, int depth)
          empty: then there is only the exit, as at a marked RE_JMP. */
       if (inst.a) {
         if (inst.offset > pc) {
-          int rr = bt_iter(m, sp, pc + 1, pc, depth + 1);
-          if (rr != BT_FAIL) { r = rr; goto done; }
-          pc = inst.offset;
+          if (!bt_push(m, sp, inst.offset, RE_CP_FORK, 0) ||
+              !bt_iter_begin(m, pc, sp)) { r = BT_LIMIT; goto done; }
+          pc++;
           break;
         }
         if (ITER_EMPTY(m, pc, sp)) { pc++; break; }
-        {
-          int rr = bt_match(m, sp, pc + 1, depth + 1);
-          if (rr != BT_FAIL) { r = rr; goto done; }
-        }
-        {
-          int rr = bt_iter(m, sp, inst.offset, pc, depth + 1);
-          if (rr == BT_FAIL) goto fail;
-          r = rr;
-          goto done;
-        }
+        if (!bt_push(m, sp, inst.offset, RE_CP_ITER, pc)) { r = BT_LIMIT; goto done; }
+        pc++;
+        break;
       }
-      if (!bt_push(m, sp, inst.offset)) { r = BT_LIMIT; goto done; }
+      if (!bt_push(m, sp, inst.offset, RE_CP_FORK, 0)) { r = BT_LIMIT; goto done; }
       pc++;
       break;
 
@@ -1017,24 +1016,17 @@ bt_match(bt_state *m, const char *sp, uint32_t pc, int depth)
          same. */
       if (inst.a) {
         if (inst.offset > pc) {
-          int rr = bt_match(m, sp, inst.offset, depth + 1);
-          if (rr != BT_FAIL) { r = rr; goto done; }
-          {
-            int rr2 = bt_iter(m, sp, pc + 1, pc, depth + 1);
-            if (rr2 == BT_FAIL) goto fail;
-            r = rr2;
-            goto done;
-          }
+          if (!bt_push(m, sp, pc + 1, RE_CP_ITER, pc)) { r = BT_LIMIT; goto done; }
+          pc = inst.offset;
+          break;
         }
         if (ITER_EMPTY(m, pc, sp)) { pc++; break; }
-        {
-          int rr = bt_iter(m, sp, inst.offset, pc, depth + 1);
-          if (rr != BT_FAIL) { r = rr; goto done; }
-        }
-        pc++;
+        if (!bt_push(m, sp, pc + 1, RE_CP_FORK, 0) ||
+            !bt_iter_begin(m, pc, sp)) { r = BT_LIMIT; goto done; }
+        pc = inst.offset;
         break;
       }
-      if (!bt_push(m, sp, pc + 1)) { r = BT_LIMIT; goto done; }
+      if (!bt_push(m, sp, pc + 1, RE_CP_FORK, 0)) { r = BT_LIMIT; goto done; }
       pc = inst.offset;
       break;
 
@@ -1237,6 +1229,10 @@ bt_match(bt_state *m, const char *sp, uint32_t pc, int depth)
       bt_undo_to(m, c.undo_top);
       sp = c.sp;
       pc = c.pc;
+      if (c.kind == RE_CP_ITER && !bt_iter_begin(m, c.group, sp)) {
+        r = BT_LIMIT;
+        goto done;
+      }
     }
   }
 
@@ -1256,9 +1252,11 @@ backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
   if (ncap == 0) ncap = 2;
 
   /* One block: the capture slots, then an entry record per pc and the pass
-     that wrote it. Every record a search writes it undoes before returning
-     (see bt_iter() and bt_look()), so the arrays are filled once for all
-     start positions. */
+     that wrote it. The arrays are filled once here and put back to what they
+     hold by the undo log unwinding between start positions (see there): an
+     iteration's record is written on the log now, which a match does not
+     unwind, so a record left by the attempt before would otherwise be read
+     as this attempt's and stop a repetition that had not gone round yet. */
   int *caps = (int*)mrb_malloc(mrb, sizeof(int) * (ncap + 2 * pat->code_len));
   int ret = 0;
   bt_state m;
