@@ -169,6 +169,35 @@ Add the line below to your build configuration.
 | File#size                   |          |          |
 | File#truncate               |          |          |
 
+## IO.popen and mruby-process
+
+A pipe to a command is two things: a pipe, and a child process. This gem
+provides the first and **mruby-process** provides the second, and `IO.popen`
+is written in `mrblib` as the composition of `IO.pipe` and `Process.spawn`.
+
+That has three consequences worth knowing about:
+
+- `IO.popen` needs **mruby-process** in the build. Without it the method is
+  still defined and raises `NotImplementedError` when called, so a build
+  without that gem still builds and says so at the call site. The same is true
+  of a build of **mruby-process** made with `MRB_NO_PROCESS_SPAWN`, which is
+  the successor to this gem's old `MRB_NO_IO_POPEN`.
+- `IO#close` waits for the command at the other end and sets `$?` to a
+  `Process::Status`, through the same `Process.waitpid` anyone else would
+  call. A stream that is already closed is left as it is, so the wait happens
+  once however many times `#close` is called; a command that was already
+  waited for elsewhere leaves nothing to report, and `$?` keeps what that wait
+  set.
+- `IO#pid` names that command, and keeps naming it after the stream is closed.
+
+With nothing said about it, the command's standard error is left where this
+process's is, as it is in Ruby: diagnostics do not arrive in the pipe the
+command's output is read from. Pass `err:` an IO or a descriptor to place it
+somewhere else.
+
+`IO.popen("-")`, Ruby's spelling of "fork instead of executing a command", is
+not supported: mruby has no `fork`.
+
 ## Porting Note
 
 If your (non Windows) platform does not support `getpwnam(3)` for some reason, define `MRB_IO_NO_PWNAM`.
