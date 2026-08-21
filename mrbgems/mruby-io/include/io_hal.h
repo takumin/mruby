@@ -324,42 +324,6 @@ int mrb_hal_io_isatty(mrb_state *mrb, int fd);
 int mrb_hal_io_pipe(mrb_state *mrb, int fds[2]);
 
 /*
- * HAL Interface - Process Operations
- */
-
-/**
- * Spawn a new process
- *
- * Creates a new process and executes the command. File descriptors can be
- * redirected for stdin/stdout/stderr (-1 means don't redirect).
- *
- * POSIX: Uses fork() + dup2() + execl()
- * Windows: Uses CreateProcess() with STARTUPINFO
- *
- * @param mrb mruby state
- * @param cmd Command to execute (shell command)
- * @param stdin_fd File descriptor to use for stdin (-1 = don't redirect)
- * @param stdout_fd File descriptor to use for stdout (-1 = don't redirect)
- * @param stderr_fd File descriptor to use for stderr (-1 = don't redirect)
- * @param pid Output parameter for process ID
- * @return 0 on success, -1 on error (sets errno)
- */
-int mrb_hal_io_spawn_process(mrb_state *mrb, const char *cmd,
-                               int stdin_fd, int stdout_fd, int stderr_fd,
-                               int *pid);
-
-/**
- * Wait for process to change state
- *
- * @param mrb mruby state
- * @param pid Process ID to wait for
- * @param status Output parameter for exit status
- * @param options Wait options (0 for blocking wait)
- * @return Process ID on success, -1 on error (sets errno)
- */
-int mrb_hal_io_waitpid(mrb_state *mrb, int pid, int *status, int options);
-
-/*
  * HAL Interface - I/O Multiplexing
  */
 

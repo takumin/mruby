@@ -90,6 +90,7 @@ mruby-symbol-ext, mruby-range-ext, mruby-object-ext.
 - **mruby-task**: Cooperative multitasking with preemptive scheduling ([ae0d7a0](https://github.com/mruby/mruby/commit/ae0d7a0))
 - **mruby-benchmark**: Benchmarking gem ([2f40f3d](https://github.com/mruby/mruby/commit/2f40f3d))
 - **mruby-strftime**: Time#strftime implementation ([b31e22f](https://github.com/mruby/mruby/commit/b31e22f))
+- **mruby-process**: `Process` module, `Process::Child` and `Process::Status`, over a process HAL with POSIX and Windows ports. `Process.spawn` creates a child, `Process.waitpid` / `Process::Child#wait` / `Process.detach` decide what becomes of it, and `$?` is set from the wait
 
 ## mruby-bin-mirb Improvements
 
@@ -118,6 +119,8 @@ mruby-symbol-ext, mruby-range-ext, mruby-object-ext.
 - **mruby-enum-lazy**: Fix `Lazy#flat_map` to handle non-enumerable block return values ([#6765](https://github.com/mruby/mruby/pull/6765))
 - **mruby-array-ext**: Add `Array#find` and `Array#rfind` methods
 - **mruby-io**: Add `IO#putc` and `Kernel#putc` ([baff6e6](https://github.com/mruby/mruby/commit/baff6e6))
+- **_NOTE_**: **mruby-io**: `IO.popen` is now a composition of `IO.pipe` and `Process.spawn`, so it needs **mruby-process** in the build; without it the method raises `NotImplementedError` rather than being absent. `IO#close` waits for the command through the child it was given, and sets `$?` to a `Process::Status`. The build macro `MRB_NO_IO_POPEN` is gone: leaving **mruby-process** out of the build, or building it with `MRB_NO_PROCESS_SPAWN`, is what a build without `IO.popen` now looks like
+- **mruby-io**: `IO.pipe` is available on Windows
 - **mruby-random**: Replace xoshiro with PCG for better memory efficiency ([f1bab01](https://github.com/mruby/mruby/commit/f1bab01))
 - **mruby-compiler**: Variable-sized AST nodes for reduced memory usage
 - **mruby-compiler**: `no_return_value` context flag for script optimization ([613b03a](https://github.com/mruby/mruby/commit/613b03a))

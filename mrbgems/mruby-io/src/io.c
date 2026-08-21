@@ -29,7 +29,6 @@
   #define write _write
   #define lseek _lseek
   #define isatty _isatty
-  #define WEXITSTATUS(x) (x)
   typedef int fsize_t;
   typedef long ftime_t;
   typedef long fsuseconds_t;
@@ -41,7 +40,6 @@
   #endif
 
 #else
-  #include <sys/wait.h>
   #include <sys/time.h>
   #include <unistd.h>
   typedef size_t fsize_t;
@@ -53,10 +51,6 @@
 #endif
   typedef mode_t fmode_t;
   typedef ssize_t fssize_t;
-#endif
-
-#ifdef _MSC_VER
-typedef mrb_int pid_t;
 #endif
 
 #include <fcntl.h>
@@ -91,33 +85,6 @@ io_get_open_fptr(mrb_state *mrb, mrb_value io)
   }
   return fptr;
 }
-
-#if !defined(MRB_NO_IO_POPEN) && defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-# define MRB_NO_IO_POPEN 1
-#endif
-
-#ifndef MRB_NO_IO_POPEN
-static void
-io_set_process_status(mrb_state *mrb, pid_t pid, int status)
-{
-  struct RClass *c_status = NULL;
-  mrb_value v;
-
-  if (mrb_class_defined_id(mrb, MRB_SYM(Process))) {
-    struct RClass *c_process = mrb_module_get_id(mrb, MRB_SYM(Process));
-    if (mrb_const_defined(mrb, mrb_obj_value(c_process), MRB_SYM(Status))) {
-      c_status = mrb_class_get_under_id(mrb, c_process, MRB_SYM(Status));
-    }
-  }
-  if (c_status != NULL) {
-    v = mrb_funcall_argv2(mrb, mrb_obj_value(c_status), MRB_SYM(new), mrb_fixnum_value(pid), mrb_fixnum_value(status));
-  }
-  else {
-    v = mrb_fixnum_value(WEXITSTATUS(status));
-  }
-  mrb_gv_set(mrb, mrb_intern_lit(mrb, "$?"), v);
-}
-#endif
 
 static mrb_noreturn void
 mode_error(mrb_state *mrb, const char *mode)
@@ -289,7 +256,6 @@ io_alloc(mrb_state *mrb)
   struct mrb_io *fptr = (struct mrb_io*)mrb_malloc(mrb, sizeof(struct mrb_io));
   fptr->fd = -1;
   fptr->fd2 = -1;
-  fptr->pid = 0;
   fptr->buf = 0;
   fptr->readable = 0;
   fptr->writable = 0;
@@ -304,154 +270,6 @@ io_alloc(mrb_state *mrb)
 #ifndef NOFILE
 #define NOFILE 64
 #endif
-
-#ifdef MRB_NO_IO_POPEN
-# define io_s_popen mrb_notimplement_m
-#else
-struct popen_params {
-  mrb_value klass;
-  const char *cmd;
-  int flags;
-  int doexec;
-  int opt_in, opt_out, opt_err;
-};
-
-static int
-option_to_fd(mrb_state *mrb, mrb_value v)
-{
-  if (mrb_undef_p(v)) return -1;
-  if (mrb_nil_p(v)) return -1;
-
-  switch (mrb_type(v)) {
-    case MRB_TT_CDATA: /* IO */
-      return mrb_io_fileno(mrb, v);
-    case MRB_TT_INTEGER:
-      return (int)mrb_integer(v);
-    default:
-      mrb_raise(mrb, E_ARGUMENT_ERROR, "wrong exec redirect action");
-      break;
-  }
-  return -1; /* never reached */
-}
-
-static void
-parse_popen_args(mrb_state *mrb, struct popen_params *p)
-{
-  mrb_value mode = mrb_nil_value();
-  struct { mrb_value opt_in, opt_out, opt_err; } kv;
-  mrb_sym knames[3] = {MRB_SYM(in), MRB_SYM(out), MRB_SYM(err)};
-  const mrb_kwargs kw = {
-    3, 0,
-    knames,
-    &kv.opt_in,
-    NULL,
-  };
-
-  mrb_get_args(mrb, "zo:", &p->cmd, &mode, &kw);
-
-  p->flags = io_mode_to_flags(mrb, mode);
-  p->doexec = (strcmp("-", p->cmd) != 0);
-  p->opt_in = option_to_fd(mrb, kv.opt_in);
-  p->opt_out = option_to_fd(mrb, kv.opt_out);
-  p->opt_err = option_to_fd(mrb, kv.opt_err);
-}
-
-static mrb_value
-io_s_popen(mrb_state *mrb, mrb_value klass)
-{
-  struct popen_params p;
-  p.klass = klass;
-  int pid = 0;
-  int pr[2] = { -1, -1 };  /* read pipe: parent reads, child writes */
-  int pw[2] = { -1, -1 };  /* write pipe: parent writes, child reads */
-  int readable, writable;
-  int stdin_fd = -1, stdout_fd = -1, stderr_fd = -1;
-
-  mrb->c->ci->mid = 0;
-  parse_popen_args(mrb, &p);
-
-  readable = OPEN_READABLE_P(p.flags);
-  writable = OPEN_WRITABLE_P(p.flags);
-
-  /* Create pipes for communication */
-  if (readable) {
-    if (mrb_hal_io_pipe(mrb, pr) == -1) {
-      mrb_sys_fail(mrb, "pipe");
-    }
-  }
-
-  if (writable) {
-    if (mrb_hal_io_pipe(mrb, pw) == -1) {
-      if (pr[0] != -1) {
-        mrb_hal_io_close(mrb, pr[0]);
-        mrb_hal_io_close(mrb, pr[1]);
-      }
-      mrb_sys_fail(mrb, "pipe");
-    }
-  }
-
-  /* Set up child process file descriptors */
-  if (p.doexec) {
-    /* Child stdin: either write pipe read end or opt_in */
-    stdin_fd = (p.opt_in != -1) ? p.opt_in : (writable ? pw[0] : -1);
-
-    /* Child stdout: either read pipe write end or opt_out */
-    stdout_fd = (p.opt_out != -1) ? p.opt_out : (readable ? pr[1] : -1);
-
-    /* Child stderr: opt_err or stdout */
-    stderr_fd = (p.opt_err != -1) ? p.opt_err : stdout_fd;
-
-    /* Spawn child process using HAL */
-    if (mrb_hal_io_spawn_process(mrb, p.cmd, stdin_fd, stdout_fd, stderr_fd, &pid) == -1) {
-      int saved_errno = errno;
-      if (readable) {
-        mrb_hal_io_close(mrb, pr[0]);
-        mrb_hal_io_close(mrb, pr[1]);
-      }
-      if (writable) {
-        mrb_hal_io_close(mrb, pw[0]);
-        mrb_hal_io_close(mrb, pw[1]);
-      }
-      errno = saved_errno;
-      mrb_raisef(mrb, E_IO_ERROR, "command not found: %s", p.cmd);
-    }
-
-    /* Close child ends of pipes in parent */
-    if (readable) {
-      mrb_hal_io_close(mrb, pr[1]);  /* close write end */
-    }
-    if (writable) {
-      mrb_hal_io_close(mrb, pw[0]);  /* close read end */
-    }
-  }
-
-  /* Set up parent IO object */
-  mrb_value io = mrb_obj_value(mrb_data_object_alloc(mrb, mrb_class_ptr(klass), NULL, &mrb_io_type));
-  struct mrb_io *fptr = io_alloc(mrb);
-
-  if (readable && writable) {
-    fptr->fd = pr[0];      /* parent reads from here */
-    fptr->fd2 = pw[1];     /* parent writes to here */
-  }
-  else if (readable) {
-    fptr->fd = pr[0];      /* parent reads from here */
-    fptr->fd2 = -1;
-  }
-  else {
-    fptr->fd = pw[1];      /* parent writes to here */
-    fptr->fd2 = -1;
-  }
-
-  fptr->pid = pid;
-  fptr->readable = readable;
-  fptr->writable = writable;
-  io_init_buf(mrb, fptr);
-
-  DATA_TYPE(io) = &mrb_io_type;
-  DATA_PTR(io)  = fptr;
-  return io;
-}
-#endif /* MRB_NO_IO_POPEN */
 
 static int
 symdup(mrb_state *mrb, int fd, mrb_bool *failed)
@@ -483,7 +301,6 @@ io_init_copy(mrb_state *mrb, mrb_value copy)
     mrb_free(mrb, fptr_copy);
   }
   fptr_copy = (struct mrb_io*)io_alloc(mrb);
-  fptr_copy->pid = fptr_orig->pid;
   fptr_copy->readable = fptr_orig->readable;
   fptr_copy->writable = fptr_orig->writable;
   fptr_copy->sync = fptr_orig->sync;
@@ -632,30 +449,6 @@ fptr_finalize(mrb_state *mrb, struct mrb_io *fptr, int quiet)
     fptr->fd2 = -1;
   }
 
-#ifndef MRB_NO_IO_POPEN
-  if (fptr->pid != 0) {
-#if !defined(_WIN32)
-    pid_t pid;
-    int status;
-    do {
-      pid = waitpid(fptr->pid, &status, 0);
-    } while (pid == -1 && errno == EINTR);
-    if (!quiet && pid == fptr->pid) {
-      io_set_process_status(mrb, pid, status);
-    }
-#else
-    HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, fptr->pid);
-    DWORD status;
-    if (WaitForSingleObject(h, INFINITE) && GetExitCodeProcess(h, &status))
-      if (!quiet)
-        io_set_process_status(mrb, fptr->pid, (int)status);
-    CloseHandle(h);
-#endif
-    fptr->pid = 0;
-    /* Note: we don't raise an exception when waitpid(3) fails */
-  }
-#endif
-
   if (fptr->buf) {
     mrb_free(mrb, fptr->buf);
     fptr->buf = NULL;
@@ -718,6 +511,49 @@ io_s_for_fd(mrb_state *mrb, mrb_value klass)
 
   mrb_value obj = mrb_obj_value((struct RObject*)mrb_obj_alloc(mrb, ttype, c));
   return io_init(mrb, obj);
+}
+
+/*
+ * call-seq:
+ *   IO._duplex(read_io, write_io) -> io
+ *
+ * Makes one bidirectional stream out of the two ends of a pair of pipes,
+ * taking their descriptors over -- the arguments are left closed.  This is
+ * what `IO.popen(cmd, "r+")` returns: a stream that reads from one pipe and
+ * writes to another, which is the one thing about a pipe to a command that
+ * `IO.pipe` alone cannot build.
+ */
+static mrb_value
+io_s_duplex(mrb_state *mrb, mrb_value klass)
+{
+  mrb_value read_io, write_io, io;
+  struct mrb_io *rfptr, *wfptr, *fptr;
+
+  mrb_get_args(mrb, "oo", &read_io, &write_io);
+  rfptr = io_get_open_fptr(mrb, read_io);
+  wfptr = io_get_open_fptr(mrb, write_io);
+  if (rfptr->fd2 != -1 || wfptr->fd2 != -1) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "already a bidirectional stream");
+  }
+
+  /* Everything that can fail happens before either end is taken over, so a
+     failure here leaves both streams as they were. */
+  io = mrb_obj_value(mrb_data_object_alloc(mrb, mrb_class_ptr(klass), NULL, &mrb_io_type));
+  fptr = io_alloc(mrb);
+  fptr->fd = rfptr->fd;
+  fptr->fd2 = wfptr->fd;
+  fptr->readable = 1;
+  fptr->writable = 1;
+  fptr->sync = wfptr->sync;
+  fptr->close_fd = rfptr->close_fd;
+  fptr->close_fd2 = wfptr->close_fd;
+  io_init_buf(mrb, fptr);
+  DATA_TYPE(io) = &mrb_io_type;
+  DATA_PTR(io)  = fptr;
+
+  rfptr->fd = -1;
+  wfptr->fd = -1;
+  return io;
 }
 
 static mrb_value
@@ -1213,6 +1049,9 @@ io_close_write(mrb_state *mrb, mrb_value io)
   if (mrb_hal_io_close(mrb, (int)fptr->fd2) == -1) {
     mrb_sys_fail(mrb, "close");
   }
+  /* The write end is gone; leaving its number behind would have #close try
+     to close it a second time. */
+  fptr->fd2 = -1;
   return mrb_nil_value();
 }
 
@@ -1252,36 +1091,6 @@ io_pos(mrb_state *mrb, mrb_value io)
   }
 }
 
-/*
- * call-seq:
- *   ios.pid -> integer or nil
- *
- * Returns the process ID of a child process on a pipe, or `nil` if the
- * stream is not a pipe.
- *
- *   r, w = IO.pipe
- *   fork do
- *     r.close
- *     w.write "hello"
- *     w.close
- *   end
- *   w.close
- *   p r.pid   #=> 2056
- *   r.read    #=> "hello"
- *   r.close
- */
-static mrb_value
-io_pid(mrb_state *mrb, mrb_value io)
-{
-  struct mrb_io *fptr = io_get_open_fptr(mrb, io);
-
-  if (fptr->pid > 0) {
-    return mrb_fixnum_value(fptr->pid);
-  }
-
-  return mrb_nil_value();
-}
-
 static mrb_io_timeval
 time2timeval(mrb_state *mrb, mrb_value time)
 {
@@ -1318,7 +1127,7 @@ time2timeval(mrb_state *mrb, mrb_value time)
  *   f.puts "hello"
  */
 
-#if !defined(_WIN32) && !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
+#if !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
 static mrb_value
 io_s_pipe(mrb_state *mrb, mrb_value klass)
 {
@@ -2310,6 +2119,9 @@ static const mrb_mt_entry io_rom_entries[] = {
   MRB_MT_ENTRY(io_syswrite,          MRB_SYM(syswrite), MRB_ARGS_REQ(1)),
   MRB_MT_ENTRY(io_seek,              MRB_SYM(seek), MRB_ARGS_ARG(1,1)),
   MRB_MT_ENTRY(io_close,             MRB_SYM(close),         MRB_ARGS_NONE()),  /* 15.2.20.5.1 */
+  /* The same primitive under a name mrblib's #close can still reach after
+     redefining #close to also reap the child of a popen stream. */
+  MRB_MT_ENTRY(io_close,             MRB_SYM(_close),        MRB_ARGS_NONE()),
   MRB_MT_ENTRY(io_close_write,       MRB_SYM(close_write),   MRB_ARGS_NONE()),
   MRB_MT_ENTRY(io_set_close_on_exec, MRB_SYM_E(close_on_exec), MRB_ARGS_REQ(1)),
   MRB_MT_ENTRY(io_close_on_exec_p,   MRB_SYM_Q(close_on_exec), MRB_ARGS_NONE()),
@@ -2318,7 +2130,6 @@ static const mrb_mt_entry io_rom_entries[] = {
   MRB_MT_ENTRY(io_ungetc,            MRB_SYM(ungetc), MRB_ARGS_REQ(1)),
   MRB_MT_ENTRY(io_ungetbyte,         MRB_SYM(ungetbyte), MRB_ARGS_REQ(1)),
   MRB_MT_ENTRY(io_pos,               MRB_SYM(pos),           MRB_ARGS_NONE()),
-  MRB_MT_ENTRY(io_pid,               MRB_SYM(pid),           MRB_ARGS_NONE()),
   MRB_MT_ENTRY(io_fileno,            MRB_SYM(fileno),        MRB_ARGS_NONE()),
   MRB_MT_ENTRY(io_write,             MRB_SYM(write), MRB_ARGS_ANY()),  /* 15.2.20.5.20 */
   MRB_MT_ENTRY(io_puts,              MRB_SYM(puts), MRB_ARGS_ANY()),
@@ -2340,12 +2151,12 @@ mrb_init_io(mrb_state *mrb)
   MRB_SET_INSTANCE_TT(io, MRB_TT_CDATA);
 
   mrb_include_module(mrb, io, mrb_module_get_id(mrb, MRB_SYM(Enumerable))); /* 15.2.20.3 */
-  mrb_define_class_method_id(mrb, io, MRB_SYM(_popen),  io_s_popen,   MRB_ARGS_ARG(1,2));
   mrb_define_class_method_id(mrb, io, MRB_SYM(_sysclose),  io_s_sysclose, MRB_ARGS_REQ(1));
+  mrb_define_class_method_id(mrb, io, MRB_SYM(_duplex),  io_s_duplex,  MRB_ARGS_REQ(2));
   mrb_define_class_method_id(mrb, io, MRB_SYM(for_fd),  io_s_for_fd,   MRB_ARGS_ARG(1,2));
   mrb_define_class_method_id(mrb, io, MRB_SYM(select),  io_s_select,  MRB_ARGS_ARG(1,3));
   mrb_define_class_method_id(mrb, io, MRB_SYM(sysopen), io_s_sysopen, MRB_ARGS_ARG(1,2));
-#if !defined(_WIN32) && !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
+#if !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
   mrb_define_class_method_id(mrb, io, MRB_SYM(_pipe), io_s_pipe, MRB_ARGS_NONE());
 #endif
 
