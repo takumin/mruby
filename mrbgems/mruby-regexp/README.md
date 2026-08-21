@@ -328,6 +328,75 @@ same, having no character to classify. `[[:xdigit:]]` and `[[:ascii:]]` are
 sets ASCII defines and hold nothing above it on any build. The table is 13.9KB
 of read-only data; `MRB_USE_ASCII_CTYPE` is what leaves it out.
 
+## Comparing with CRuby
+
+`tools/differential/` runs random patterns under CRuby and under one or more
+mruby binaries and reports where the answers part, in the shape of the
+differential tables in this gem's pull requests. It needs a CRuby to be the
+reference and an mruby built with mruby-io (the default gembox has it):
+
+```console
+$ bash mrbgems/mruby-regexp/tools/differential/differential.sh -n 10000 -s 2 -- \
+    master=build-master/host/bin/mruby branch=build/host/bin/mruby
+```
+
+`gen.rb` writes the cases from a seed, so a run can be repeated, and takes
+the alphabet, the nesting depth and the set of features to draw from
+(lookarounds, backreferences, atomic groups, repetitions whose body can match
+empty, and so on; `--list-features` names them, and `-w` leaves some out).
+`run.rb` is the same file under CRuby and under mruby, and prints each case's
+`MatchData#to_a` or why there is none. `compare.rb` sorts the cases by which
+runs disagree with CRuby: with a master and a branch, the cases only the
+branch answers differently are what the branch changed, and the ones both
+answer differently are the engine's standing differences. A pattern an mruby
+refuses is sorted with the refusal as that run's answer, so what one mruby
+refuses and another answers is still compared for the one that answers, and
+the report starts with the count of refusals per run; a match CRuby cannot
+finish is counted and left out.
+
+Two things to know when reading the report. This gem raises `RegexpError`
+where a search gives up at its step or recursion limit, so a limit sorts
+under `LIMIT` for that run rather than hiding in what the search had found
+by then. And `differential.sh` caps the address space of
+every run (`MEM_MB`, 1 GB by default): a pattern that would make Onigmo grow
+its stack without bound is what the cap is for, and under it CRuby raises
+`RegexpError`, which is recorded and left out of the comparison, where
+without it the match takes the machine.
+
+A case the report names is shrunk by `minimize.rb`, which cuts at the pattern
+and the subject for as long as the runs go on parting the same way:
+
+```console
+$ ruby mrbgems/mruby-regexp/tools/differential/minimize.rb \
+    '((?:\w{0,}?|()){2}(\2))' bbbb -- \
+    master=build-master/host/bin/mruby branch=build/host/bin/mruby
+```
+
+What it holds fixed is the reading `compare.rb` gives each run, not the
+answers themselves: a case both mrubies answer differently shrinks to one
+they both answer differently, and a case only the branch gives up on shrinks
+to one only the branch gives up on. The candidates go through
+`differential.sh` (`CASES` hands it a cases file), so the cap, the timeout and
+the resume after a kill are a full run's.
+
+The alphabet a generated case draws from is two characters, which says
+nothing about what the classes match. `classes.sh` covers that from the other
+side: it walks every codepoint under CRuby and under each mruby and reports
+the classes whose membership parts, the POSIX brackets with their negations
+and the shorthands, each on its own and inside a class.
+
+```console
+$ bash mrbgems/mruby-regexp/tools/differential/classes.sh -- \
+    master=build-master/host/bin/mruby branch=build/host/bin/mruby
+```
+
+This one wants an mruby whose strings index by character: mruby-encoding is
+what defines `MRB_UTF8_STRING`, the default gembox does not carry it, and a
+build reading its strings as bytes answers every class within ASCII, which
+parts from CRuby everywhere and says nothing about the tables. The `full-core`
+gembox carries both that gem and mruby-io. A walk is one process per run over
+the whole of Unicode; `-m` narrows it while a difference is being chased.
+
 ## License
 
 MIT License. See the mruby license file for details.
