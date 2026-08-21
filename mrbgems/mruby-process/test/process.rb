@@ -20,10 +20,16 @@ module ProcessTestUtil
 
   # Whether a single-String command reaches a POSIX shell.  There is no
   # `File::ALT_SEPARATOR` to consult here, since this gem's tests run without
-  # mruby-io, so the shell is asked something only a POSIX one answers.
+  # mruby-io, so the shell is asked to do something only a POSIX one does.
+  #
+  # Running a command is not enough to ask it with: a Windows machine can
+  # have a POSIX `test` on its PATH, which `cmd.exe` then finds and runs, so
+  # `test 1 = 1` succeeds there while none of the shell syntax these tests
+  # rely on works.  Arithmetic expansion reaching the exit status is the
+  # shell's own doing, and nothing on the PATH can stand in for it.
   def self.posix_shell?
     return @posix_shell unless @posix_shell.nil?
-    @posix_shell = spawn? && run("test 1 = 1").success?
+    @posix_shell = spawn? && run("exit $((6 * 7))").exitstatus == 42
   rescue StandardError
     @posix_shell = false
   end
