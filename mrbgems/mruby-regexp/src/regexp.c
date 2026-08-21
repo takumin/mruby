@@ -379,7 +379,7 @@ re_check_over_limit(mrb_state *mrb, int n)
   if (n >= 0) return;
   mrb_raise(mrb, E_REGEXP_ERROR, n == RE_OVER_STEP_LIMIT
             ? "step limit over (MRB_REGEXP_STEP_LIMIT)"
-            : "recursion limit over (MRB_REGEXP_RECURSION_LIMIT)");
+            : "stack limit over (MRB_REGEXP_STACK_LIMIT)");
 }
 
 /* Internal: execute match and create MatchData.
@@ -2152,7 +2152,7 @@ mrb_mruby_regexp_gem_init(mrb_state *mrb)
   /* The two limits of the backtracking engine, which a build sets (see
      re_internal.h) and a `RegexpError` names: the value behind the name, for
      whoever has to size a subject or a pattern to the build it runs on. */
-  mrb_define_const(mrb, re, "RECURSION_LIMIT", mrb_int_value(mrb, MRB_REGEXP_RECURSION_LIMIT));
+  mrb_define_const(mrb, re, "STACK_LIMIT", mrb_int_value(mrb, MRB_REGEXP_STACK_LIMIT));
   mrb_define_const(mrb, re, "STEP_LIMIT", mrb_int_value(mrb, MRB_REGEXP_STEP_LIMIT));
 
   /* Class methods */

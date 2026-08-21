@@ -174,11 +174,13 @@ ReDoS attacks.
 **Backtracking engine**: Used when patterns contain `\1`-`\9`
 backreferences, non-greedy quantifiers (`*?`, `+?`, `??`),
 lookaround assertions (`(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)`)
-or atomic groups (`(?>...)`). Bounded by a configurable step limit
-(`MRB_REGEXP_STEP_LIMIT`, default 1M) against excessive backtracking and
-by a recursion limit (`MRB_REGEXP_RECURSION_LIMIT`, default 1000) on
-the C stack. A search that reaches either raises `RegexpError` naming
-the limit, since what it had found by then is not the answer.
+or atomic groups (`(?>...)`). It backtracks on a stack of its own on the
+heap, so a search spends a constant amount of C stack however long the
+subject is. Bounded by a configurable step limit (`MRB_REGEXP_STEP_LIMIT`,
+default 1M) against excessive backtracking and by a stack limit
+(`MRB_REGEXP_STACK_LIMIT`, default 10000) on how tall that stack may
+stand. A search that reaches either raises `RegexpError` naming the limit,
+since what it had found by then is not the answer.
 
 The engine is selected automatically at compile time based on
 pattern analysis.
@@ -260,22 +262,25 @@ there.
 #define MRB_REGEXP_STEP_LIMIT 1000000
 #endif
 
-/* Maximum recursion depth of the backtracking engine (C stack) */
-#ifndef MRB_REGEXP_RECURSION_LIMIT
-#define MRB_REGEXP_RECURSION_LIMIT 1000
+/* Maximum height of the backtracking engine's stack (heap) */
+#ifndef MRB_REGEXP_STACK_LIMIT
+#define MRB_REGEXP_STACK_LIMIT 10000
 #endif
 ```
 
 A search that reaches either limit raises `RegexpError`, `step limit over
-(MRB_REGEXP_STEP_LIMIT)` or `recursion limit over
-(MRB_REGEXP_RECURSION_LIMIT)`, rather than answer with what it had found
-by then. The recursion limit is spent per fork and per capture, so a
-repetition of an atomic group or a lookaround spends a few frames per
-iteration, and a long enough run of one reaches it on a pattern that is
-not pathological; a build with the stack for it can set it higher. The
-values a build chose are `Regexp::RECURSION_LIMIT` and `Regexp::STEP_LIMIT`,
-for a program that has to size a subject or a pattern to the build it runs
-on; CRuby has no counterpart, its guard being `Regexp.timeout`.
+(MRB_REGEXP_STEP_LIMIT)` or `stack limit over (MRB_REGEXP_STACK_LIMIT)`,
+rather than answer with what it had found by then. The step limit bounds
+the work one search may do; the stack limit bounds the state it holds while
+doing it -- the branches it has not taken yet and the writes it has not
+taken back, an entry each and about 24 bytes apiece -- so what that one
+bounds is the memory a search may ask for. A repetition holds one or two
+entries per iteration, so a run longer than the limit reaches it on a
+pattern that is not pathological; a build with the memory for it can set it
+higher, and one that wants a smaller ceiling can set it lower. The values a
+build chose are `Regexp::STACK_LIMIT` and `Regexp::STEP_LIMIT`, for a
+program that has to size a subject or a pattern to the build it runs on;
+CRuby has no counterpart, its guard being `Regexp.timeout`.
 
 Case folding beyond ASCII is not this gem's to configure. The table is
 core's, carried by any build that defines `MRB_UTF8_STRING` without

@@ -1219,11 +1219,12 @@ assert("String#sub / #gsub / #scan / #split raise where a search hits a limit") 
   # A walk over the subject raises from the middle of it rather than hand
   # back what it had: the matches before the limit are no more the answer
   # than the shorter match a search itself used to settle for. The first
-  # search here matches the `b`; the second gives up on the run of `a`, three
-  # frames an iteration and as long as the recursion limit, and the walk used
-  # to go on past it to the tail of the run that fit before the `c`.
-  over = "a" * Regexp::RECURSION_LIMIT
-  fits = "a" * (Regexp::RECURSION_LIMIT / 4)
+  # search here matches the `b`; the second gives up on the run of `a`, an
+  # entry of backtracking state an iteration and longer than the stack limit
+  # allows entries, and the walk used to go on past it to the tail of
+  # the run that fit before the `c`.
+  over = "a" * (2 * Regexp::STACK_LIMIT)
+  fits = "a" * (Regexp::STACK_LIMIT / 32)
   s = "b" + over + "c"
   re = /b|(?:(?>a))*c/
   assert_raise(RegexpError) { s.gsub(re, "x") }    # was "x" + most of the run + "x", CRuby "xx"

@@ -173,10 +173,21 @@ typedef struct mrb_regexp_pattern {
 #define MRB_REGEXP_STEP_LIMIT 1000000
 #endif
 
-/* Recursion-depth limit for bt_match, which recurses at every fork and
-   every capture: bounds C stack growth on a long subject or a deep pattern. */
-#ifndef MRB_REGEXP_RECURSION_LIMIT
-#define MRB_REGEXP_RECURSION_LIMIT 1000
+/* How tall the backtracking engine's stack may stand in one search: the
+   choice points it has not tried yet and the writes it has not taken back,
+   counted together (see bt_room() in re_exec.c). That stack is on the heap,
+   so what the limit bounds is memory -- about 24 bytes an entry -- and not
+   the C stack, of which a search spends a constant amount however long the
+   subject is. Where MRB_REGEXP_STEP_LIMIT bounds the work one search may do,
+   this bounds the state it may hold while doing it.
+
+   The default is well above the 1,000 C frames the engine was allowed before
+   the stack moved off them, an entry being the cheaper of the two, and it is
+   what a repetition of a group spends one or two of per iteration of the
+   subject: a build that wants a longer subject to match, or a smaller
+   ceiling on the memory a search may ask for, sets it. */
+#ifndef MRB_REGEXP_STACK_LIMIT
+#define MRB_REGEXP_STACK_LIMIT 10000
 #endif
 
 /* What a search answers when the backtracking engine gave up at one of the
@@ -184,7 +195,7 @@ typedef struct mrb_regexp_pattern {
    on it: what the search had found by then is not a shorter or a later
    match, and reading it as one was the defect. Which of the two it was
    names the knob to turn. */
-#define RE_OVER_RECURSION_LIMIT (-1)
+#define RE_OVER_STACK_LIMIT (-1)
 #define RE_OVER_STEP_LIMIT (-2)
 
 /* Maximum captures */
