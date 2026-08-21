@@ -1213,6 +1213,9 @@ io_close_write(mrb_state *mrb, mrb_value io)
   if (mrb_hal_io_close(mrb, (int)fptr->fd2) == -1) {
     mrb_sys_fail(mrb, "close");
   }
+  /* The write end is gone; leaving its number behind would have #close try
+     to close it a second time. */
+  fptr->fd2 = -1;
   return mrb_nil_value();
 }
 
