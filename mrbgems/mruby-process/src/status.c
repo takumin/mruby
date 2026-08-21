@@ -3,74 +3,59 @@
 **
 ** See Copyright Notice in mruby.h
 **
-** A Process::Status keeps only what the platform gave it: the pid and the
-** raw wait status.  Every question about that status -- exited?, termsig,
-** coredump? -- is answered by handing the raw value back to the HAL, so the
-** Ruby side never grows its own idea of what the bits mean and a status
-** built elsewhere reads exactly as one this gem reaped.
+** A status is a snapshot, taken by the port that produced it, of how a
+** process left the CPU.  It is decoded once, where the platform's bits are
+** still the platform's business, and never afterwards: a `Process::Status`
+** outlives the child it came from, and a question asked of it later cannot
+** be answered by asking the OS about a pid that may since have been reused.
 **
-** That "built elsewhere" is the point of keeping `Process::Status.new(pid,
-** raw_status)` a working construction path: mruby-io's `IO.popen` sets `$?`
-** that way when this gem happens to be present, and it must keep working
-** without either gem depending on the other.
+** So there is no way to build one from a raw platform value.  A status comes
+** from a wait, and only from a wait.
 */
 
 #include <mruby.h>
 #include <mruby/class.h>
-#include <mruby/variable.h>
+#include <mruby/data.h>
 #include <mruby/string.h>
 #include "process_hal.h"
 #include "process_internal.h"
 
-/* Read one of the two integers a status is made of.  An instance that never
-   reached #initialize has neither, and asking it anything is a mistake worth
-   naming rather than reading past. */
-static mrb_int
-status_ivar(mrb_state *mrb, mrb_value self, mrb_sym name)
+static void
+status_free(mrb_state *mrb, void *ptr)
 {
-  mrb_value v = mrb_iv_get(mrb, self, name);
-
-  if (!mrb_integer_p(v)) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "uninitialized Process::Status");
-  }
-  return mrb_integer(v);
+  mrb_free(mrb, ptr);
 }
 
-static void
-status_decode(mrb_state *mrb, mrb_value self, mrb_process_status *st)
-{
-  mrb_int pid = status_ivar(mrb, self, MRB_IVSYM(pid));
-  mrb_int raw = status_ivar(mrb, self, MRB_IVSYM(status));
+static const mrb_data_type status_type = { "Process::Status", status_free };
 
-  mrb_hal_process_status_decode(mrb, pid, raw, st);
+const mrb_process_status*
+mrb_process_status_ptr(mrb_state *mrb, mrb_value status)
+{
+  mrb_process_status *st = (mrb_process_status*)mrb_data_get_ptr(mrb, status, &status_type);
+
+  if (st == NULL) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "uninitialized Process::Status");
+  }
+  return st;
+}
+
+mrb_value
+mrb_process_status_new(mrb_state *mrb, const mrb_process_status *status)
+{
+  struct RClass *process = mrb_module_get_id(mrb, MRB_SYM(Process));
+  struct RClass *klass = mrb_class_get_under_id(mrb, process, MRB_SYM(Status));
+  struct RData *data = mrb_data_object_alloc(mrb, klass, NULL, &status_type);
+  mrb_process_status *copy = (mrb_process_status*)mrb_malloc(mrb, sizeof(mrb_process_status));
+
+  *copy = *status;
+  data->data = copy;
+  return mrb_obj_value(data);
 }
 
 static mrb_value
 status_flag(mrb_state *mrb, mrb_value self, unsigned int flag)
 {
-  mrb_process_status st;
-
-  status_decode(mrb, self, &st);
-  return mrb_bool_value((st.flags & flag) != 0);
-}
-
-/*
- * call-seq:
- *   Process::Status.new(pid, raw_status) -> status
- *
- * Wraps a platform wait status for the process +pid+.  +raw_status+ is the
- * value the platform reported the process with, as Process.waitpid passes
- * on and as Process::Status#to_i gives back.
- */
-static mrb_value
-status_initialize(mrb_state *mrb, mrb_value self)
-{
-  mrb_int pid, raw_status;
-
-  mrb_get_args(mrb, "ii", &pid, &raw_status);
-  mrb_iv_set(mrb, self, MRB_IVSYM(pid), mrb_int_value(mrb, pid));
-  mrb_iv_set(mrb, self, MRB_IVSYM(status), mrb_int_value(mrb, raw_status));
-  return self;
+  return mrb_bool_value((mrb_process_status_ptr(mrb, self)->flags & flag) != 0);
 }
 
 /*
@@ -82,7 +67,7 @@ status_initialize(mrb_state *mrb, mrb_value self)
 static mrb_value
 status_pid(mrb_state *mrb, mrb_value self)
 {
-  return mrb_int_value(mrb, status_ivar(mrb, self, MRB_IVSYM(pid)));
+  return mrb_int_value(mrb, mrb_process_status_ptr(mrb, self)->pid);
 }
 
 /*
@@ -90,12 +75,12 @@ status_pid(mrb_state *mrb, mrb_value self)
  *   status.to_i -> integer
  *
  * The platform status as it was reported, unread.  Its layout is the
- * platform's business, which is why nothing but the HAL takes it apart.
+ * platform's business, which is why nothing above the port takes it apart.
  */
 static mrb_value
 status_to_i(mrb_state *mrb, mrb_value self)
 {
-  return mrb_int_value(mrb, status_ivar(mrb, self, MRB_IVSYM(status)));
+  return mrb_int_value(mrb, mrb_process_status_ptr(mrb, self)->raw_status);
 }
 
 /*
@@ -119,11 +104,10 @@ status_exited_p(mrb_state *mrb, mrb_value self)
 static mrb_value
 status_exitstatus(mrb_state *mrb, mrb_value self)
 {
-  mrb_process_status st;
+  const mrb_process_status *st = mrb_process_status_ptr(mrb, self);
 
-  status_decode(mrb, self, &st);
-  if (!(st.flags & MRB_PROCESS_STATUS_EXITED)) return mrb_nil_value();
-  return mrb_int_value(mrb, st.exitstatus);
+  if (!(st->flags & MRB_PROCESS_STATUS_EXITED)) return mrb_nil_value();
+  return mrb_int_value(mrb, st->exitstatus);
 }
 
 /*
@@ -147,11 +131,10 @@ status_signaled_p(mrb_state *mrb, mrb_value self)
 static mrb_value
 status_termsig(mrb_state *mrb, mrb_value self)
 {
-  mrb_process_status st;
+  const mrb_process_status *st = mrb_process_status_ptr(mrb, self);
 
-  status_decode(mrb, self, &st);
-  if (!(st.flags & MRB_PROCESS_STATUS_SIGNALED)) return mrb_nil_value();
-  return mrb_int_value(mrb, st.termsig);
+  if (!(st->flags & MRB_PROCESS_STATUS_SIGNALED)) return mrb_nil_value();
+  return mrb_int_value(mrb, st->termsig);
 }
 
 /*
@@ -176,11 +159,10 @@ status_stopped_p(mrb_state *mrb, mrb_value self)
 static mrb_value
 status_stopsig(mrb_state *mrb, mrb_value self)
 {
-  mrb_process_status st;
+  const mrb_process_status *st = mrb_process_status_ptr(mrb, self);
 
-  status_decode(mrb, self, &st);
-  if (!(st.flags & MRB_PROCESS_STATUS_STOPPED)) return mrb_nil_value();
-  return mrb_int_value(mrb, st.stopsig);
+  if (!(st->flags & MRB_PROCESS_STATUS_STOPPED)) return mrb_nil_value();
+  return mrb_int_value(mrb, st->stopsig);
 }
 
 /*
@@ -206,18 +188,20 @@ status_coredump_p(mrb_state *mrb, mrb_value self)
 static mrb_value
 status_eq(mrb_state *mrb, mrb_value self)
 {
+  const mrb_process_status *st = mrb_process_status_ptr(mrb, self);
   mrb_value other;
 
   mrb_get_args(mrb, "o", &other);
   if (mrb_integer_p(other)) {
-    return mrb_bool_value(status_ivar(mrb, self, MRB_IVSYM(status)) == mrb_integer(other));
+    return mrb_bool_value(st->raw_status == mrb_integer(other));
   }
   if (mrb_obj_class(mrb, self) != mrb_obj_class(mrb, other)) {
     return mrb_false_value();
   }
-  return mrb_bool_value(
-    status_ivar(mrb, self, MRB_IVSYM(pid)) == status_ivar(mrb, other, MRB_IVSYM(pid)) &&
-    status_ivar(mrb, self, MRB_IVSYM(status)) == status_ivar(mrb, other, MRB_IVSYM(status)));
+  {
+    const mrb_process_status *o = mrb_process_status_ptr(mrb, other);
+    return mrb_bool_value(st->pid == o->pid && st->raw_status == o->raw_status);
+  }
 }
 
 /*
@@ -240,28 +224,21 @@ status_s_signame(mrb_state *mrb, mrb_value self)
   return mrb_str_new_cstr(mrb, name);
 }
 
-mrb_value
-mrb_process_status_new(mrb_state *mrb, mrb_int pid, mrb_int raw_status)
-{
-  struct RClass *process = mrb_module_get_id(mrb, MRB_SYM(Process));
-  struct RClass *status = mrb_class_get_under_id(mrb, process, MRB_SYM(Status));
-  mrb_value argv[2];
-
-  argv[0] = mrb_int_value(mrb, pid);
-  argv[1] = mrb_int_value(mrb, raw_status);
-  return mrb_obj_new(mrb, status, 2, argv);
-}
-
 void
 mrb_process_status_init(mrb_state *mrb, struct RClass *process)
 {
   struct RClass *status;
 
   status = mrb_define_class_under_id(mrb, process, MRB_SYM(Status), mrb->object_class);
+  MRB_SET_INSTANCE_TT(status, MRB_TT_CDATA);
+
+  /* A status describes a process this interpreter waited for.  There is
+     nothing to build one out of but such a wait, so there is no way to build
+     one by hand. */
+  mrb_undef_class_method_id(mrb, status, MRB_SYM(new));
 
   mrb_define_class_method_id(mrb, status, MRB_SYM(_signame), status_s_signame, MRB_ARGS_REQ(1));
 
-  mrb_define_method_id(mrb, status, MRB_SYM(initialize), status_initialize, MRB_ARGS_REQ(2));
   mrb_define_method_id(mrb, status, MRB_SYM(pid),        status_pid,        MRB_ARGS_NONE());
   mrb_define_method_id(mrb, status, MRB_SYM(to_i),       status_to_i,       MRB_ARGS_NONE());
   mrb_define_method_id(mrb, status, MRB_SYM(to_int),     status_to_i,       MRB_ARGS_NONE());

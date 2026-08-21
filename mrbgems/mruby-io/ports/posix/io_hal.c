@@ -13,7 +13,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <sys/wait.h>
 #include <sys/file.h>
 #include <sys/param.h>
 
@@ -382,93 +381,6 @@ mrb_hal_io_pipe(mrb_state *mrb, int fds[2])
 #endif
 
   return 0;
-}
-
-/*
- * Process Operations
- */
-
-int
-mrb_hal_io_spawn_process(mrb_state *mrb, const char *cmd,
-                          int stdin_fd, int stdout_fd, int stderr_fd,
-                          int *pid)
-{
-  pid_t child_pid;
-  (void)mrb;
-
-  /* Skip leading whitespace */
-  while (*cmd == ' ' || *cmd == '\t' || *cmd == '\n') {
-    cmd++;
-  }
-
-  if (!*cmd) {
-    errno = ENOENT;
-    return -1;
-  }
-
-  child_pid = fork();
-  if (child_pid == -1) {
-    /* Fork failed */
-    return -1;
-  }
-
-  if (child_pid == 0) {
-    /* Child process */
-
-    /* Redirect stdin */
-    if (stdin_fd != -1) {
-      dup2(stdin_fd, STDIN_FILENO);
-      if (stdin_fd > 2) close(stdin_fd);
-    }
-
-    /* Redirect stdout */
-    if (stdout_fd != -1) {
-      dup2(stdout_fd, STDOUT_FILENO);
-      if (stdout_fd > 2) close(stdout_fd);
-    }
-
-    /* Redirect stderr */
-    if (stderr_fd != -1) {
-      dup2(stderr_fd, STDERR_FILENO);
-      if (stderr_fd > 2) close(stderr_fd);
-    }
-
-    /* Close all other file descriptors */
-    int max_fd = sysconf(_SC_OPEN_MAX);
-    if (max_fd == -1) max_fd = 1024;
-    for (int i = 3; i < max_fd; i++) {
-      close(i);
-    }
-
-    /* Execute command via shell */
-    execl("/bin/sh", "sh", "-c", cmd, (char*)NULL);
-
-    /* If execl returns, it failed */
-    _exit(127);
-  }
-
-  /* Parent process */
-  *pid = (int)child_pid;
-  return 0;
-}
-
-int
-mrb_hal_io_waitpid(mrb_state *mrb, int pid, int *status, int options)
-{
-  pid_t result;
-  int stat;
-  (void)mrb;
-
-  result = waitpid((pid_t)pid, &stat, options);
-  if (result == -1) {
-    return -1;
-  }
-
-  if (status != NULL) {
-    *status = stat;
-  }
-
-  return (int)result;
 }
 
 /*
