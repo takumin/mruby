@@ -72,7 +72,7 @@ Process.spawn("cmd", out: "log.txt", chdir: "/tmp")
 ```
 
 The redirection table is applied in the order it is written, so a later entry
-sees what an earlier one did. As in CRuby, `err: :out` is *not* `2>&1`: a bare
+sees what an earlier one did. As in CRuby, `err: :out` is _not_ `2>&1`: a bare
 `:out` names the parent's descriptor 1, and merging inside the child is
 written `err: [:child, :out]`.
 
