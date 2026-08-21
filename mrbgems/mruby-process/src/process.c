@@ -28,8 +28,8 @@
 
 /* `$?` and `$$` are not word names, so MRB_GVSYM() cannot spell them and
    they are interned where they are used. */
-static void
-set_last_status(mrb_state *mrb, mrb_value status)
+void
+mrb_process_set_last_status(mrb_state *mrb, mrb_value status)
 {
   mrb_gv_set(mrb, mrb_intern_lit(mrb, "$?"), status);
 }
@@ -221,15 +221,33 @@ process_kill(mrb_state *mrb, mrb_value self)
   return mrb_int_value(mrb, argc);
 }
 
+/*
+ * A pid this interpreter may wait on: one it spawned and has not yet
+ * accounted for.  Anything else is Errno::ECHILD, as it is in Ruby: a
+ * number is not a claim on a process, and the child it once named may since
+ * have been reaped and the number handed to someone else.
+ */
+static mrb_process_record*
+live_record(mrb_state *mrb, mrb_int pid)
+{
+  mrb_process_record *record = mrb_process_record_find(mrb_process_table_get(mrb), pid);
+
+  if (record == NULL) {
+    errno = ECHILD;
+    mrb_sys_fail(mrb, "waitpid");
+  }
+  return record;
+}
+
 /* The wait itself.  Two module functions differ only in whether the status
-   is handed back beside the pid, so the wait is done here and both of them
-   publish it through `$?`. */
+   is handed back beside the pid, so the wait is done here; the wait publishes
+   it through `$?`, and both of them leave it set. */
 static mrb_value
 wait_for_child(mrb_state *mrb, mrb_value *statusp)
 {
-  mrb_int pid = MRB_PROCESS_WAIT_ANY;
+  mrb_int pid = -1;
   mrb_int flags = 0;
-  mrb_int result_pid = 0, raw_status = 0;
+  mrb_value status;
 
   mrb_get_args(mrb, "|ii", &pid, &flags);
   pid = mrb_process_int_arg(mrb, pid, "pid");
@@ -243,19 +261,29 @@ wait_for_child(mrb_state *mrb, mrb_value *statusp)
     mrb_sys_fail(mrb, NULL);
   }
 
-  /* A wait names no object either, so both failures report the error alone. */
-  if (mrb_hal_process_waitpid(mrb, pid, (unsigned int)flags, &result_pid, &raw_status) != 0) {
-    mrb_sys_fail(mrb, NULL);
+  if (pid > 0) {
+    status = mrb_process_record_wait(mrb, live_record(mrb, pid), (unsigned int)flags);
   }
-  if (result_pid == 0) {
-    /* MRB_PROCESS_WAIT_NOHANG and nothing had finished */
-    *statusp = mrb_nil_value();
-    set_last_status(mrb, mrb_nil_value());
-    return mrb_nil_value();
+  else {
+    /* A pid that names more than one child is not looked up in the record
+       table: which children answer to it is the platform's to decide, and the
+       record the wait lands on is found afterwards from the pid it reports. */
+    mrb_process_wait_target target;
+
+    target.child = NULL;
+    if (pid == -1) {
+      target.scope = MRB_PROCESS_WAIT_SCOPE_ANY;
+      target.group = 0;
+    }
+    else {
+      target.scope = MRB_PROCESS_WAIT_SCOPE_GROUP;
+      target.group = -pid;  /* 0 stays 0, the caller's own group */
+    }
+    status = mrb_process_wait_set(mrb, &target, (unsigned int)flags);
   }
-  *statusp = mrb_process_status_new(mrb, result_pid, raw_status);
-  set_last_status(mrb, *statusp);
-  return mrb_int_value(mrb, result_pid);
+  *statusp = status;
+  if (mrb_nil_p(status)) return mrb_nil_value();
+  return mrb_int_value(mrb, mrb_process_status_ptr(mrb, status)->pid);
 }
 
 /*
@@ -265,18 +293,21 @@ wait_for_child(mrb_state *mrb, mrb_value *statusp)
  *
  * Waits for a child process to finish and returns its process ID, setting
  * <code>$?</code> to the Process::Status it finished with.  Which children
- * are waited for is what +pid+ chooses: a positive number names one child,
- * 0 any child in the caller's process group, -1 (the default) any child at
- * all, and a number below -1 any child in the process group whose ID is
- * -pid.
+ * are waited for is what +pid+ chooses, and every one of the four is a set
+ * of this interpreter's own children: a positive number names one of them,
+ * 0 those in the caller's process group, -1 (the default) any of them, and a
+ * number below -1 those in the process group whose ID is -pid.
  *
  * With Process::WNOHANG among +flags+, returns nil and sets <code>$?</code>
  * to nil when no child is ready.  With Process::WUNTRACED, a stopped child
- * is reported too, where the platform has such a thing.
+ * is reported too, where the platform has such a thing; a stopped child has
+ * not finished, so it can still be waited for again.
  *
- * Raises Errno::ECHILD when there is no child to wait for, Errno::EINVAL
- * when +flags+ holds a bit that is not one of the two, and RangeError when
- * +pid+ is too large for the platform to carry.
+ * Raises Errno::ECHILD when +pid+ names no child this interpreter spawned
+ * and still owes a wait for, including a child it has already reaped,
+ * Errno::EINVAL when +flags+ holds a bit that is not one of the two,
+ * Errno::ENOSYS on a platform whose waits cannot be narrowed to a process
+ * group, and RangeError when +pid+ is too large for the platform to carry.
  */
 static mrb_value
 process_waitpid(mrb_state *mrb, mrb_value self)
@@ -758,13 +789,32 @@ process_clock_getres(mrb_state *mrb, mrb_value self)
   return clock_unit_convert(mrb, u, &t, TRUE);
 }
 
+/*
+ * call-seq:
+ *   Process.detach(pid) -> nil
+ *
+ * Gives up the obligation to wait for the child +pid+ names.  Nothing here
+ * waits for it afterwards, and on POSIX its status slot stays until the host
+ * process exits.  CRuby returns a Thread that does the waiting; mruby has no
+ * threads, so this returns nil.
+ */
+static mrb_value
+process_detach(mrb_state *mrb, mrb_value self)
+{
+  mrb_int pid;
+  mrb_process_record *record;
+
+  mrb_get_args(mrb, "i", &pid);
+  record = mrb_process_record_find(mrb_process_table_get(mrb), pid);
+  if (record != NULL) mrb_process_record_detach(mrb, record);
+  return mrb_nil_value();
+}
+
 void
 mrb_mruby_process_gem_init(mrb_state *mrb)
 {
   struct RClass *process;
   mrb_int pid;
-
-  mrb_hal_process_init(mrb);
 
   process = mrb_define_module_id(mrb, MRB_SYM(Process));
 
@@ -794,10 +844,13 @@ mrb_mruby_process_gem_init(mrb_state *mrb)
   mrb_define_module_function_id(mrb, process, MRB_SYM(wait),     process_waitpid,  MRB_ARGS_OPT(2));
   mrb_define_module_function_id(mrb, process, MRB_SYM(waitpid2), process_waitpid2, MRB_ARGS_OPT(2));
   mrb_define_module_function_id(mrb, process, MRB_SYM(wait2),    process_waitpid2, MRB_ARGS_OPT(2));
+  mrb_define_module_function_id(mrb, process, MRB_SYM(detach),   process_detach,   MRB_ARGS_REQ(1));
   mrb_define_module_function_id(mrb, process, MRB_SYM(clock_gettime), process_clock_gettime, MRB_ARGS_ARG(1, 1));
   mrb_define_module_function_id(mrb, process, MRB_SYM(clock_getres),  process_clock_getres,  MRB_ARGS_ARG(1, 1));
 
   mrb_process_status_init(mrb, process);
+  mrb_process_spawn_init(mrb, process);
+  mrb_process_table_init(mrb, process);
 
   pid = mrb_hal_process_pid(mrb);
   if (pid >= 0) {
@@ -808,5 +861,5 @@ mrb_mruby_process_gem_init(mrb_state *mrb)
 void
 mrb_mruby_process_gem_final(mrb_state *mrb)
 {
-  mrb_hal_process_final(mrb);
+  mrb_process_table_final(mrb);
 }

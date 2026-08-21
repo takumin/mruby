@@ -533,12 +533,15 @@ assert('IO.popen') do
     assert_equal out.class, String
     assert_include out, 'mruby-io'
 
+    pid = io.pid
     io.close
-    if Object.const_defined? :Process
-      assert_true $?.success?
-    else
-      assert_equal 0, $?
-    end
+    # Closing the stream waits for the command at the other end, and $? is
+    # how it finished: the child mruby-process handed this stream, waited
+    # for through the stream's own reference to it.
+    assert_kind_of Process::Status, $?
+    assert_equal pid, $?.pid
+    assert_true $?.success?
+    assert_equal pid, io.pid
 
     assert_true io.closed?
   rescue NotImplementedError => e
@@ -546,7 +549,33 @@ assert('IO.popen') do
   end
 end
 
+assert('IO.popen with a failing command') do
+  begin
+    IO.popen("#{$cmd}exit 7") { |io| io.read }
+    assert_false $?.success?
+    assert_equal 7, $?.exitstatus
+  rescue NotImplementedError => e
+    skip e.message
+  end
+end
+
+assert('IO.popen read-write') do
+  skip "no `cat` to talk to on this platform" if MRubyIOTestUtil.win?
+  begin
+    IO.popen("cat", "r+") do |io|
+      assert_true io.pid > 0
+      io.write "hello\n"
+      io.close_write
+      assert_equal "hello\n", io.read
+    end
+    assert_true $?.success?
+  rescue NotImplementedError => e
+    skip e.message
+  end
+end
+
 assert('IO.popen with in option') do
+  skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
   begin
     IO.pipe do |r, w|
       w.write "hello\n"
@@ -561,6 +590,7 @@ assert('IO.popen with in option') do
 end
 
 assert('IO.popen with out option') do
+  skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
   begin
     IO.pipe do |r, w|
       IO.popen(MRubyIOTestUtil.win? ? "echo hello" : "echo 'hello'", "w", out: w) {}
@@ -573,6 +603,7 @@ assert('IO.popen with out option') do
 end
 
 assert('IO.popen with err option') do
+  skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
   begin
     IO.pipe do |r, w|
       cmd = MRubyIOTestUtil.win? ? "echo hello 1>&2" : "echo 'hello' 1>&2"
@@ -582,6 +613,19 @@ assert('IO.popen with err option') do
       # in what it prints, so the Windows side carries a trailing space.
       assert_equal MRubyIOTestUtil.win? ? "hello \r\n" : "hello\n", r.read
     end
+  rescue NotImplementedError => e
+    skip e.message
+  end
+end
+
+assert('IO.popen leaves the command\'s standard error alone') do
+  skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
+  begin
+    # With no err: given, the child's standard error is this process's, so the
+    # pipe carries the command's output and nothing else.  The line the child
+    # writes to standard error therefore lands on this test run's, which is
+    # where it says it belongs.
+    assert_equal "out\n", IO.popen("echo out; echo 'this line belongs on stderr' 1>&2") { |i| i.read }
   rescue NotImplementedError => e
     skip e.message
   end
