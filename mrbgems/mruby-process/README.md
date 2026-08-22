@@ -226,6 +226,13 @@ else is `EINVAL` before a port is asked. A port answers for the bits it knows
 and has no name for the rest, so leaving the check to the ports would leave
 the answer to each of them.
 
+What crosses into Win32 goes through the wide entry points, and the port is
+where the conversion happens. A mruby String is bytes, holding UTF-8 wherever
+it came from a Ruby literal, and the ANSI entry points would read one in
+whatever code page the machine is set to: a command, a path, an argument or
+an environment value spelled outside that code page would reach the child as
+something else, or not at all. Nothing above the port knows about UTF-16.
+
 ### A status is a snapshot
 
 A wait status is decoded by the port that produced it, at the moment it was

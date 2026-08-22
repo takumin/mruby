@@ -20,6 +20,12 @@
 **   - only descriptors 0, 1 and 2 can be redirected, because STARTUPINFO has
 **     three slots and no more; anything else fails with ENOTSUP.
 **
+** Everything that reaches Win32 goes through the wide entry points.  A mruby
+** String is bytes holding UTF-8, and the ANSI ones would read it in whatever
+** code page the machine is set to, so a command, a path or an environment
+** value spelled outside that code page would reach the child as something
+** else.  The conversion happens at this boundary and nowhere above it.
+**
 ** The clocks are the one part Win32 answers in full: the wall clock as a
 ** FILETIME, the monotonic one from the performance counter, and the two CPU
 ** times from GetProcessTimes() and GetThreadTimes().
@@ -36,6 +42,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 /* Vista and later; fall back to the access right every Windows has. */
 #ifndef PROCESS_QUERY_LIMITED_INFORMATION
@@ -256,19 +263,19 @@ mrb_hal_process_ppid(mrb_state *mrb)
 
 #ifndef MRB_NO_PROCESS_SPAWN
 
-/* A growable byte buffer, used for the command line and the environment
+/* A growable UTF-16 buffer, used for the command line and the environment
    block.  Both are built by appending, and both end up as one allocation
-   CreateProcess reads. */
-struct buf {
+   CreateProcessW reads. */
+struct wbuf {
   mrb_state *mrb;
-  char *ptr;
+  wchar_t *ptr;
   size_t len;
   size_t cap;
   int failed;
 };
 
 static void
-buf_init(struct buf *b, mrb_state *mrb)
+wbuf_init(struct wbuf *b, mrb_state *mrb)
 {
   b->mrb = mrb;
   b->ptr = NULL;
@@ -277,21 +284,22 @@ buf_init(struct buf *b, mrb_state *mrb)
 }
 
 static void
-buf_free(struct buf *b)
+wbuf_free(struct wbuf *b)
 {
   mrb_free(b->mrb, b->ptr);
   b->ptr = NULL;
 }
 
 static void
-buf_add(struct buf *b, const char *data, size_t len)
+wbuf_add(struct wbuf *b, const wchar_t *data, size_t len)
 {
   if (b->failed) return;
   if (b->len + len > b->cap) {
     size_t cap = b->cap ? b->cap * 2 : 256;
-    char *ptr;
+    wchar_t *ptr;
+
     while (cap < b->len + len) cap *= 2;
-    ptr = (char*)mrb_realloc_simple(b->mrb, b->ptr, cap);
+    ptr = (wchar_t*)mrb_realloc_simple(b->mrb, b->ptr, cap * sizeof(wchar_t));
     if (ptr == NULL) {
       b->failed = 1;
       return;
@@ -299,171 +307,304 @@ buf_add(struct buf *b, const char *data, size_t len)
     b->ptr = ptr;
     b->cap = cap;
   }
-  memcpy(b->ptr + b->len, data, len);
+  memcpy(b->ptr + b->len, data, len * sizeof(wchar_t));
   b->len += len;
 }
 
 static void
-buf_add_cstr(struct buf *b, const char *s)
+wbuf_add_wstr(struct wbuf *b, const wchar_t *s)
 {
-  buf_add(b, s, strlen(s) + 1);  /* including the NUL */
+  wbuf_add(b, s, wcslen(s) + 1);  /* including the NUL */
 }
 
 static void
-buf_add_char(struct buf *b, char c)
+wbuf_add_wchar(struct wbuf *b, wchar_t c)
 {
-  buf_add(b, &c, 1);
+  wbuf_add(b, &c, 1);
+}
+
+/*
+ * UTF-8 to UTF-16
+ *
+ * What this gem is handed are mruby Strings, which are bytes, and which hold
+ * UTF-8 wherever they came from a Ruby literal.  The ANSI entry points would
+ * read them in whatever code page the machine is set to, so a path, an
+ * argument or an environment value that is not spelled in that code page
+ * would reach the child as something else, or not at all.  The wide entry
+ * points take what was written.
+ */
+static wchar_t*
+utf8_to_wide(mrb_state *mrb, const char *s)
+{
+  int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+  wchar_t *w;
+
+  if (n <= 0) {
+    errno = EINVAL;
+    return NULL;
+  }
+  w = (wchar_t*)mrb_malloc_simple(mrb, (size_t)n * sizeof(wchar_t));
+  if (w == NULL) {
+    errno = ENOMEM;
+    return NULL;
+  }
+  if (MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n) <= 0) {
+    mrb_free(mrb, w);
+    errno = EINVAL;
+    return NULL;
+  }
+  return w;
 }
 
 /* Quote one argument the way the C runtime's command-line parser reads it
    back, so that argv[] in the child is the argv[] that was asked for. */
 static void
-buf_add_argument(struct buf *b, const char *arg)
+wbuf_add_argument(struct wbuf *b, const wchar_t *arg)
 {
-  const char *p;
-  int needs_quotes = (*arg == '\0');
+  const wchar_t *p;
+  int needs_quotes = (*arg == L'\0');
 
-  for (p = arg; *p != '\0'; p++) {
-    if (*p == ' ' || *p == '\t' || *p == '"') {
+  for (p = arg; *p != L'\0'; p++) {
+    if (*p == L' ' || *p == L'\t' || *p == L'"') {
       needs_quotes = 1;
       break;
     }
   }
   if (!needs_quotes) {
-    buf_add(b, arg, strlen(arg));
+    wbuf_add(b, arg, wcslen(arg));
     return;
   }
 
-  buf_add_char(b, '"');
-  for (p = arg; *p != '\0'; p++) {
+  wbuf_add_wchar(b, L'"');
+  for (p = arg; *p != L'\0'; p++) {
     size_t backslashes = 0;
-    while (*p == '\\') {
+
+    while (*p == L'\\') {
       backslashes++;
       p++;
     }
-    if (*p == '\0') {
+    if (*p == L'\0') {
       /* Backslashes before the closing quote are doubled. */
-      for (; backslashes > 0; backslashes--) buf_add(b, "\\\\", 2);
+      for (; backslashes > 0; backslashes--) wbuf_add(b, L"\\\\", 2);
       break;
     }
-    if (*p == '"') {
-      for (; backslashes > 0; backslashes--) buf_add(b, "\\\\", 2);
-      buf_add(b, "\\\"", 2);
+    if (*p == L'"') {
+      for (; backslashes > 0; backslashes--) wbuf_add(b, L"\\\\", 2);
+      wbuf_add(b, L"\\\"", 2);
     }
     else {
-      for (; backslashes > 0; backslashes--) buf_add_char(b, '\\');
-      buf_add_char(b, *p);
+      for (; backslashes > 0; backslashes--) wbuf_add_wchar(b, L'\\');
+      wbuf_add_wchar(b, *p);
     }
   }
-  buf_add_char(b, '"');
+  wbuf_add_wchar(b, L'"');
 }
 
-/* The command line CreateProcess is given.  A shell command goes to cmd.exe
+/* The command line CreateProcessW is given.  A shell command goes to cmd.exe
    verbatim; an argv is quoted back into one string, because a command line
    is all Windows has. */
-static char*
+static wchar_t*
 build_command_line(mrb_state *mrb, const mrb_process_spawn_params *params)
 {
-  struct buf b;
+  struct wbuf b;
   size_t i;
 
-  buf_init(&b, mrb);
+  wbuf_init(&b, mrb);
   if (params->kind == MRB_PROCESS_SPAWN_SHELL) {
-    const char *shell = getenv("COMSPEC");
-    if (shell == NULL) shell = "cmd.exe";
-    buf_add(&b, shell, strlen(shell));
-    buf_add(&b, " /c ", 4);
-    buf_add(&b, params->argv[0], strlen(params->argv[0]));
+    wchar_t shell[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"COMSPEC", shell, MAX_PATH);
+    wchar_t *command;
+
+    if (n == 0 || n >= MAX_PATH) wcscpy(shell, L"cmd.exe");
+    command = utf8_to_wide(mrb, params->argv[0]);
+    if (command == NULL) {
+      wbuf_free(&b);
+      return NULL;
+    }
+    wbuf_add(&b, shell, wcslen(shell));
+    wbuf_add(&b, L" /c ", 4);
+    wbuf_add(&b, command, wcslen(command));
+    mrb_free(mrb, command);
   }
   else {
     for (i = 0; params->argv[i] != NULL; i++) {
-      if (i > 0) buf_add_char(&b, ' ');
-      buf_add_argument(&b, params->argv[i]);
+      wchar_t *arg = utf8_to_wide(mrb, params->argv[i]);
+
+      if (arg == NULL) {
+        wbuf_free(&b);
+        return NULL;
+      }
+      if (i > 0) wbuf_add_wchar(&b, L' ');
+      wbuf_add_argument(&b, arg);
+      mrb_free(mrb, arg);
     }
   }
-  buf_add_char(&b, '\0');
+  wbuf_add_wchar(&b, L'\0');
 
   if (b.failed) {
-    buf_free(&b);
+    wbuf_free(&b);
     errno = ENOMEM;
     return NULL;
   }
   return b.ptr;
 }
 
-/* Compare an environment entry's name with `name`, case-insensitively as
-   Windows does. */
+/* Whether an environment entry, which is "NAME=VALUE", is the one `name`
+   names.  Case-insensitively, as Windows names variables. */
 static int
-env_name_is(const char *entry, const char *name, size_t namelen)
+env_name_is(const wchar_t *entry, const wchar_t *name)
 {
   size_t i;
 
-  for (i = 0; i < namelen; i++) {
-    char a = entry[i], c = name[i];
-    if (a == '\0' || a == '=') return 0;
-    if (a >= 'a' && a <= 'z') a = (char)(a - 'a' + 'A');
-    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+  for (i = 0; name[i] != L'\0'; i++) {
+    wchar_t a = entry[i], c = name[i];
+
+    if (a == L'\0' || a == L'=') return 0;
+    if (a >= L'a' && a <= L'z') a = (wchar_t)(a - L'a' + L'A');
+    if (c >= L'a' && c <= L'z') c = (wchar_t)(c - L'a' + L'A');
     if (a != c) return 0;
   }
-  return entry[namelen] == '=';
+  return entry[i] == L'=';
 }
 
-/* The environment block for the child: the parent's, with the deltas applied.
-   NULL means "inherit unchanged", which is what CreateProcess reads a NULL
-   environment as. */
+/* The order a Windows environment block has to be in: by name, ignoring
+   case, and ordinally rather than by the rules of any one locale. */
 static int
-build_environment(mrb_state *mrb, const mrb_process_spawn_params *params, char **out)
+env_entry_compare(const void *a, const void *b)
 {
-  struct buf b;
-  char *parent = NULL;
-  size_t i;
+  const wchar_t *x = *(const wchar_t *const*)a;
+  const wchar_t *y = *(const wchar_t *const*)b;
+  int r = CompareStringOrdinal(x, -1, y, -1, TRUE);
+
+  /* CSTR_LESS_THAN, CSTR_EQUAL and CSTR_GREATER_THAN are 1, 2 and 3; 0 is
+     the call itself failing, which leaves the two in the order they were. */
+  return (r == 0) ? 0 : r - CSTR_EQUAL;
+}
+
+/* "NAME=VALUE", from a name already in UTF-16 and a value that is not. */
+static wchar_t*
+env_pair(mrb_state *mrb, const wchar_t *name, const char *value)
+{
+  wchar_t *wide = utf8_to_wide(mrb, value);
+  wchar_t *pair;
+  size_t nlen, vlen;
+
+  if (wide == NULL) return NULL;
+  nlen = wcslen(name);
+  vlen = wcslen(wide);
+  pair = (wchar_t*)mrb_malloc_simple(mrb, (nlen + vlen + 2) * sizeof(wchar_t));
+  if (pair == NULL) {
+    mrb_free(mrb, wide);
+    errno = ENOMEM;
+    return NULL;
+  }
+  memcpy(pair, name, nlen * sizeof(wchar_t));
+  pair[nlen] = L'=';
+  memcpy(pair + nlen + 1, wide, (vlen + 1) * sizeof(wchar_t));
+  mrb_free(mrb, wide);
+  return pair;
+}
+
+/* The environment block for the child: the parent's, with the deltas applied,
+   sorted as the API asks for.  NULL means "inherit unchanged", which is what
+   CreateProcessW reads a NULL environment as. */
+static int
+build_environment(mrb_state *mrb, const mrb_process_spawn_params *params, wchar_t **out)
+{
+  struct wbuf b;
+  wchar_t *parent = NULL;
+  const wchar_t **entries = NULL;
+  wchar_t **owned = NULL;
+  size_t nentries = 0, nowned = 0, nparent = 0, i;
+  int keep_parent = !(params->flags & MRB_PROCESS_SPAWN_UNSETENV_OTHERS);
+  int result = -1;
 
   *out = NULL;
-  if (params->nenv == 0 && !(params->flags & MRB_PROCESS_SPAWN_UNSETENV_OTHERS)) {
-    return 0;
-  }
+  if (params->nenv == 0 && keep_parent) return 0;
 
-  buf_init(&b, mrb);
-  if (!(params->flags & MRB_PROCESS_SPAWN_UNSETENV_OTHERS)) {
-    const char *entry;
-    parent = GetEnvironmentStringsA();
+  wbuf_init(&b, mrb);
+  if (keep_parent) {
+    const wchar_t *entry;
+
+    parent = GetEnvironmentStringsW();
     if (parent == NULL) {
       errno = ENOMEM;
       return -1;
     }
-    for (entry = parent; *entry != '\0'; entry += strlen(entry) + 1) {
+    for (entry = parent; *entry != L'\0'; entry += wcslen(entry) + 1) nparent++;
+  }
+
+  entries = (const wchar_t**)mrb_malloc_simple(mrb, sizeof(wchar_t*) * (nparent + params->nenv + 1));
+  /* Each delta needs its name, which the parent's entries are matched
+     against, and the pair that goes into the block. */
+  owned = (wchar_t**)mrb_malloc_simple(mrb, sizeof(wchar_t*) * (params->nenv * 2 + 1));
+  if (entries == NULL || owned == NULL) {
+    errno = ENOMEM;
+    goto done;
+  }
+
+  for (i = 0; i < params->nenv; i++) {
+    wchar_t *name = utf8_to_wide(mrb, params->env[i].name);
+
+    if (name == NULL) goto done;
+    owned[nowned++] = name;
+  }
+
+  if (keep_parent) {
+    const wchar_t *entry;
+
+    for (entry = parent; *entry != L'\0'; entry += wcslen(entry) + 1) {
       int overridden = 0;
+
       for (i = 0; i < params->nenv; i++) {
-        if (env_name_is(entry, params->env[i].name, strlen(params->env[i].name))) {
+        if (env_name_is(entry, owned[i])) {
           overridden = 1;
           break;
         }
       }
-      /* An entry the deltas name is written below, or, when the delta
+      /* An entry the deltas name is written below, or, where the delta
          unsets it, not written at all. */
-      if (!overridden) buf_add_cstr(&b, entry);
+      if (!overridden) entries[nentries++] = entry;
     }
-    FreeEnvironmentStringsA(parent);
   }
 
   for (i = 0; i < params->nenv; i++) {
+    wchar_t *pair;
+
     if (params->env[i].value == NULL) continue;
-    buf_add(&b, params->env[i].name, strlen(params->env[i].name));
-    buf_add_char(&b, '=');
-    buf_add_cstr(&b, params->env[i].value);
+    pair = env_pair(mrb, owned[i], params->env[i].value);
+    if (pair == NULL) goto done;
+    owned[nowned++] = pair;
+    entries[nentries++] = pair;
   }
+
+  /* The block the API documents is a sorted one, and what is assembled here
+     is the parent's order followed by the caller's, which is not one. */
+  if (nentries > 1) {
+    qsort((void*)entries, nentries, sizeof(entries[0]), env_entry_compare);
+  }
+  for (i = 0; i < nentries; i++) wbuf_add_wstr(&b, entries[i]);
+
   /* The block is a run of NUL-terminated strings followed by one more NUL.
      An empty environment is the two NULs alone, not one. */
-  if (b.len == 0) buf_add_char(&b, '\0');
-  buf_add_char(&b, '\0');
+  if (b.len == 0) wbuf_add_wchar(&b, L'\0');
+  wbuf_add_wchar(&b, L'\0');
 
   if (b.failed) {
-    buf_free(&b);
     errno = ENOMEM;
-    return -1;
+    goto done;
   }
   *out = b.ptr;
-  return 0;
+  b.ptr = NULL;
+  result = 0;
+
+done:
+  wbuf_free(&b);
+  for (i = 0; i < nowned; i++) mrb_free(mrb, owned[i]);
+  mrb_free(mrb, owned);
+  mrb_free(mrb, (void*)entries);
+  if (parent != NULL) FreeEnvironmentStringsW(parent);
+  return result;
 }
 
 /* Resolve the ordered redirection table into the three handles STARTUPINFO
@@ -527,7 +668,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
                       mrb_hal_process_child **out)
 {
   struct mrb_hal_process_child *child = NULL;
-  STARTUPINFOEXA si;
+  STARTUPINFOEXW si;
   PROCESS_INFORMATION pi;
   LPPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
   SIZE_T attrs_size = 0;
@@ -537,8 +678,9 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   HANDLE inherit[3];
   HANDLE dups[3] = { NULL, NULL, NULL };
   DWORD ninherit = 0, i, j;
-  char *cmdline = NULL;
-  char *envblock = NULL;
+  wchar_t *cmdline = NULL;
+  wchar_t *envblock = NULL;
+  wchar_t *workdir = NULL;
   int saved_errno;
 
   if (params->argv == NULL || params->argv[0] == NULL || params->argv[0][0] == '\0') {
@@ -557,6 +699,13 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   cmdline = build_command_line(mrb, params);
   if (cmdline == NULL) goto error;
   if (build_environment(mrb, params, &envblock) != 0) goto error;
+  if (params->chdir != NULL) {
+    workdir = utf8_to_wide(mrb, params->chdir);
+    if (workdir == NULL) goto error;
+  }
+  /* The block above is UTF-16, and saying so is what keeps CreateProcessW
+     from reading it as bytes in the active code page. */
+  if (envblock != NULL) flags |= CREATE_UNICODE_ENVIRONMENT;
 
   /* Hand the child duplicates of exactly the handles it is meant to have.
      Marking the originals inheritable and letting CreateProcess take every
@@ -616,7 +765,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
       goto error;
     }
     si.lpAttributeList = attrs;
-    flags = EXTENDED_STARTUPINFO_PRESENT;
+    flags |= EXTENDED_STARTUPINFO_PRESENT;
   }
 
   /* Handles cross only where a list says which.  Asking for inheritance
@@ -625,9 +774,9 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
      leak into the next, and a read end nobody meant to give away keeps a
      pipe from ever reaching EOF.  With no handle to pass, nothing is passed. */
   memset(&pi, 0, sizeof(pi));
-  if (!CreateProcessA(NULL, cmdline, NULL, NULL, (ninherit > 0) ? TRUE : FALSE,
+  if (!CreateProcessW(NULL, cmdline, NULL, NULL, (ninherit > 0) ? TRUE : FALSE,
                       flags, envblock,
-                      params->chdir, &si.StartupInfo, &pi)) {
+                      workdir, &si.StartupInfo, &pi)) {
     set_errno_from_win32(GetLastError());
     goto error;
   }
@@ -642,6 +791,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   }
   mrb_free(mrb, cmdline);
   mrb_free(mrb, envblock);
+  mrb_free(mrb, workdir);
 
   /* The pid is what the caller gets and what Process.kill will use; the
      handle stays here, where nothing can mistake it for a number. */
@@ -664,6 +814,7 @@ error:
   }
   mrb_free(mrb, cmdline);
   mrb_free(mrb, envblock);
+  mrb_free(mrb, workdir);
   mrb_free(mrb, child);
   errno = saved_errno;
   return -1;
