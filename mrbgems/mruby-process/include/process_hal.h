@@ -39,6 +39,19 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* A platform that does not let a process create another has no process
+   creation whatever the configuration asks for, so it says so here rather
+   than leaving every build for it to be configured by hand.  iOS is the one
+   this gem knows of. */
+#if defined(__APPLE__)
+# include <TargetConditionals.h>
+# if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#  ifndef MRB_NO_PROCESS_SPAWN
+#   define MRB_NO_PROCESS_SPAWN 1
+#  endif
+# endif
+#endif
+
 MRB_BEGIN_DECL
 
 /*

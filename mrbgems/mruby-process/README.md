@@ -306,12 +306,14 @@ constrains; this list is a map.
 `MRB_NO_PROCESS_SPAWN` builds the gem without process creation. `Process.spawn`
 is then not defined at all, rather than defined and always failing, so a
 program can ask `Process.respond_to?(:spawn)` before it commits to a plan that
-needs a child. It is set automatically for iOS, where a process may not spawn
-another. Everything else — `Process.pid`, signals, `Process::Status` — is
-unaffected.
+needs a child. `process_hal.h` sets it for iOS, where a process may not spawn
+another, so that platform needs no configuring to be told the truth.
+Everything else — `Process.pid`, signals, `Process::Status` — is unaffected.
 
 `IO.popen` follows: with no `Process.spawn` to build on, it raises
-`NotImplementedError`.
+`NotImplementedError`. A build without this gem at all has no `IO.popen`
+either, and mruby-io leaves the method undefined there rather than defining
+one that cannot work.
 
 ## Adding a port
 

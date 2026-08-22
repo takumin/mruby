@@ -523,6 +523,7 @@ assert('IO#gets - paragraph mode') do
 end
 
 assert('IO.popen') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   begin
     $? = nil
     io = IO.popen("#{$cmd}echo mruby-io")
@@ -550,6 +551,7 @@ assert('IO.popen') do
 end
 
 assert('IO.popen with a failing command') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   begin
     IO.popen("#{$cmd}exit 7") { |io| io.read }
     assert_false $?.success?
@@ -560,6 +562,7 @@ assert('IO.popen with a failing command') do
 end
 
 assert('IO.popen read-write') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   skip "no `cat` to talk to on this platform" if MRubyIOTestUtil.win?
   begin
     IO.popen("cat", "r+") do |io|
@@ -575,6 +578,7 @@ assert('IO.popen read-write') do
 end
 
 assert('IO.popen with in option') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
   begin
     IO.pipe do |r, w|
@@ -590,6 +594,7 @@ assert('IO.popen with in option') do
 end
 
 assert('IO.popen with out option') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
   begin
     IO.pipe do |r, w|
@@ -603,6 +608,7 @@ assert('IO.popen with out option') do
 end
 
 assert('IO.popen with err option') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
   begin
     IO.pipe do |r, w|
@@ -619,6 +625,7 @@ assert('IO.popen with err option') do
 end
 
 assert('IO.popen leaves the command\'s standard error alone') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
   begin
     # With no err: given, the child's standard error is this process's, so the
@@ -632,6 +639,7 @@ assert('IO.popen leaves the command\'s standard error alone') do
 end
 
 assert('IO#close_write') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   begin
     io = IO.popen($cat, "r+")
     io.write "mruby-io\n"

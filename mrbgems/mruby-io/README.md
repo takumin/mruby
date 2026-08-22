@@ -177,11 +177,14 @@ is written in `mrblib` as the composition of `IO.pipe` and `Process.spawn`.
 
 That has three consequences worth knowing about:
 
-- `IO.popen` needs **mruby-process** in the build. Without it the method is
-  still defined and raises `NotImplementedError` when called, so a build
-  without that gem still builds and says so at the call site. The same is true
-  of a build of **mruby-process** made with `MRB_NO_PROCESS_SPAWN`, which is
-  the successor to this gem's old `MRB_NO_IO_POPEN`.
+- `IO.popen` needs **mruby-process** in the build, and a build without it has
+  no `IO.popen` at all rather than one that fails when it is called: the file
+  defining the method is left out, so `IO.respond_to?(:popen)` answers for it
+  the way it answers for any other method. A platform with no `IO.pipe`, iOS
+  among them, leaves it out for the same reason, which is what this gem's old
+  `MRB_NO_IO_POPEN` used to say. The one case where the method is there and
+  raises `NotImplementedError` is a build of **mruby-process** made with
+  `MRB_NO_PROCESS_SPAWN`: the gem is present and only its spawning is not.
 - `IO#close` waits for the command at the other end and sets `$?` to a
   `Process::Status`, through the same `Process.waitpid` anyone else would
   call. A stream that is already closed is left as it is, so the wait happens
