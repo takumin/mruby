@@ -531,6 +531,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   PROCESS_INFORMATION pi;
   LPPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
   SIZE_T attrs_size = 0;
+  BOOL attrs_ready = FALSE;
   DWORD flags = 0;
   HANDLE slots[3], wanted[3];
   HANDLE inherit[3];
@@ -602,8 +603,14 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
       errno = ENOMEM;
       goto error;
     }
-    if (!InitializeProcThreadAttributeList(attrs, 1, 0, &attrs_size) ||
-        !UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    if (!InitializeProcThreadAttributeList(attrs, 1, 0, &attrs_size)) {
+      /* Nothing was initialised, so there is nothing to delete: what the
+         cleanup below has to let go of is the memory, and only that. */
+      set_errno_from_win32(GetLastError());
+      goto error;
+    }
+    attrs_ready = TRUE;
+    if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                                    inherit, ninherit * sizeof(HANDLE), NULL, NULL)) {
       set_errno_from_win32(GetLastError());
       goto error;
@@ -630,7 +637,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
     if (dups[i] != NULL) CloseHandle(dups[i]);
   }
   if (attrs != NULL) {
-    DeleteProcThreadAttributeList(attrs);
+    if (attrs_ready) DeleteProcThreadAttributeList(attrs);
     mrb_free(mrb, attrs);
   }
   mrb_free(mrb, cmdline);
@@ -652,7 +659,7 @@ error:
     if (dups[i] != NULL) CloseHandle(dups[i]);
   }
   if (attrs != NULL) {
-    DeleteProcThreadAttributeList(attrs);
+    if (attrs_ready) DeleteProcThreadAttributeList(attrs);
     mrb_free(mrb, attrs);
   }
   mrb_free(mrb, cmdline);
