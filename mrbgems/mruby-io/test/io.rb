@@ -742,6 +742,25 @@ assert('IO#close_write on a closed stream') do
   end
 end
 
+assert('Process.spawn with one file named for two descriptors') do
+  skip "no POSIX shell here" if MRubyIOTestUtil.win?
+  begin
+    Process
+  rescue NameError
+    skip "this build has no mruby-process"
+  end
+  skip "this build cannot create processes" unless Process.respond_to?(:spawn)
+
+  # File redirection is the one part of Process.spawn that this gem is what
+  # serves, since the file is opened here, in the parent, so it is asserted
+  # where a File can be read back.  One file named for two descriptors is
+  # opened once and shared by both, the way `>file 2>&1` shares one: opening
+  # it once per descriptor would give each its own offset into the file, and
+  # each would write over what the other had written.
+  Process.waitpid(Process.spawn("echo out; echo err 1>&2", [1, 2] => $mrbtest_io_wfname))
+  assert_equal "out\nerr\n", File.read($mrbtest_io_wfname)
+end
+
 assert('IO.read') do
   # empty file
   fd = IO.sysopen $mrbtest_io_wfname, "w"

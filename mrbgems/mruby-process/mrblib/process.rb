@@ -118,8 +118,17 @@ module Process
         begin
           opts.each do |key, value|
             next if SPAWN_OPTION_KEYS.include?(key)
-            keys = key.is_a?(Array) ? key : [key]
-            keys.each { |k| _spawn_redirect(_spawn_fd(k), value, table, opened) }
+            fds = (key.is_a?(Array) ? key : [key]).map { |k| _spawn_fd(k) }
+            next if fds.empty?
+            # What the value names is worked out once and then written for
+            # every descriptor that named it, so `[1, 2] => "log"` opens the
+            # file once and the two share that one open file, as `>log 2>&1`
+            # does.  Opening it once per descriptor would give each its own
+            # offset into the same file, and each would write over what the
+            # other had written.  Which way it is opened follows the first
+            # descriptor named, as it does in Ruby.
+            kind, source = _spawn_source(fds[0], value, opened)
+            fds.each { |fd| table << fd << kind << source }
           end
         rescue StandardError
           opened.each { |io| io.close }
@@ -140,24 +149,27 @@ module Process
         end
       end
 
-      def _spawn_redirect(child_fd, value, table, opened)
+      # What one redirection value stands for, as the [kind, source] pair the
+      # table is written from.  +first_fd+ is the descriptor that decides how
+      # a file is opened when the value names one.
+      def _spawn_source(first_fd, value, opened)
         case value
         when :close
-          table << child_fd << REDIR_CLOSE << -1
+          [REDIR_CLOSE, -1]
         when String
-          io = _spawn_open(value, child_fd == 0 ? "r" : "w", nil)
+          io = _spawn_open(value, first_fd == 0 ? "r" : "w", nil)
           opened << io
-          table << child_fd << REDIR_PARENT << io.fileno
+          [REDIR_PARENT, io.fileno]
         when Array
           if value[0] == :child
-            table << child_fd << REDIR_CHILD << _spawn_fd(value[1])
+            [REDIR_CHILD, _spawn_fd(value[1])]
           else
             io = _spawn_open(value[0], value[1] || "r", value[2])
             opened << io
-            table << child_fd << REDIR_PARENT << io.fileno
+            [REDIR_PARENT, io.fileno]
           end
         else
-          table << child_fd << REDIR_PARENT << _spawn_fd(value)
+          [REDIR_PARENT, _spawn_fd(value)]
         end
       end
 
