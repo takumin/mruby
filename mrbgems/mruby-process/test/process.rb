@@ -549,6 +549,25 @@ assert('Process.waitpid over a process group') do
   assert_raise(Errno::ECHILD) { Process.waitpid(pid) }
 end
 
+assert('Process.waitpid over a process group that has no number') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # A pid below -1 names the process group whose ID is that number negated,
+  # and the smallest Integer a build can hold has no negation.  Each of these
+  # is that number in some build and merely an out-of-range one in the rest,
+  # so what is asserted is that neither is negated and passed on: ECHILD
+  # where the number is an Integer this build holds, RangeError where it is
+  # wider than one.
+  [31, 63].each do |bits|
+    pid = begin
+            -(2 ** bits)
+          rescue StandardError
+            next   # this build cannot name the number at all
+          end
+    assert_raise(StandardError) { Process.waitpid(pid) }
+  end
+end
+
 assert('Process.waitpid over a process group with no child in it') do
   skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
 

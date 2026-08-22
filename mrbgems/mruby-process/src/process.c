@@ -267,6 +267,13 @@ wait_for_child(mrb_state *mrb, mrb_value *statusp)
       target.scope = MRB_PROCESS_WAIT_SCOPE_ANY;
     }
     else {
+      /* The smallest Integer has no negation, and no process group has an ID
+         that far from zero either, so the number names no group.  Answered
+         as one rather than negated, which would be undefined. */
+      if (pid == MRB_INT_MIN) {
+        errno = ECHILD;
+        mrb_sys_fail(mrb, "waitpid");
+      }
       target.scope = MRB_PROCESS_WAIT_SCOPE_GROUP;
       target.group = -pid;  /* 0 stays 0, the caller's own group */
     }
