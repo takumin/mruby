@@ -736,9 +736,19 @@ wait_any(mrb_state *mrb, mrb_hal_process_context *ctx, unsigned int flags,
 
   if (flags & MRB_PROCESS_WAIT_NOHANG) {
     for (child = ctx->children; child != NULL; child = child->next) {
-      if (WaitForSingleObject(child->handle, 0) == WAIT_OBJECT_0) {
+      DWORD ready = WaitForSingleObject(child->handle, 0);
+
+      if (ready == WAIT_OBJECT_0) {
         found = child;
         break;
+      }
+      /* A wait that could not be performed is not a child that has not
+         finished yet.  Passing over it would answer "nothing ready" for a
+         handle that can no longer be waited on at all, and a poll that keeps
+         saying that is a wait that never ends. */
+      if (ready == WAIT_FAILED) {
+        set_errno_from_win32(GetLastError());
+        return -1;
       }
     }
     if (found == NULL) {
