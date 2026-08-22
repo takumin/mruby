@@ -1,6 +1,9 @@
 MRuby::GemBox.new do |conf|
   Dir.glob("#{root}/mrbgems/mruby-*/mrbgem.rake") do |x|
     g = File.basename(File.dirname(x))
-    conf.gem :core => g unless g =~ /^mruby-(?:bin-debugger|test|sleep)$/
+    # mruby-alloc-fault is left out beside the three that were already: it
+    # builds a driver that replaces the allocator, which is only wanted where
+    # a build asks for it (build_config/ci/alloc-fault.rb).
+    conf.gem :core => g unless g =~ /^mruby-(?:bin-debugger|test|sleep|alloc-fault)$/
   end
 end

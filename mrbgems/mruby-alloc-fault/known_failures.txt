@@ -1,0 +1,40 @@
+# What the sweep already reports, one `scenario signature note` per line.
+#
+# A finding that matches a line here is reported as [known] and does not fail
+# the sweep; a signature that is not here does, however many runs it appears
+# in.  That is what keeps the sweep a gate: what it catches is a *new* way of
+# mishandling a refusal.
+#
+# Nothing here is a decision that the behaviour is right.  It is a record of
+# what the tree does today, so that a change can be judged against it, and it
+# is meant to shrink.  Write the list from a full sweep with
+#
+#   ruby sweep.rb --bin <driver> --ignore-known --emit-known
+#
+# and keep the note that says what was found.
+
+# mrb_open() cannot tell that its core init failed.  mrb_core_init_abort()
+# clears mrb->exc on its way out (src/error.c), so the `mrb->exc` that
+# mrb_open() reads to decide whether to go on (src/state.c) says the state
+# opened, and gem init then reads through mrb->c, which is what the refusal
+# stopped being allocated.
+open         segv:mrb_init_mrbgems                # mrb->c is NULL
+open         segv:mrb_vm_ci_env_clear             # mrb->c->ci is NULL
+
+# A context whose call info was never allocated is walked as if it had one:
+# `while (ce <= ci)` is true for two NULLs, and the loop reads through them.
+proc         segv:obj_free                        # a Fiber with no cibase
+proc         segv:vm_call_proc                    # an env whose stack is gone
+
+# NoMemoryError unwinds through longjmp, and a buffer that is allocated
+# before the object that will own it has nothing left to free it.
+array        leak:ary_make_shared                 # the shared-array header
+hash         leak:ea_dup                          # the copied entry array
+numeric      leak:mpz_init_heap                   # a big integer's limbs
+numeric      leak:mpz_realloc                     # the same, on a resize
+open         leak:mrb_mt_init_rom                 # a ROM method table, before
+open-core    leak:mrb_mt_init_rom                 # the node that records it
+regexp       leak:create_matchdata                # the capture buffer
+regexp       leak:pike_vm                         # the thread lists
+string       leak:create_matchdata                # the capture buffer
+symbol       leak:migrate_to_hash_table           # the grown symbol table
