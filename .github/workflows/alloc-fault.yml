@@ -1,0 +1,61 @@
+# The allocation-failure sweep: every allocation a scenario makes is, in one
+# run or another, the one that is refused.
+#
+# One run per allocation is thousands of processes, which is too long to put
+# in front of a pull request, so this runs nightly and on demand instead.
+# The work is split across shards, each of which builds the same
+# sanitizer-enabled configuration and sweeps its own slice.
+name: Allocation Failure
+
+on:
+  schedule:
+    # 18:40 UTC, off the hour so it does not queue with everything else.
+    - cron: '40 18 * * *'
+  workflow_dispatch:
+    inputs:
+      sweep_args:
+        description: 'extra arguments for sweep.rb (e.g. --only array,hash --ignore-known)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  Sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      MRUBY_CONFIG: ci/alloc-fault
+      CC: gcc
+      CXX: g++
+      LD: gcc
+    steps:
+      - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Ruby version
+        run: ruby -v
+      - name: Build
+        run: rake -m
+      - name: Gate the driver
+        run: rake test:run:bin
+      - name: "Sweep shard ${{ matrix.shard }} of 4"
+        env:
+          SWEEP_ARGS: >-
+            --shard ${{ matrix.shard }}/4
+            --log-dir sweep-logs
+            ${{ github.event.inputs.sweep_args }}
+        run: rake test:alloc-fault
+      - name: Keep what the findings said
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sweep-logs-${{ matrix.shard }}
+          path: sweep-logs
+          if-no-files-found: ignore

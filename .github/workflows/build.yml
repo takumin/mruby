@@ -69,6 +69,31 @@ jobs:
       - name: Build and test
         run: rake -m test:run:serial
 
+  Alloc-Fault:
+    # The fast gate on the allocation-failure driver: that it counts, that it
+    # refuses, and that a refusal inside mrb_open() is survivable. The sweep
+    # that walks every allocation of every scenario is too long for a pull
+    # request and runs in alloc-fault.yml instead.
+    name: "ubuntu-24.04-alloc-fault"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MRUBY_CONFIG: ci/alloc-fault
+      CC: gcc
+      CXX: g++
+      LD: gcc
+    steps:
+      - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Ruby version
+        run: ruby -v
+      - name: Build
+        run: rake -m
+      - name: Drive the fault injector
+        run: rake test:run:bin
+
   Cosmopolitan:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
