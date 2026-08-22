@@ -107,6 +107,11 @@ module MRuby
 
     Exts = Struct.new(:object, :executable, :library, :presym_preprocessed)
 
+    # The flags `enable_sanitizer` writes, so that a second call can take back
+    # what the first one left behind rather than stacking another
+    # `-fsanitize=` beside it.
+    SANITIZER_FLAGS = /\A(?:-fsanitize=|-fno-omit-frame-pointer\z)/
+
     # `rake -m` resolves the dependencies of several outputs at once, and each
     # of them compares its own record, so the report is guarded to print once.
     FLAGS_CHANGE_LOCK = Mutex.new
@@ -197,6 +202,44 @@ module MRuby
       @mrbc.compile_options += ' -g'
 
       @enable_debug = true
+    end
+
+    def sanitizers
+      @sanitizers ||= []
+    end
+
+    def sanitizer_enabled?
+      !sanitizers.empty?
+    end
+
+    # Compile and link with the named sanitizers:
+    #
+    #   conf.enable_sanitizer "address,undefined"
+    #   conf.enable_sanitizer :address, :undefined
+    #
+    # The flag reaches the compilers and the linker alike, because a
+    # sanitizer instruments the objects as they are compiled and links a
+    # runtime in beside them; a build that passes it to only one of the two
+    # either leaves the objects uninstrumented or fails to link.  Frame
+    # pointers are kept so a report carries a stack that can be read.
+    #
+    # Written for the gcc and clang drivers, which is what the build configs
+    # that ask for a sanitizer use.  A second call adds to the set rather
+    # than replacing it, and rewrites the flag both lists carry, so that
+    # `enable_sanitizer :address` followed by `enable_sanitizer :undefined`
+    # leaves one `-fsanitize=address,undefined` behind and not two flags that
+    # override each other.
+    def enable_sanitizer(*names)
+      list = names.flatten.map{|n| n.to_s.split(',')}.flatten.map(&:strip).reject(&:empty?)
+      fail "enable_sanitizer requires at least one sanitizer name" if list.empty?
+      @sanitizers = sanitizers | list
+
+      flag = "-fsanitize=#{@sanitizers.join(',')}"
+      compilers.each do |c|
+        c.flags = c.flags.flatten.grep_v(SANITIZER_FLAGS) << flag << '-fno-omit-frame-pointer'
+      end
+      @linker.flags = @linker.flags.flatten.grep_v(SANITIZER_FLAGS) << flag
+      @sanitizers
     end
 
     # Set target port names for this build.

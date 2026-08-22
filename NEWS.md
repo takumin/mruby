@@ -76,6 +76,7 @@ mruby-symbol-ext, mruby-range-ext, mruby-object-ext.
 - **_NOTE_**: `MRB_WORDBOX_NO_FLOAT_TRUNCATE` renamed to `MRB_WORDBOX_NO_INLINE_FLOAT` (old name still works) ([59e1fe2](https://github.com/mruby/mruby/commit/59e1fe2))
 - **_NOTE_**: `MRB_INT64` on 32-bit now requires `MRB_NO_BOXING` (other boxing modes cannot guarantee alignment for heap-allocated 64-bit integers) ([eaaa66b](https://github.com/mruby/mruby/commit/eaaa66b))
 - Amalgamation support via `rake amalgam` task ([d995ca2](https://github.com/mruby/mruby/commit/d995ca2))
+- `conf.enable_sanitizer` in a build config, which passes `-fsanitize=` to the compilers and the linker (the sanitizer build configs called for it already)
 - New Platform: Cosmopolitan Libc ([#6681](https://github.com/mruby/mruby/pull/6681))
 - Emscripten: use native WASM exception handling ([ca364e3](https://github.com/mruby/mruby/commit/ca364e3))
 - HAL (Hardware Abstraction Layer) for platform abstraction in mruby-io, mruby-socket, mruby-dir, mruby-task ([74ca22f](https://github.com/mruby/mruby/commit/74ca22f))
