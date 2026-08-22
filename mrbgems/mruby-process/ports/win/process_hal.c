@@ -531,6 +531,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   PROCESS_INFORMATION pi;
   LPPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
   SIZE_T attrs_size = 0;
+  DWORD flags = 0;
   HANDLE slots[3], wanted[3];
   HANDLE inherit[3];
   HANDLE dups[3] = { NULL, NULL, NULL };
@@ -608,11 +609,17 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
       goto error;
     }
     si.lpAttributeList = attrs;
+    flags = EXTENDED_STARTUPINFO_PRESENT;
   }
 
+  /* Handles cross only where a list says which.  Asking for inheritance
+     without one hands the child every inheritable handle this process has,
+     which is the opposite of what the list is for: one spawn's pipes would
+     leak into the next, and a read end nobody meant to give away keeps a
+     pipe from ever reaching EOF.  With no handle to pass, nothing is passed. */
   memset(&pi, 0, sizeof(pi));
-  if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE,
-                      EXTENDED_STARTUPINFO_PRESENT, envblock,
+  if (!CreateProcessA(NULL, cmdline, NULL, NULL, (ninherit > 0) ? TRUE : FALSE,
+                      flags, envblock,
                       params->chdir, &si.StartupInfo, &pi)) {
     set_errno_from_win32(GetLastError());
     goto error;
