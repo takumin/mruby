@@ -380,8 +380,7 @@ int mrb_hal_process_wait(mrb_state *mrb, mrb_hal_process_context *ctx,
  * Let go of a child.
  *
  * Called once per child, when the common layer stops owning it, because it
- * was reaped, because it was detached, or because the interpreter is closing
- * with it still running.  The port frees the child object and whatever the
+ * was reaped or because the interpreter is closing with it still running.  The port frees the child object and whatever the
  * platform was holding for it, and waits for nothing.
  */
 void mrb_hal_process_child_release(mrb_state *mrb, mrb_hal_process_context *ctx,

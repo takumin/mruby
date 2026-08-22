@@ -789,27 +789,6 @@ process_clock_getres(mrb_state *mrb, mrb_value self)
   return clock_unit_convert(mrb, u, &t, TRUE);
 }
 
-/*
- * call-seq:
- *   Process.detach(pid) -> nil
- *
- * Gives up the obligation to wait for the child +pid+ names.  Nothing here
- * waits for it afterwards, and on POSIX its status slot stays until the host
- * process exits.  CRuby returns a Thread that does the waiting; mruby has no
- * threads, so this returns nil.
- */
-static mrb_value
-process_detach(mrb_state *mrb, mrb_value self)
-{
-  mrb_int pid;
-  mrb_process_record *record;
-
-  mrb_get_args(mrb, "i", &pid);
-  record = mrb_process_record_find(mrb_process_table_get(mrb), pid);
-  if (record != NULL) mrb_process_record_detach(mrb, record);
-  return mrb_nil_value();
-}
-
 void
 mrb_mruby_process_gem_init(mrb_state *mrb)
 {
@@ -844,7 +823,6 @@ mrb_mruby_process_gem_init(mrb_state *mrb)
   mrb_define_module_function_id(mrb, process, MRB_SYM(wait),     process_waitpid,  MRB_ARGS_OPT(2));
   mrb_define_module_function_id(mrb, process, MRB_SYM(waitpid2), process_waitpid2, MRB_ARGS_OPT(2));
   mrb_define_module_function_id(mrb, process, MRB_SYM(wait2),    process_waitpid2, MRB_ARGS_OPT(2));
-  mrb_define_module_function_id(mrb, process, MRB_SYM(detach),   process_detach,   MRB_ARGS_REQ(1));
   mrb_define_module_function_id(mrb, process, MRB_SYM(clock_gettime), process_clock_gettime, MRB_ARGS_ARG(1, 1));
   mrb_define_module_function_id(mrb, process, MRB_SYM(clock_getres),  process_clock_getres,  MRB_ARGS_ARG(1, 1));
 

@@ -68,9 +68,6 @@ mrb_value mrb_process_wait_set(mrb_state *mrb,
                                const mrb_process_wait_target *target,
                                unsigned int flags);
 
-/* Let go of a live child without waiting for it. */
-void mrb_process_record_detach(mrb_state *mrb, mrb_process_record *record);
-
 /*
  * Process::Status
  */

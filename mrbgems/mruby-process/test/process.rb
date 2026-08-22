@@ -563,15 +563,6 @@ assert('Process.wait2 with Process::WNOHANG') do
   assert_equal "KILL", Signal.signame(status.termsig)
 end
 
-assert('Process.detach') do
-  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
-
-  pid = Process.spawn("exit 0")
-  assert_nil Process.detach(pid)
-  assert_raise(StandardError) { Process.waitpid(pid) }
-  assert_nil Process.detach(pid)
-end
-
 assert('Process::Status.new') do
   # A status stands for a wait this interpreter performed, and cannot be
   # conjured out of numbers.

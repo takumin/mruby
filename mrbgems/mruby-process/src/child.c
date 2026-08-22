@@ -259,19 +259,13 @@ mrb_process_wait_set(mrb_state *mrb, const mrb_process_wait_target *target,
   return status;
 }
 
-void
-mrb_process_record_detach(mrb_state *mrb, mrb_process_record *record)
-{
-  record_finish(mrb, record);
-}
-
 /*
  * Teardown
  *
- * One non-blocking wait per live child, and then it is let go of either way.
- * A blocking wait here would let a child that never finishes hang mrb_close,
- * which is worse than the zombie a detached child can leave on POSIX until
- * the host process exits.
+ * One non-blocking wait per child still owing a reap, and then it is let go
+ * of either way.  A blocking wait here would let a child that never finishes
+ * hang mrb_close, which is worse than the zombie the one left behind is on
+ * POSIX until the host process exits.
  */
 static void
 table_dispose(mrb_state *mrb, mrb_process_table *table)

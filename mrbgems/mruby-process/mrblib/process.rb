@@ -26,8 +26,7 @@ module Process
       #
       # Runs +command+ in a child process and returns its process ID without
       # waiting for it.  The caller owes that child a wait, through
-      # Process.waitpid, or Process.detach to say it will not be waited for
-      # at all.
+      # Process.waitpid.
       #
       # A single String is run through the system shell; two or more
       # arguments are the command and its arguments, run directly.

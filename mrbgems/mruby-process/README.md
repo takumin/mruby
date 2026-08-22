@@ -23,7 +23,6 @@ already include it.
 | Process.spawn                     | o             | absent under `MRB_NO_PROCESS_SPAWN`      |
 | Process.wait, .wait2              | o             | `.waitpid2` too; not `.waitall`          |
 | Process.waitpid                   | o             | sets `$?`                                |
-| Process.detach                    | o             | returns nil, not a Thread                |
 | Process.clock_gettime             | o             | seven units; symbolic clock ids          |
 | Process.clock_getres              | o             | takes `:hertz` too                       |
 | Process::WNOHANG                  | o             | mruby's own value, not the platform's    |
@@ -45,6 +44,7 @@ already include it.
 | Process::Status#to_s              | o             |                                          |
 | Process::Status#inspect           | o             |                                          |
 | Process::Status#==                | o             | the raw status decides, not the pid      |
+| Process.detach                    |               | needs a waiter; mruby has no threads     |
 | Process.fork                      |               | inherently non-portable; separate change |
 | Process.exec                      |               | separate change                          |
 | Process.system                    |               | spawn plus wait; separate change         |
@@ -99,12 +99,10 @@ Process.waitpid(pid)         # -> pid, and $? says how it finished
   interpreter's, raises `Errno::ECHILD`.
 - A record exists exactly while its child owes a reap, so a child waited for
   once is `Errno::ECHILD` the second time, as it is in CRuby.
-- `Process.detach(pid)` gives up the obligation without waiting. On POSIX the
-  child's status slot then stays until the host process exits.
 - At `mrb_close`, every child still owing a reap gets one non-blocking wait
   and is then let go of. A blocking wait there would let a child that never
   finishes hang the interpreter's close, which is worse than the zombie the
-  child is left as.
+  child is left as until the host process exits.
 
 ## Architecture
 
@@ -262,8 +260,10 @@ constrains; this list is a map.
   selectors 0 and below -1 raise `Errno::ENOSYS`. Windows is one: a process
   group there is what `GenerateConsoleCtrlEvent()` addresses, and nothing a
   wait can be filtered by.
-- `Process.detach` returns nil. CRuby returns a Thread that does the waiting;
-  mruby has no threads.
+- `Process.detach` is not implemented. What CRuby's returns is a Thread that
+  performs the wait, so that the child is reaped whenever it finishes and no
+  zombie is left; mruby has no threads to do that with, and a `detach` that
+  only forgot the child would be the zombie it exists to prevent.
 - `Process::Status` cannot be constructed, and `Process::Status.new(pid, raw)`
   is not available.
 - A clock can be named by the Symbol its constant is named with, as in CRuby.
