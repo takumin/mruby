@@ -125,6 +125,18 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
     if (element_int(mrb, table_ary, i) < 0) {
       mrb_raise(mrb, E_ARGUMENT_ERROR, "wrong exec redirect: negative descriptor");
     }
+    /* A port narrows a descriptor to the `int` the platform numbers them
+       with, so a number no `int` can hold would arrive there as some other
+       descriptor entirely.  Refused here, where the size is what is wrong
+       with it, as Ruby refuses it. */
+    mrb_process_int_arg(mrb, element_int(mrb, table_ary, i), "descriptor");
+    if (rkind != MRB_PROCESS_REDIR_CLOSE) {
+      mrb_int source = element_int(mrb, table_ary, i + 2);
+      if (source < 0) {
+        mrb_raise(mrb, E_ARGUMENT_ERROR, "wrong exec redirect: negative descriptor");
+      }
+      mrb_process_int_arg(mrb, source, "descriptor");
+    }
   }
   if (!mrb_nil_p(chdir)) mrb_string_value_cstr(mrb, &chdir);
 

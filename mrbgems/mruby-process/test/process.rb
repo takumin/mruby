@@ -416,6 +416,19 @@ assert('Process.spawn with a redirection') do
   assert_true ProcessTestUtil.run("echo hello", out: 2).success?
 end
 
+assert('Process.spawn with a descriptor number too large for the platform') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # A port numbers descriptors with an `int`, so a number wider than one
+  # would reach it as a different descriptor.  What is wrong with it is its
+  # size, which is RangeError here as it is in Ruby.
+  big = (2**31 rescue nil)
+  skip "this build cannot name a number wider than an int" unless big
+
+  assert_raise(RangeError) { Process.spawn("exit 0", big => 1) }
+  assert_raise(RangeError) { Process.spawn("exit 0", 1 => big) }
+end
+
 assert('Process.spawn with an environment') do
   skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
 
