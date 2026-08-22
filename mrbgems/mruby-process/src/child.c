@@ -246,9 +246,9 @@ mrb_process_wait_set(mrb_state *mrb, const mrb_process_wait_target *target,
   }
 
   status = mrb_process_status_new(mrb, &event.status);
-  /* A wait that did not name one child can draw a child this interpreter
-     never spawned, one the host process forked itself.  Its status is still
-     worth reporting; there is simply no record to move. */
+  /* The set can hold a child this interpreter never spawned, one the host
+     application forked itself.  Its status is still worth reporting; there is
+     simply no record to move. */
   record = (event.child != NULL)
              ? (mrb_process_record*)mrb_hal_process_child_udata(event.child)
              : NULL;

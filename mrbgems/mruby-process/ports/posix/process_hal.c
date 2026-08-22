@@ -535,11 +535,21 @@ mrb_hal_process_wait(mrb_state *mrb, mrb_hal_process_context *ctx,
   int options = 0;
   (void)mrb;
 
-  /* The three scopes are the three things waitpid(2) reads from its first
-     argument, so they are the same call with a different number. */
+  /* The scopes are the things waitpid(2) reads from its first argument, so
+     they are the same call with a different number. */
   switch (target->scope) {
   case MRB_PROCESS_WAIT_SCOPE_CHILD:
     want = target->child->pid;
+    break;
+  case MRB_PROCESS_WAIT_SCOPE_PID:
+    /* A number no pid_t can hold labels no process, and so no child of this
+       one: the answer waitpid(2) gives for such a pid is the one given
+       here. */
+    if (!PID_FITS(target->pid)) {
+      errno = ECHILD;
+      return -1;
+    }
+    want = (pid_t)target->pid;
     break;
   case MRB_PROCESS_WAIT_SCOPE_ANY:
     want = (pid_t)-1;
@@ -574,9 +584,10 @@ mrb_hal_process_wait(mrb_state *mrb, mrb_hal_process_context *ctx,
 
   status_decode((mrb_int)result, status, &event->status);
   event->kind = event_kind(&event->status);
-  /* A wait that did not name one child can also draw a child this context
-     never spawned, one the host process forked itself.  Reporting it with no
-     child attached says so, rather than guessing at an owner. */
+  /* Every scope but CHILD draws from this process's children, which is a
+     wider set than the ones spawned through here: the host application may
+     have forked its own.  Reporting such a child with none attached says so,
+     rather than guessing at an owner. */
   event->child = (target->scope == MRB_PROCESS_WAIT_SCOPE_CHILD)
                    ? target->child
                    : child_find(ctx, result);

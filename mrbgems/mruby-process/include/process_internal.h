@@ -63,7 +63,9 @@ mrb_process_record *mrb_process_record_find(mrb_process_table *table, mrb_int pi
 mrb_value mrb_process_record_wait(mrb_state *mrb, mrb_process_record *record,
                                   unsigned int flags);
 
-/* Wait on every live child at once, for whichever produces an event first. */
+/* Wait on a set of the running process's children, which is wider than the
+   ones spawned here: a pid, a process group, or any of them.  A record is
+   moved along when the child that answered turns out to be one of ours. */
 mrb_value mrb_process_wait_set(mrb_state *mrb,
                                const mrb_process_wait_target *target,
                                unsigned int flags);

@@ -473,6 +473,37 @@ assert('Process.waitpid with no child to wait for') do
   assert_raise(Errno::ECHILD) { Process.waitpid(pid + 1000000) }
 end
 
+assert('Process.waitpid by number accounts for a child of this interpreter') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # Waiting by number is the platform's own selector, but a number this
+  # interpreter spawned is also a record it holds, and the wait goes through
+  # that record so that the two cannot come apart.
+  pid = Process.spawn("exit 7")
+  assert_equal pid, Process.waitpid(pid)
+  assert_equal 7, $?.exitstatus
+
+  # ... and the record went with the wait, so nothing here still owes a reap
+  # for that number and the platform is not asked about it again.
+  assert_raise(Errno::ECHILD) { Process.waitpid(pid) }
+end
+
+assert('Process.waitpid for a process this one did not spawn') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # A pid reaches the platform as written, and what it answers for is the
+  # children the running process has.  Its own parent is not one of them, so
+  # this is ECHILD wherever a parent can be named at all.
+  ppid = begin
+           Process.ppid
+         rescue StandardError
+           nil
+         end
+  skip "this platform cannot name a parent process" unless ppid
+
+  assert_raise(Errno::ECHILD) { Process.waitpid(ppid) }
+end
+
 assert('Process.waitpid over a process group') do
   skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
 
@@ -493,9 +524,9 @@ end
 assert('Process.waitpid over a process group with no child in it') do
   skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
 
-  # A group holds whatever it holds; what a wait draws from it is this
-  # interpreter's children and nothing else, so a group with none of them in
-  # it has nothing to report even where the group itself is populated.
+  # A group holds whatever it holds; what a wait draws from it is the running
+  # process's children, so a group with none of them in it has nothing to
+  # report even where the group itself is populated.
   assert_raise(Errno::ECHILD) { Process.waitpid(0) }
 end
 

@@ -114,7 +114,7 @@ typedef struct mrb_hal_process_child mrb_hal_process_child;
 typedef struct mrb_process_event {
   mrb_process_event_kind kind;
   mrb_hal_process_child *child;   /* which child produced the event, or NULL
-                                     when a wait-any reaped one this context
+                                     when the wait reaped one this context
                                      never spawned */
   mrb_process_status status;      /* valid unless kind is MRB_PROCESS_EVENT_NONE */
 } mrb_process_event;
@@ -336,19 +336,24 @@ int mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
 /*
  * Which children a wait draws from.
  *
- * The three are the three a platform can express, and every one of them is a
- * set of this process's own children: a group scope narrows among them by
- * process group, it does not reach a process this one did not create.
+ * CHILD names a child this context spawned and still holds; the other three
+ * are the platform's own selectors, and what they draw from is every child of
+ * the *process*, which in an embedded interpreter is not only the ones spawned
+ * through here.  A host application or a C extension that forked a child of
+ * its own has put it in the same set, which is why a port that answers these
+ * reports the child it drew from only when it is one of its own.
  */
 typedef enum mrb_process_wait_scope {
   MRB_PROCESS_WAIT_SCOPE_CHILD,  /* the one named by `child` */
-  MRB_PROCESS_WAIT_SCOPE_ANY,    /* any child of this context */
+  MRB_PROCESS_WAIT_SCOPE_PID,    /* the process `pid` names, spawned here or not */
+  MRB_PROCESS_WAIT_SCOPE_ANY,    /* any child of this process */
   MRB_PROCESS_WAIT_SCOPE_GROUP,  /* any child in `group`; 0 is the caller's own */
 } mrb_process_wait_scope;
 
 typedef struct mrb_process_wait_target {
   mrb_process_wait_scope scope;
   mrb_hal_process_child *child;  /* read when scope is MRB_PROCESS_WAIT_SCOPE_CHILD */
+  mrb_int pid;                   /* read when scope is MRB_PROCESS_WAIT_SCOPE_PID */
   mrb_int group;                 /* read when scope is MRB_PROCESS_WAIT_SCOPE_GROUP */
 } mrb_process_wait_target;
 
@@ -361,12 +366,13 @@ typedef struct mrb_process_wait_target {
  *               MRB_PROCESS_WAIT_NOHANG found nothing ready
  * @return 0 on success, -1 on error (sets errno)
  *
- * Wait-one, wait-any and wait-group are one primitive because they are one
- * system call with a different argument, and because emulating any of them
- * from the others cannot be done honestly: polling live children with a
- * non-blocking wait in a loop is not a blocking wait, and it burns the CPU
- * while pretending otherwise.  A port that cannot express a scope fails with
- * ENOSYS rather than answering a narrower question.
+ * The scopes are one primitive because they are one system call with a
+ * different argument, and because emulating any of them from the others
+ * cannot be done honestly: polling live children with a non-blocking wait in
+ * a loop is not a blocking wait, and it burns the CPU while pretending
+ * otherwise.  A port that cannot express a scope fails with ENOSYS rather
+ * than answering a narrower question, except that a PID scope a port cannot
+ * reach fails with ECHILD: what it cannot wait for is not its child.
  *
  * A terminal event releases the platform resource inside the port but does
  * not free the child object: the pointer in the event stays valid, and

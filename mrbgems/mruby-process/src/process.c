@@ -221,24 +221,6 @@ process_kill(mrb_state *mrb, mrb_value self)
   return mrb_int_value(mrb, argc);
 }
 
-/*
- * A pid this interpreter may wait on: one it spawned and has not yet
- * accounted for.  Anything else is Errno::ECHILD, as it is in Ruby: a
- * number is not a claim on a process, and the child it once named may since
- * have been reaped and the number handed to someone else.
- */
-static mrb_process_record*
-live_record(mrb_state *mrb, mrb_int pid)
-{
-  mrb_process_record *record = mrb_process_record_find(mrb_process_table_get(mrb), pid);
-
-  if (record == NULL) {
-    errno = ECHILD;
-    mrb_sys_fail(mrb, "waitpid");
-  }
-  return record;
-}
-
 /* The wait itself.  Two module functions differ only in whether the status
    is handed back beside the pid, so the wait is done here; the wait publishes
    it through `$?`, and both of them leave it set. */
@@ -247,6 +229,7 @@ wait_for_child(mrb_state *mrb, mrb_value *statusp)
 {
   mrb_int pid = -1;
   mrb_int flags = 0;
+  mrb_process_record *record;
   mrb_value status;
 
   mrb_get_args(mrb, "|ii", &pid, &flags);
@@ -261,19 +244,27 @@ wait_for_child(mrb_state *mrb, mrb_value *statusp)
     mrb_sys_fail(mrb, NULL);
   }
 
-  if (pid > 0) {
-    status = mrb_process_record_wait(mrb, live_record(mrb, pid), (unsigned int)flags);
+  /* A pid this interpreter spawned and still owes a wait for is waited on
+     through its record, which is what makes reaching the same child twice
+     harmless.  Every other pid goes to the platform as written: a number is
+     not a claim on a process, but it is what waitpid(2) takes, and refusing
+     one here would leave a child of the host application waitable through the
+     ANY selector and not through its own number. */
+  record = (pid > 0) ? mrb_process_record_find(mrb_process_table_get(mrb), pid) : NULL;
+  if (record != NULL) {
+    status = mrb_process_record_wait(mrb, record, (unsigned int)flags);
   }
   else {
-    /* A pid that names more than one child is not looked up in the record
-       table: which children answer to it is the platform's to decide, and the
-       record the wait lands on is found afterwards from the pid it reports. */
     mrb_process_wait_target target;
 
     target.child = NULL;
-    if (pid == -1) {
+    target.pid = pid;
+    target.group = 0;
+    if (pid > 0) {
+      target.scope = MRB_PROCESS_WAIT_SCOPE_PID;
+    }
+    else if (pid == -1) {
       target.scope = MRB_PROCESS_WAIT_SCOPE_ANY;
-      target.group = 0;
     }
     else {
       target.scope = MRB_PROCESS_WAIT_SCOPE_GROUP;
@@ -293,18 +284,26 @@ wait_for_child(mrb_state *mrb, mrb_value *statusp)
  *
  * Waits for a child process to finish and returns its process ID, setting
  * <code>$?</code> to the Process::Status it finished with.  Which children
- * are waited for is what +pid+ chooses, and every one of the four is a set
- * of this interpreter's own children: a positive number names one of them,
- * 0 those in the caller's process group, -1 (the default) any of them, and a
- * number below -1 those in the process group whose ID is -pid.
+ * are waited for is what +pid+ chooses, as the platform reads it: a positive
+ * number names one process, 0 the caller's process group, -1 (the default)
+ * any child, and a number below -1 the process group whose ID is -pid.  The
+ * children a selector draws from are the running process's, not only the
+ * ones Process.spawn created, so an embedding application's own child can be
+ * waited for here as well.
+ *
+ * A child this interpreter did spawn is also known to it by more than its
+ * number, and waiting for it here goes through that: the wait is given the
+ * child itself, so a number the platform has since handed to a stranger
+ * cannot be what is waited for.
  *
  * With Process::WNOHANG among +flags+, returns nil and sets <code>$?</code>
  * to nil when no child is ready.  With Process::WUNTRACED, a stopped child
  * is reported too, where the platform has such a thing; a stopped child has
  * not finished, so it can still be waited for again.
  *
- * Raises Errno::ECHILD when +pid+ names no child this interpreter spawned
- * and still owes a wait for, including a child it has already reaped,
+ * Raises Errno::ECHILD when +pid+ names no child of this process, including
+ * one already reaped and, on a platform that can only wait for a child it
+ * holds a handle to, one this interpreter did not spawn.  Raises
  * Errno::EINVAL when +flags+ holds a bit that is not one of the two,
  * Errno::ENOSYS on a platform whose waits cannot be narrowed to a process
  * group, and RangeError when +pid+ is too large for the platform to carry.

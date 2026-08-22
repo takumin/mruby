@@ -92,11 +92,17 @@ pid = Process.spawn("sleep 1")
 Process.waitpid(pid)         # -> pid, and $? says how it finished
 ```
 
-- `Process.waitpid(pid)` looks the number up among the children this
-  interpreter spawned and has not yet accounted for, and waits by identity, so
-  a pid the platform has since handed to a stranger cannot be what is waited
-  for. Any other pid, one already reaped or one that was never this
-  interpreter's, raises `Errno::ECHILD`.
+- `Process.waitpid(pid)` waits by number, as `waitpid(2)` does, and the
+  children it draws from are the running process's. A host application that
+  forked a child of its own can be waited for through it, which is the point
+  of keeping the two apart: an ownership model that narrowed `Process.waitpid`
+  would leave that child waitable through `Process.wait(-1)` and unwaitable
+  through its own pid. A pid that names no child of this process is
+  `Errno::ECHILD`.
+- Waiting by number for a child this interpreter did spawn goes through the
+  record anyway, so the wait is given the child itself and not the number that
+  labels it: a pid the platform has since handed to a stranger cannot be what
+  is waited for.
 - A record exists exactly while its child owes a reap, so a child waited for
   once is `Errno::ECHILD` the second time, as it is in CRuby.
 - At `mrb_close`, every child still owing a reap gets one non-blocking wait
@@ -174,19 +180,22 @@ The HAL answers OS-level facts and performs OS-level operations:
 - `mrb_hal_process_clock_gettime()` / `_getres()` — read a clock, and the
   granularity the way of reading it can tell two moments apart by.
 
-Wait-one, wait-any and wait-group are one primitive because they are one
-system call with a different argument, and because emulating any of them from
-the others cannot be done honestly: polling live children with a non-blocking
-wait in a loop is not a blocking wait, and it burns the CPU while pretending
-otherwise. Those three are the sets a wait can draw from and there is nothing
-else, because nothing else is expressible: POSIX `waitpid()` has no form that
-takes an arbitrary subset.
+Wait-one, wait-pid, wait-any and wait-group are one primitive because they are
+one system call with a different argument, and because emulating any of them
+from the others cannot be done honestly: polling live children with a
+non-blocking wait in a loop is not a blocking wait, and it burns the CPU while
+pretending otherwise. Those four are the sets a wait can draw from and there is
+nothing else, because nothing else is expressible: POSIX `waitpid()` has no
+form that takes an arbitrary subset.
 
-Every one of the three is a set of this interpreter's own children. A group
-scope narrows among them; it does not reach a process this one did not create,
-which is why owning children and honouring the group selectors are not in
-tension. `waitpid(0)` in a populated process group with no child of the
-caller's in it answers `ECHILD`, not somebody else's status.
+Only the first of them names a child this interpreter holds. The other three
+are the platform's own selectors, and the set they draw from is every child of
+the _process_: an embedded interpreter shares that set with the application
+that embedded it, which may have forked children the record table never heard
+of. A port therefore reports which child answered only when it is one of its
+own, and the common layer moves a record only then. What a port cannot do is
+invent the missing half: Windows can wait only on a handle it holds, so a pid
+it never spawned is `ECHILD` there.
 
 The common sources under `src/` implement everything Ruby promises: the module
 and class definitions, argument shapes and conversions, the child record table

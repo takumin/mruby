@@ -774,6 +774,14 @@ mrb_hal_process_wait(mrb_state *mrb, mrb_hal_process_context *ctx,
   if (target->scope == MRB_PROCESS_WAIT_SCOPE_ANY) {
     return wait_any(mrb, ctx, flags, event);
   }
+  if (target->scope == MRB_PROCESS_WAIT_SCOPE_PID) {
+    /* A wait here is a wait on a handle, and the only handles this port has
+       are the ones it opened by spawning.  A pid it never spawned is a pid it
+       cannot wait for, which is what ECHILD says; opening the process anew
+       would be waiting on whoever holds the number now. */
+    errno = ECHILD;
+    return -1;
+  }
   if (target->scope == MRB_PROCESS_WAIT_SCOPE_GROUP) {
     /* A Win32 process group is what GenerateConsoleCtrlEvent() addresses, and
        nothing a wait can be narrowed by: a wait here takes handles, and a
