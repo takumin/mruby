@@ -668,10 +668,22 @@ fail:
   err = errno;
   if (err == 0) err = ENOEXEC;
   {
-    /* One short write to a pipe nobody else is writing to; a partial write
-       is not a case the parent has to read around. */
-    ssize_t ignored = write(errfd, &err, sizeof(err));
-    (void)ignored;
+    /* The parent reads exactly this many bytes or nothing at all, so a write
+       cut short by a signal is finished rather than left half said.  Nobody
+       else writes to this pipe, so what is left to write is what has not
+       been written yet. */
+    const char *p = (const char*)&err;
+    size_t left = sizeof(err);
+
+    while (left > 0) {
+      ssize_t n = write(errfd, p, left);
+      if (n == -1) {
+        if (errno == EINTR) continue;
+        break;
+      }
+      p += n;
+      left -= (size_t)n;
+    }
   }
   _exit(127);
 }
