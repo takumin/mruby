@@ -133,13 +133,13 @@ $ rake test:alloc-fault MRUBY_CONFIG=ci/alloc-fault
 Because the driver's definition lives in the executable, the linker resolves
 `src/gc.c`'s reference there and never pulls `src/allocf.o` out of libmruby:
 the same reason an application that supplies its own allocator does not
-collide with the default one.  See `mrbgems/mruby-alloc-fault/README.md` for
+collide with the default one. See `mrbgems/mruby-alloc-fault/README.md` for
 the scenarios, the outcomes it accepts, and how a finding is recorded.
 
 Two failure paths are worth keeping apart when writing code that allocates:
 
 - `mrb_malloc()`, `mrb_realloc()` and `mrb_calloc()` raise `NoMemoryError`,
-  which unwinds through `longjmp`.  A raw buffer held in a C local at that
+  which unwinds through `longjmp`. A raw buffer held in a C local at that
   moment is leaked unless something else owns it.
 - `mrb_malloc_simple()` and `mrb_realloc_simple()` answer `NULL` instead, and
   leave the decision to the caller.

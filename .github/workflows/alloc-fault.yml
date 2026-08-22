@@ -10,13 +10,13 @@ name: Allocation Failure
 on:
   schedule:
     # 18:40 UTC, off the hour so it does not queue with everything else.
-    - cron: '40 18 * * *'
+    - cron: "40 18 * * *"
   workflow_dispatch:
     inputs:
       sweep_args:
-        description: 'extra arguments for sweep.rb (e.g. --only array,hash --ignore-known)'
+        description: "extra arguments for sweep.rb (e.g. --only array,hash --ignore-known)"
         required: false
-        default: ''
+        default: ""
 
 permissions:
   contents: read
