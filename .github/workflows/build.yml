@@ -44,6 +44,31 @@ jobs:
       - name: Build and test
         run: rake -m test:run:serial
 
+  Sanitizer:
+    # The standard suite under the address and undefined sanitizers, which is
+    # what turns a use after free or a leak from something a passing test
+    # hides into a failure. `detect_leaks` is on by default here (Linux), so
+    # a test that leaks fails the job.
+    name: "ubuntu-24.04-gcc-asan"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MRUBY_CONFIG: gcc-asan
+      CC: gcc
+      CXX: g++
+      LD: gcc
+    steps:
+      - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Ruby version
+        run: ruby -v
+      - name: Compiler version
+        run: ${{ env.CC }} --version
+      - name: Build and test
+        run: rake -m test:run:serial
+
   Cosmopolitan:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
