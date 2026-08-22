@@ -742,6 +742,25 @@ assert('IO#close_write on a closed stream') do
   end
 end
 
+assert('Process.spawn with close_others and a descriptor of its own') do
+  skip "no POSIX shell here" if MRubyIOTestUtil.win?
+  begin
+    Process
+  rescue NameError
+    skip "this build has no mruby-process"
+  end
+  skip "this build cannot create processes" unless Process.respond_to?(:spawn)
+
+  # What close_others closes is what the caller did not ask for, and an
+  # explicit redirection is asking: a sweep that took descriptor 3 with it
+  # would create it and then close it before the command ever ran.
+  IO.pipe do |r, w|
+    Process.waitpid(Process.spawn("echo hi >&3", 3 => w, close_others: true))
+    w.close
+    assert_equal "hi\n", r.read
+  end
+end
+
 assert('Process.spawn with one file named for two descriptors') do
   skip "no POSIX shell here" if MRubyIOTestUtil.win?
   begin

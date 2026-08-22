@@ -249,6 +249,39 @@ fd_move_above(int fd, int least)
   return moved;
 }
 
+/* Add `fd` to the ascending `keep` list, which holds no duplicates and
+   nothing below 3.  Called after fork(), so it does no more than compare and
+   move `int`s. */
+static void
+keep_add(int *keep, size_t *nkeep, int fd)
+{
+  size_t i, j;
+
+  if (fd < 3) return;
+  for (i = 0; i < *nkeep; i++) {
+    if (keep[i] == fd) return;
+    if (keep[i] > fd) break;
+  }
+  for (j = *nkeep; j > i; j--) keep[j] = keep[j - 1];
+  keep[i] = fd;
+  (*nkeep)++;
+}
+
+/* Close every descriptor from `low` up to and including `high`, or to the top
+   of the table when `high` is -1.  Where the top is is what the parent read
+   _SC_OPEN_MAX for: a sweep that stopped at a number picked here would leave
+   open exactly what the caller asked to have closed. */
+static void
+close_fds(int low, int high, long maxfd)
+{
+  int fd;
+
+  if (high < 0) {
+    high = (maxfd - 1 > (long)INT_MAX) ? INT_MAX : (int)(maxfd - 1);
+  }
+  for (fd = low; fd <= high; fd++) close(fd);
+}
+
 /* Everything the child does between fork() and exec().  It reports a failure
    by writing errno down `errfd`, which the parent is reading; the write end
    is close-on-exec, so a successful exec closes it and the parent's read
@@ -257,11 +290,13 @@ fd_move_above(int fd, int least)
    Nothing here allocates: the one array it needs was allocated before the
    fork. */
 static void
-child_exec(const mrb_process_spawn_params *params, int *sources, int errfd)
+child_exec(const mrb_process_spawn_params *params, int *sources, int errfd,
+           int *keep, long maxfd)
 {
   static char *empty_environ[] = { NULL };
   size_t i;
   int err;
+  int low = 3;
   mrb_int max_target = -1;
 
   for (i = 0; i < params->nredirects; i++) {
@@ -312,13 +347,25 @@ child_exec(const mrb_process_spawn_params *params, int *sources, int errfd)
   }
 
   if (params->flags & MRB_PROCESS_SPAWN_CLOSE_OTHERS) {
-    long maxfd = sysconf(_SC_OPEN_MAX);
-    int fd;
+    /* "Everything else" is everything the caller did not ask for.  What it
+       did ask for is each descriptor this table wrote, and the error pipe,
+       which closing would silence the report this child owes its parent.
+       Sweeping over those would undo the redirection just performed: an
+       explicit `3 => io` would create descriptor 3 and then close it. */
+    size_t nkeep = 0;
+    size_t k;
 
-    if (maxfd < 0 || maxfd > 65536) maxfd = 65536;
-    for (fd = 3; fd < (int)maxfd; fd++) {
-      if (fd != errfd) close(fd);
+    for (i = 0; i < params->nredirects; i++) {
+      if (params->redirects[i].kind == MRB_PROCESS_REDIR_CLOSE) continue;
+      keep_add(keep, &nkeep, (int)params->redirects[i].child_fd);
     }
+    keep_add(keep, &nkeep, errfd);
+
+    for (k = 0; k < nkeep; k++) {
+      if (low < keep[k]) close_fds(low, keep[k] - 1, maxfd);
+      low = keep[k] + 1;
+    }
+    close_fds(low, -1, maxfd);
   }
 
   if (params->chdir != NULL && chdir(params->chdir) == -1) goto fail;
@@ -395,6 +442,8 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   struct mrb_hal_process_child *child;
   int errfds[2] = { -1, -1 };
   int *sources = NULL;
+  int *keep = NULL;
+  long maxfd;
   int child_errno, saved_errno;
   pid_t pid;
   size_t i;
@@ -405,15 +454,26 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
     return -1;
   }
 
+  /* Both arrays belong to the child as much as to this call: it may not
+     allocate between fork() and exec(), so what it will need is allocated
+     here.  `sources` is one per redirection, `keep` one per redirection plus
+     the error pipe.  How high descriptors go is read here for the same
+     reason, since sysconf() is not a call the child may make. */
   sources = (int*)mrb_malloc_simple(mrb, sizeof(int) * (params->nredirects + 1));
+  keep = (int*)mrb_malloc_simple(mrb, sizeof(int) * (params->nredirects + 1));
   child = (struct mrb_hal_process_child*)mrb_malloc_simple(mrb, sizeof(*child));
-  if (sources == NULL || child == NULL) {
+  if (sources == NULL || keep == NULL || child == NULL) {
     errno = ENOMEM;
     goto error;
   }
   for (i = 0; i < params->nredirects; i++) {
     sources[i] = (int)params->redirects[i].source_fd;
   }
+  maxfd = sysconf(_SC_OPEN_MAX);
+  /* A host that will not say has to be guessed at, and the guess is only
+     ever a floor: nothing above it can be closed, so it is made high enough
+     to cover what a process is likely to have open. */
+  if (maxfd < 0) maxfd = 65536;
 
   if (pipe(errfds) == -1) goto error;
   if (fd_set_cloexec(errfds[0], 1) == -1 || fd_set_cloexec(errfds[1], 1) == -1) {
@@ -424,7 +484,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   if (pid == -1) goto error;
   if (pid == 0) {
     close(errfds[0]);
-    child_exec(params, sources, errfds[1]);
+    child_exec(params, sources, errfds[1], keep, maxfd);
     /* not reached */
   }
 
@@ -444,6 +504,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   }
 
   mrb_free(mrb, sources);
+  mrb_free(mrb, keep);
   child->pid = pid;
   child->udata = NULL;
   child->next = ctx->children;
@@ -456,6 +517,7 @@ error:
   if (errfds[0] != -1) close(errfds[0]);
   if (errfds[1] != -1) close(errfds[1]);
   mrb_free(mrb, sources);
+  mrb_free(mrb, keep);
   mrb_free(mrb, child);
   errno = saved_errno;
   return -1;
