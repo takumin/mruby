@@ -50,9 +50,16 @@ void mrb_process_table_final(mrb_state *mrb);
 mrb_process_table *mrb_process_table_get(mrb_state *mrb);
 mrb_hal_process_context *mrb_process_table_context(mrb_process_table *table);
 
-/* Take ownership of a freshly spawned child.  The only way a record is made. */
-mrb_process_record *mrb_process_record_register(mrb_state *mrb, mrb_process_table *table,
-                                                mrb_hal_process_child *hal_child);
+/*
+ * Making a record is two steps, because the OS step between them cannot be
+ * taken back.  Everything that can fail happens in the first: a record is
+ * reserved before the child exists, and a spawn that never happens discards
+ * it.  Committing a child that does exist allocates nothing and cannot raise,
+ * so a live child is never left without the record that owes its wait.
+ */
+mrb_process_record *mrb_process_record_reserve(mrb_state *mrb, mrb_process_table *table);
+void mrb_process_record_commit(mrb_process_record *record, mrb_hal_process_child *hal_child);
+void mrb_process_record_discard(mrb_state *mrb, mrb_process_record *record);
 
 /* The one lookup, and it finds LIVE records only. */
 mrb_process_record *mrb_process_record_find(mrb_process_table *table, mrb_int pid);

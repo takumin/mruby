@@ -12,6 +12,9 @@
 **
 **   - a record is created only by spawning (nothing adopts a pid it did not
 **     create), and it is let go of at exactly one place, record_finish();
+**   - a record is reserved before the child exists and committed after it
+**     does, so the step that can fail is never the one after the OS has
+**     acted;
 **   - the table holds every record and nothing else, so it is at once the
 **     list teardown walks and the index a pid is looked up in;
 **   - the platform child is released exactly once, in record_finish();
@@ -133,28 +136,42 @@ mrb_process_table_context(mrb_process_table *table)
  */
 
 mrb_process_record*
-mrb_process_record_register(mrb_state *mrb, mrb_process_table *table,
-                            mrb_hal_process_child *hal_child)
+mrb_process_record_reserve(mrb_state *mrb, mrb_process_table *table)
 {
   mrb_process_record *record =
     (mrb_process_record*)mrb_malloc_simple(mrb, sizeof(mrb_process_record));
 
   if (record == NULL) {
-    mrb_hal_process_child_release(mrb, table->hal, hal_child);
     mrb_raise(mrb, E_RUNTIME_ERROR, "out of memory");
   }
-  record->pid = mrb_hal_process_child_pid(hal_child);
-  record->hal_child = hal_child;
+  record->pid = -1;
+  record->hal_child = NULL;
   record->table = table;
   record->next = NULL;
+  return record;
+}
+
+void
+mrb_process_record_commit(mrb_process_record *record, mrb_hal_process_child *hal_child)
+{
+  mrb_process_table *table = record->table;
+
+  record->pid = mrb_hal_process_child_pid(hal_child);
+  record->hal_child = hal_child;
 
   /* Creation order, because that is the order teardown deals with them in. */
   *table->tail = record;
   table->tail = &record->next;
 
-  /* How a wait-any event finds its way back here without a lookup. */
+  /* How a wait event finds its way back here without a lookup. */
   mrb_hal_process_child_set_udata(hal_child, record);
-  return record;
+}
+
+void
+mrb_process_record_discard(mrb_state *mrb, mrb_process_record *record)
+{
+  /* Never committed, so it is in no list and holds no platform child. */
+  mrb_free(mrb, record);
 }
 
 mrb_process_record*
@@ -220,10 +237,13 @@ mrb_process_record_wait(mrb_state *mrb, mrb_process_record *record, unsigned int
     return mrb_nil_value();
   }
 
-  status = mrb_process_status_new(mrb, &event.status);
+  /* The record moves first.  The status is a Ruby object, and allocating one
+     can fail; doing that before the child has been accounted for would leave
+     a child the OS has reaped and a record that still says it owes a reap. */
   if (event_is_terminal(event.kind)) {
     record_finish(mrb, record);
   }
+  status = mrb_process_status_new(mrb, &event.status);
   mrb_process_set_last_status(mrb, status);
   return status;
 }
@@ -245,16 +265,18 @@ mrb_process_wait_set(mrb_state *mrb, const mrb_process_wait_target *target,
     return mrb_nil_value();
   }
 
-  status = mrb_process_status_new(mrb, &event.status);
   /* The set can hold a child this interpreter never spawned, one the host
      application forked itself.  Its status is still worth reporting; there is
-     simply no record to move. */
+     simply no record to move.  The record it does have moves before the
+     status object is allocated, for the reason above; `event.child` is not
+     read afterwards, since finishing the record releases it. */
   record = (event.child != NULL)
              ? (mrb_process_record*)mrb_hal_process_child_udata(event.child)
              : NULL;
   if (record != NULL && event_is_terminal(event.kind)) {
     record_finish(mrb, record);
   }
+  status = mrb_process_status_new(mrb, &event.status);
   mrb_process_set_last_status(mrb, status);
   return status;
 }

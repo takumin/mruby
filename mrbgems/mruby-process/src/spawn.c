@@ -8,8 +8,8 @@
 ** and IO case analysis in here; mrblib/process.rb does it instead and hands
 ** this down flat integer and string arrays.  What is left is the part that
 ** has to happen in C: validating the strings, marshalling them into the
-** structs the HAL takes, and registering the child the port created so that
-** something owns the wait it now owes.
+** structs the HAL takes, and owning the child the port created, so that the
+** wait it now owes has something owing it.
 */
 
 #include <mruby.h>
@@ -169,17 +169,22 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
   params.flags = (unsigned int)flags &
                  (MRB_PROCESS_SPAWN_UNSETENV_OTHERS | MRB_PROCESS_SPAWN_CLOSE_OTHERS);
 
+  /* The record is reserved before the child exists, because that is the step
+     that can fail: once the OS has created a process, nothing here may raise
+     before something owns the wait it owes. */
   table = mrb_process_table_get(mrb);
+  record = mrb_process_record_reserve(mrb, table);
+
   if (mrb_hal_process_spawn(mrb, mrb_process_table_context(table), &params, &child) != 0) {
     err = errno;
+    mrb_process_record_discard(mrb, record);
     bufs_free(mrb, &bufs);
     errno = err;
     mrb_sys_fail(mrb, "spawn");
   }
   bufs_free(mrb, &bufs);
 
-  /* The child exists; from here on something has to own the wait it owes. */
-  record = mrb_process_record_register(mrb, table, child);
+  mrb_process_record_commit(record, child);
   return mrb_int_value(mrb, record->pid);
 }
 
