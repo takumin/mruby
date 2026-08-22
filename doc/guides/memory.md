@@ -117,6 +117,35 @@ If you are moving from the old API:
 
 ---
 
+## Testing what happens when an allocation fails
+
+The same hook is what mruby tests its own behaviour on when memory runs out.
+`mrbgems/mruby-alloc-fault` builds a driver that defines
+`mrb_basic_alloc_func()` itself, counts the allocations a scenario makes, and
+then runs the scenario again with one of them refused -- once for each
+allocation in turn.
+
+```console
+$ rake MRUBY_CONFIG=ci/alloc-fault           # sanitizers on, driver built
+$ rake test:alloc-fault MRUBY_CONFIG=ci/alloc-fault
+```
+
+Because the driver's definition lives in the executable, the linker resolves
+`src/gc.c`'s reference there and never pulls `src/allocf.o` out of libmruby:
+the same reason an application that supplies its own allocator does not
+collide with the default one.  See `mrbgems/mruby-alloc-fault/README.md` for
+the scenarios, the outcomes it accepts, and how a finding is recorded.
+
+Two failure paths are worth keeping apart when writing code that allocates:
+
+- `mrb_malloc()`, `mrb_realloc()` and `mrb_calloc()` raise `NoMemoryError`,
+  which unwinds through `longjmp`.  A raw buffer held in a C local at that
+  moment is leaked unless something else owns it.
+- `mrb_malloc_simple()` and `mrb_realloc_simple()` answer `NULL` instead, and
+  leave the decision to the caller.
+
+---
+
 ## 3. Heap Regions: Contiguous Memory for GC
 
 By default, mruby allocates GC heap pages individually via `malloc()`.

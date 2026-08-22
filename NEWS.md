@@ -91,6 +91,7 @@ mruby-symbol-ext, mruby-range-ext, mruby-object-ext.
 - **mruby-task**: Cooperative multitasking with preemptive scheduling ([ae0d7a0](https://github.com/mruby/mruby/commit/ae0d7a0))
 - **mruby-benchmark**: Benchmarking gem ([2f40f3d](https://github.com/mruby/mruby/commit/2f40f3d))
 - **mruby-strftime**: Time#strftime implementation ([b31e22f](https://github.com/mruby/mruby/commit/b31e22f))
+- **mruby-alloc-fault**: a driver that runs a scenario with one of its allocations refused, and a sweep that walks every allocation in turn (not in any gembox; `build_config/ci/alloc-fault.rb` is the build that asks for it)
 
 ## mruby-bin-mirb Improvements
 
