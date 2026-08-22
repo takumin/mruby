@@ -10,6 +10,19 @@
 ** Supported platforms: Linux, macOS, BSD, Unix
 */
 
+/* pipe2() is not in POSIX, and where a host has it the C library may keep it
+   behind a feature-test macro, which has to be asked for before any header
+   is read.  A host without it creates the pipe in two calls instead. */
+#if defined(__linux__)
+# ifndef _GNU_SOURCE
+#  define _GNU_SOURCE 1
+# endif
+# define MRB_PROCESS_HAS_PIPE2 1
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || \
+      defined(__DragonFly__)
+# define MRB_PROCESS_HAS_PIPE2 1
+#endif
+
 #include <mruby.h>
 #include "process_hal.h"
 
@@ -233,6 +246,36 @@ fd_set_cloexec(int fd, int on)
 #endif
 }
 
+/*
+ * The pipe a failed exec is reported down.
+ *
+ * It has to be close-on-exec, and creating it that way is one call where the
+ * host has pipe2(): with pipe() and fcntl() there is a window in which
+ * another thread of the embedding process can fork and take a copy of a
+ * descriptor that was never meant to leave this one, and a copy of the write
+ * end left open in an unrelated child is a read that never reaches EOF.
+ */
+static int
+errpipe(int fds[2])
+{
+#if defined(MRB_PROCESS_HAS_PIPE2)
+  if (pipe2(fds, O_CLOEXEC) == 0) return 0;
+  if (errno != ENOSYS) return -1;
+  /* A kernel older than the C library it was built against says ENOSYS, and
+     the two calls below are what it has instead. */
+#endif
+  if (pipe(fds) == -1) return -1;
+  if (fd_set_cloexec(fds[0], 1) == -1 || fd_set_cloexec(fds[1], 1) == -1) {
+    int err = errno;
+    close(fds[0]);
+    close(fds[1]);
+    fds[0] = fds[1] = -1;
+    errno = err;
+    return -1;
+  }
+  return 0;
+}
+
 /* Move `fd` above `least` and keep it out of the exec'd image.  Used for the
    descriptors the child needs but the redirection table is about to write
    over: the error pipe, and any source that is also a target. */
@@ -282,6 +325,230 @@ close_fds(int low, int high, long maxfd)
   for (fd = low; fd <= high; fd++) close(fd);
 }
 
+/*
+ * What the child will execute, worked out before the fork
+ *
+ * A child between fork() and exec() may call only what is async-signal-safe.
+ * mruby needs no threads of its own for that to matter: it is an embeddable
+ * VM, so the process it runs in may already have others, and a fork made
+ * while one of them holds a lock leaves the child holding a lock nobody will
+ * ever release.  So the environment is assembled here rather than through
+ * setenv() and unsetenv() over there, and the PATH is walked here rather
+ * than by execvp().  What is left for the child is dup2(), close(), chdir()
+ * and execve().
+ */
+struct exec_plan {
+  const char **argv;     /* what the image is run with */
+  const char **path;     /* images to try, in order; NULL-terminated */
+  const char **sh_argv;  /* what ENOEXEC falls back to, or NULL; the child
+                            writes the image it found into slot 1 */
+  char **envp;           /* the child's whole environment */
+  char **owned;          /* every string allocated for the above */
+};
+
+/* "<a><sep><b>", with no separator when `sep` is 0. */
+static char*
+str_join(mrb_state *mrb, const char *a, size_t alen, char sep, const char *b, size_t blen)
+{
+  char *s = (char*)mrb_malloc_simple(mrb, alen + (sep ? 1 : 0) + blen + 1);
+  size_t n = alen;
+
+  if (s == NULL) return NULL;
+  memcpy(s, a, alen);
+  if (sep) s[n++] = sep;
+  memcpy(s + n, b, blen);
+  s[n + blen] = '\0';
+  return s;
+}
+
+/* Whether `entry`, which is "NAME=VALUE", is the one for `name`. */
+static int
+env_entry_is(const char *entry, const char *name, size_t namelen)
+{
+  return strncmp(entry, name, namelen) == 0 && entry[namelen] == '=';
+}
+
+static void
+plan_free(mrb_state *mrb, struct exec_plan *plan)
+{
+  size_t i;
+
+  if (plan->owned != NULL) {
+    for (i = 0; plan->owned[i] != NULL; i++) mrb_free(mrb, plan->owned[i]);
+    mrb_free(mrb, plan->owned);
+  }
+  if (plan->envp != environ) mrb_free(mrb, plan->envp);
+  mrb_free(mrb, (void*)plan->argv);
+  mrb_free(mrb, (void*)plan->path);
+  mrb_free(mrb, (void*)plan->sh_argv);
+  memset(plan, 0, sizeof(*plan));
+}
+
+/* The PATH a bare command name is looked up on is the child's, not this
+   process's, so the deltas are read before the parent's own is. */
+static const char*
+plan_path_env(const mrb_process_spawn_params *params)
+{
+  size_t i;
+
+  for (i = 0; i < params->nenv; i++) {
+    if (strcmp(params->env[i].name, "PATH") == 0) return params->env[i].value;
+  }
+  if (params->flags & MRB_PROCESS_SPAWN_UNSETENV_OTHERS) return NULL;
+  return getenv("PATH");
+}
+
+static size_t
+count_elements(const char *s)
+{
+  size_t n = 1;
+
+  for (; *s != '\0'; s++) {
+    if (*s == ':') n++;
+  }
+  return n;
+}
+
+/* Build the plan.  Returns 0, or -1 with errno set. */
+static int
+plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_plan *plan)
+{
+  const char *path_env = plan_path_env(params);
+  const char *name;
+  size_t argc = 0, nparent = 0, nowned = 0, nenvp = 0, npath = 1, namelen, i, j;
+  int keep_parent = !(params->flags & MRB_PROCESS_SPAWN_UNSETENV_OTHERS);
+
+  memset(plan, 0, sizeof(*plan));
+  while (params->argv[argc] != NULL) argc++;
+  if (keep_parent) {
+    while (environ[nparent] != NULL) nparent++;
+  }
+
+  name = params->argv[0];
+  namelen = strlen(name);
+  if (params->kind == MRB_PROCESS_SPAWN_ARGV && strchr(name, '/') == NULL) {
+    npath = (path_env != NULL) ? count_elements(path_env) : 1;
+  }
+
+  /* One allocation for each array the child reads, and one for the strings
+     inside them.  The strings are the environment entries the deltas add,
+     the candidate images, and the default PATH where one has to be asked
+     for, which is the extra slot. */
+  plan->owned = (char**)mrb_malloc_simple(mrb, sizeof(char*) * (params->nenv + npath + 2));
+  plan->path = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (npath + 1));
+  plan->argv = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (argc + 4));
+  if (plan->owned == NULL || plan->path == NULL || plan->argv == NULL) goto nomem;
+  plan->owned[0] = NULL;
+
+  if (keep_parent && params->nenv == 0) {
+    plan->envp = environ;
+  }
+  else {
+    plan->envp = (char**)mrb_malloc_simple(mrb, sizeof(char*) * (nparent + params->nenv + 1));
+    if (plan->envp == NULL) goto nomem;
+    for (i = 0; i < nparent; i++) {
+      /* An entry the deltas name is written below, or, where the delta unsets
+         it, not written at all. */
+      int overridden = 0;
+      for (j = 0; j < params->nenv; j++) {
+        if (env_entry_is(environ[i], params->env[j].name, strlen(params->env[j].name))) {
+          overridden = 1;
+          break;
+        }
+      }
+      if (!overridden) plan->envp[nenvp++] = environ[i];
+    }
+    for (i = 0; i < params->nenv; i++) {
+      const mrb_process_env_entry *e = &params->env[i];
+      char *entry;
+
+      if (e->value == NULL) continue;
+      entry = str_join(mrb, e->name, strlen(e->name), '=', e->value, strlen(e->value));
+      if (entry == NULL) goto nomem;
+      plan->owned[nowned++] = entry;
+      plan->owned[nowned] = NULL;
+      plan->envp[nenvp++] = entry;
+    }
+    plan->envp[nenvp] = NULL;
+  }
+
+  if (params->kind == MRB_PROCESS_SPAWN_SHELL) {
+    /* One string, taken apart by the shell, which is whose work that is. */
+    plan->argv[0] = "sh";
+    plan->argv[1] = "-c";
+    plan->argv[2] = params->argv[0];
+    plan->argv[3] = NULL;
+    plan->path[0] = "/bin/sh";
+    plan->path[1] = NULL;
+    return 0;
+  }
+
+  for (i = 0; i <= argc; i++) plan->argv[i] = params->argv[i];
+
+  if (strchr(name, '/') != NULL) {
+    plan->path[0] = name;
+    plan->path[1] = NULL;
+    return 0;
+  }
+
+  {
+    size_t n = 0;
+    const char *p;
+
+    if (path_env == NULL) {
+      /* No PATH to look on is not no places to look: execvp() falls back to
+         the one the host names, and a host that names none leaves the two
+         directories every system has. */
+      size_t len = confstr(_CS_PATH, NULL, 0);
+
+      if (len > 0) {
+        char *def = (char*)mrb_malloc_simple(mrb, len);
+
+        if (def == NULL) goto nomem;
+        confstr(_CS_PATH, def, len);
+        plan->owned[nowned++] = def;
+        plan->owned[nowned] = NULL;
+        path_env = def;
+      }
+      else {
+        path_env = "/bin:/usr/bin";
+      }
+    }
+    for (p = path_env; ; ) {
+      const char *sep = strchr(p, ':');
+      size_t len = (sep != NULL) ? (size_t)(sep - p) : strlen(p);
+      char *cand;
+
+      /* An empty element is the current directory, as it is for execvp(). */
+      cand = (len == 0) ? str_join(mrb, ".", 1, '/', name, namelen)
+                        : str_join(mrb, p, len, '/', name, namelen);
+      if (cand == NULL) goto nomem;
+      plan->owned[nowned++] = cand;
+      plan->owned[nowned] = NULL;
+      plan->path[n++] = cand;
+      if (sep == NULL) break;
+      p = sep + 1;
+    }
+    plan->path[n] = NULL;
+  }
+
+  /* What execvp() does with a file that is not an executable image: hand it
+     to the shell, arguments and all.  Which image that was is known only
+     once one has been tried, so the child fills that slot in. */
+  plan->sh_argv = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (argc + 3));
+  if (plan->sh_argv == NULL) goto nomem;
+  plan->sh_argv[0] = "sh";
+  plan->sh_argv[1] = NULL;
+  for (i = 1; i < argc; i++) plan->sh_argv[i + 1] = params->argv[i];
+  plan->sh_argv[argc + 1] = NULL;
+  return 0;
+
+nomem:
+  plan_free(mrb, plan);
+  errno = ENOMEM;
+  return -1;
+}
+
 /* Everything the child does between fork() and exec().  It reports a failure
    by writing errno down `errfd`, which the parent is reading; the write end
    is close-on-exec, so a successful exec closes it and the parent's read
@@ -290,13 +557,13 @@ close_fds(int low, int high, long maxfd)
    Nothing here allocates: the one array it needs was allocated before the
    fork. */
 static void
-child_exec(const mrb_process_spawn_params *params, int *sources, int errfd,
-           int *keep, long maxfd)
+child_exec(const mrb_process_spawn_params *params, const struct exec_plan *plan,
+           int *sources, int errfd, int *keep, long maxfd)
 {
-  static char *empty_environ[] = { NULL };
   size_t i;
   int err;
   int low = 3;
+  int denied = 0;
   mrb_int max_target = -1;
 
   for (i = 0; i < params->nredirects; i++) {
@@ -370,21 +637,32 @@ child_exec(const mrb_process_spawn_params *params, int *sources, int errfd,
 
   if (params->chdir != NULL && chdir(params->chdir) == -1) goto fail;
 
-  if (params->flags & MRB_PROCESS_SPAWN_UNSETENV_OTHERS) {
-    environ = empty_environ;
+  /* The command, tried at each name the parent worked out for it.  What
+     execvp() does with the PATH is done there, before the fork, because none
+     of it is safe to do here. */
+  for (i = 0; plan->path[i] != NULL; i++) {
+    execve(plan->path[i], (char*const*)plan->argv, (char*const*)plan->envp);
+    switch (errno) {
+    case ENOEXEC:
+      /* A file that is not an executable image is handed to the shell, as
+         execvp() hands it to one.  Nothing is tried after that: the shell
+         either runs it or it does not. */
+      plan->sh_argv[1] = plan->path[i];
+      execve("/bin/sh", (char*const*)plan->sh_argv, (char*const*)plan->envp);
+      goto fail;
+    case EACCES:
+      /* Something of that name is there and cannot be run.  Later names may
+         still work, and this is what is reported if none of them does. */
+      denied = 1;
+      break;
+    case ENOENT:
+    case ENOTDIR:
+      break;
+    default:
+      goto fail;
+    }
   }
-  for (i = 0; i < params->nenv; i++) {
-    const mrb_process_env_entry *e = &params->env[i];
-    int ok = (e->value != NULL) ? setenv(e->name, e->value, 1) : unsetenv(e->name);
-    if (ok == -1) goto fail;
-  }
-
-  if (params->kind == MRB_PROCESS_SPAWN_SHELL) {
-    execl("/bin/sh", "sh", "-c", params->argv[0], (char*)NULL);
-  }
-  else {
-    execvp(params->argv[0], (char*const*)params->argv);
-  }
+  if (denied) errno = EACCES;
 
 fail:
   err = errno;
@@ -440,6 +718,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
                       mrb_hal_process_child **out)
 {
   struct mrb_hal_process_child *child;
+  struct exec_plan plan;
   int errfds[2] = { -1, -1 };
   int *sources = NULL;
   int *keep = NULL;
@@ -448,6 +727,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   pid_t pid;
   size_t i;
 
+  memset(&plan, 0, sizeof(plan));
   if (params->argv == NULL || params->argv[0] == NULL ||
       command_is_blank(params->argv[0])) {
     errno = ENOENT;
@@ -475,16 +755,15 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
      to cover what a process is likely to have open. */
   if (maxfd < 0) maxfd = 65536;
 
-  if (pipe(errfds) == -1) goto error;
-  if (fd_set_cloexec(errfds[0], 1) == -1 || fd_set_cloexec(errfds[1], 1) == -1) {
-    goto error;
-  }
+  if (plan_build(mrb, params, &plan) != 0) goto error;
+
+  if (errpipe(errfds) == -1) goto error;
 
   pid = fork();
   if (pid == -1) goto error;
   if (pid == 0) {
     close(errfds[0]);
-    child_exec(params, sources, errfds[1], keep, maxfd);
+    child_exec(params, &plan, sources, errfds[1], keep, maxfd);
     /* not reached */
   }
 
@@ -503,6 +782,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
     goto error;
   }
 
+  plan_free(mrb, &plan);
   mrb_free(mrb, sources);
   mrb_free(mrb, keep);
   child->pid = pid;
@@ -516,6 +796,7 @@ error:
   saved_errno = errno;
   if (errfds[0] != -1) close(errfds[0]);
   if (errfds[1] != -1) close(errfds[1]);
+  plan_free(mrb, &plan);
   mrb_free(mrb, sources);
   mrb_free(mrb, keep);
   mrb_free(mrb, child);

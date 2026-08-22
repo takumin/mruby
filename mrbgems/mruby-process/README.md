@@ -313,3 +313,13 @@ Create `ports/<name>/process_hal.c` implementing every function in
 without a `<name>` port fall back. A port that cannot do something should set
 `errno` to `ENOSYS` — or `ENOTSUP` for a redirection it cannot express — and
 return the documented failure value rather than pretending to succeed.
+
+A port that creates a process by forking has one more rule to keep. Between
+`fork()` and `exec()` a child may call only what is async-signal-safe, and
+mruby needs no threads of its own for that to bite: it is embedded, so the
+process it runs in may already have some, and a fork taken while another
+thread holds a lock leaves the child holding a lock nobody will release. The
+bundled POSIX port therefore assembles the child's environment, resolves the
+command against the `PATH` it is being given, and reads `_SC_OPEN_MAX` before
+it forks, so that what is left on the other side is `dup2()`, `close()`,
+`chdir()` and `execve()`.

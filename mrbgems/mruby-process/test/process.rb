@@ -368,6 +368,21 @@ assert('Process.spawn without a shell') do
   assert_equal 4, ProcessTestUtil.run("sh", "-c", "exit 4").exitstatus
 end
 
+assert('Process.spawn looks a bare name up on the environment it gives') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # Where a bare name is found is worked out before the fork, since a child
+  # between fork() and exec() may not walk a PATH itself, and what it is
+  # looked up on is the PATH the child is being given rather than this
+  # process's.  So an environment that names nowhere to look finds nothing.
+  assert_raise(Errno::ENOENT) do
+    Process.spawn({"PATH" => "/nonexistent"}, "sh", "-c", "exit 0")
+  end
+
+  # A name that is a path is not looked up at all, so no PATH is needed.
+  assert_equal 3, ProcessTestUtil.run({"PATH" => nil}, "/bin/sh", "-c", "exit 3").exitstatus
+end
+
 assert('Process.spawn with a command that does not exist') do
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
 
