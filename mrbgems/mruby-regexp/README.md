@@ -453,6 +453,12 @@ $ bash mrbgems/mruby-regexp/tools/differential/differential.sh -n 10000 -s 2 -- 
 the alphabet, the nesting depth and the set of features to draw from
 (lookarounds, backreferences, atomic groups, repetitions whose body can match
 empty, and so on; `--list-features` names them, and `-w` leaves some out).
+Its subjects are every string over the alphabet up to a length (`-l`, four),
+and a repetition crosses one iteration per character, so a case built from
+them reaches no limit either engine sets; `-L` adds subjects that are runs of
+the lengths it names, each character of the alphabet repeated to one and the
+alphabet cycled to it, which is what a search long enough to reach a limit is
+drawn from.
 `run.rb` is the same file under CRuby and under mruby, and prints each case's
 `MatchData#to_a` or why there is none. `compare.rb` sorts the cases by which
 runs disagree with CRuby: with a master and a branch, the cases only the

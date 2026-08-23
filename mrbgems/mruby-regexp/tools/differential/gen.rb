@@ -21,6 +21,13 @@
 #                            drawn from ("ab")
 #   -l, --subject-length N   subjects are every string over the alphabet of at
 #                            most this length (4)
+#   -L, --long LENGTHS       add long subjects of these lengths (comma-
+#                            separated): each character of the alphabet
+#                            repeated to the length, and the alphabet cycled to
+#                            it. A repetition crosses an iteration per
+#                            character, so a subject of a few characters
+#                            reaches no limit; this is what a run long enough
+#                            to reach one is drawn from.
 #       --all-subjects       pair each pattern with every subject rather than
 #                            with one drawn at random
 #   -f, --features LIST      exactly these features (comma-separated)
@@ -56,7 +63,7 @@ FEATURES = %w[lazy interval class anchor empty lookahead lookbehind
 
 opts = {
   seed: 1, count: 1000, depth: 2, quantify: 0.5, alphabet: "ab",
-  subject_length: 4, all_subjects: false, features: FEATURES.dup,
+  subject_length: 4, long: [], all_subjects: false, features: FEATURES.dup,
 }
 OptionParser.new do |o|
   o.banner = "usage: ruby #{$0} [options] > cases.txt"
@@ -66,6 +73,7 @@ OptionParser.new do |o|
   o.on("-q", "--quantify P", Float) { |v| opts[:quantify] = v }
   o.on("-a", "--alphabet CHARS") { |v| opts[:alphabet] = v }
   o.on("-l", "--subject-length N", Integer) { |v| opts[:subject_length] = v }
+  o.on("-L", "--long LENGTHS") { |v| opts[:long] = v.split(",").map { |x| Integer(x) } }
   o.on("--all-subjects") { opts[:all_subjects] = true }
   o.on("-f", "--features LIST") { |v| opts[:features] = v.split(",") }
   o.on("-w", "--without LIST") { |v| opts[:features] = FEATURES - v.split(",") }
@@ -76,6 +84,7 @@ unknown = opts[:features] - FEATURES
 abort "unknown feature: #{unknown.join(', ')}" unless unknown.empty?
 abort "the alphabet needs at least two distinct characters" if opts[:alphabet].chars.uniq.size < 2
 abort "the alphabet cannot hold a tab or a newline" if opts[:alphabet] =~ /[\t\n\r]/
+abort "a long subject needs a length of at least one" if opts[:long].any? { |l| l < 1 }
 
 srand(opts[:seed])
 $features = opts[:features]
@@ -224,6 +233,13 @@ def seq(depth, groups, in_lookahead: false)
 end
 
 subjects = (0..opts[:subject_length]).flat_map { |len| $alphabet.repeated_permutation(len).map(&:join) }
+# A long subject is a run rather than another string of the alphabet: one
+# character repeated is what a repetition crosses an iteration at a time, and
+# the alphabet cycled is what an alternation does the same over.
+subjects += opts[:long].flat_map do |len|
+  $alphabet.map { |c| c * len } + [($alphabet.join * (len / $alphabet.size + 1))[0, len]]
+end
+subjects.uniq!
 
 opts[:count].times do
   groups = Groups.new
