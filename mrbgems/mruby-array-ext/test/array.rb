@@ -912,3 +912,32 @@ assert('mrb_ary_unshift respects a frozen receiver') do
   d = [1, 2]
   assert_equal [0, 1, 2], d.__unshift_from_c(0)
 end
+
+assert('Array#intersection narrows by every argument, not by their union') do
+  # The hash path used to pour every argument into one set and then keep the
+  # elements of `self` found in it, which answers `self & (a | b | ...)`: an
+  # element missing from one argument survived because another one carried it.
+  # The linear path always looped over the arguments and got this right, so
+  # the answer depended on whether the arguments totalled more than 32.
+  a = [1, 2]
+  b = (1..20).to_a    # holds 1 and 2
+  c = (10..30).to_a   # holds neither -- 41 elements in total, so the hash path
+  assert_equal [], a.intersection(b, c)
+
+  # the same shape below the threshold, which was already correct
+  assert_equal [], a.intersection([1, 2, 3], [10, 11])
+
+  # a narrowing that keeps something; each pair below is the same question
+  # asked once above and once below the threshold, so both must answer alike
+  d = [1, 2, 3, 4]
+  assert_equal [2, 3, 4], d.intersection((1..20).to_a, (2..30).to_a)
+  assert_equal [2, 3, 4], d.intersection([1, 2, 3, 4], [2, 3, 4])
+
+  # duplicates in the receiver still collapse to one, on both paths
+  assert_equal [2, 5], [2, 2, 5].intersection((1..20).to_a, (2..30).to_a)
+  assert_equal [2, 5], [2, 2, 5].intersection([2, 5], [2, 5])
+
+  # a single argument is the `&` case and must not regress
+  assert_equal [1, 2], a.intersection((1..40).to_a)
+  assert_equal [1, 2], a.intersection([1, 2, 3])
+end
