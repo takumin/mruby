@@ -1474,7 +1474,13 @@ str_del_prefix_bang(mrb_state *mrb, mrb_value self)
   char *s = RSTR_PTR(str);
   if (!str_prefix_p(mrb, self, ptr, plen)) return mrb_nil_value();
   if (!mrb_frozen_p(str) && (RSTR_SHARED_P(str) || RSTR_FSHARED_P(str))) {
+    /* Sliding the start of a shared buffer writes no byte, so there is nothing
+       to unshare; what still has to go is the answer the string was carrying,
+       which the branch below gets from mrb_str_modify(). The prefix is matched
+       by its bytes with nothing asked about where characters end, so the cut
+       can leave a character's tail standing on its own. */
     str->as.heap.ptr += plen;
+    RSTR_CODERANGE_SET(str, MRB_STR_CODERANGE_UNKNOWN);
   }
   else {
     mrb_str_modify(mrb, str);
@@ -1538,7 +1544,12 @@ str_del_suffix_bang(mrb_state *mrb, mrb_value self)
   mrb_int slen = RSTR_LEN(str);
   if (plen > slen) return mrb_nil_value();
   if (!str_suffix_p(mrb, self, ptr, plen)) return mrb_nil_value();
+  /* Cutting the end back writes no byte, so there is nothing to unshare, but
+     the answer the string was carrying has to go: the suffix is matched by its
+     bytes with nothing asked about where characters end, so the cut can leave a
+     character's head standing on its own. */
   RSTR_SET_LEN(str, slen-plen);
+  RSTR_CODERANGE_SET(str, MRB_STR_CODERANGE_UNKNOWN);
   return self;
 }
 
