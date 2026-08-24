@@ -36,6 +36,27 @@ re_uninitialized_p(const mrb_regexp_pattern *pat)
   return !pat || pat->code_len == 0;
 }
 
+/* The pattern text a reader answers from, or TypeError when there is none.
+   Regexp.allocate is on every class and hands out an object that never went
+   through regexp_init(): no @source, no @flags, a NULL DATA_PTR. The matchers
+   already refuse it through DATA_GET_PTR(), and the readers below refuse it
+   here, as CRuby's rb_reg_check() does at the top of each of its own.
+
+   The test is on @source rather than on DATA_PTR() so that it keeps the two
+   uninitialized shapes apart: regexp_init() sets the IVs before it compiles,
+   so a Regexp whose compile raised has a source and goes on answering
+   hash/eql?/inspect from it (see the comment there), while the allocated one
+   has nothing to answer from. */
+static mrb_value
+re_check_initialized(mrb_state *mrb, mrb_value re)
+{
+  mrb_value src = mrb_iv_get(mrb, re, MRB_IVSYM(source));
+  if (!mrb_string_p(src)) {
+    mrb_raise(mrb, E_TYPE_ERROR, "uninitialized Regexp");
+  }
+  return src;
+}
+
 /* MatchData */
 typedef struct {
   mrb_value source;        /* source string */
@@ -109,7 +130,9 @@ regexp_init(mrb_state *mrb, mrb_value self)
   if (mrb_obj_is_kind_of(mrb, pattern, mrb_class_get_id(mrb, MRB_SYM(Regexp)))) {
     mrb_value iflags = mrb_iv_get(mrb, pattern, MRB_IVSYM(flags));
     flags = mrb_nil_p(iflags) ? 0 : (uint32_t)mrb_integer(iflags);
-    pattern = mrb_iv_get(mrb, pattern, MRB_IVSYM(source));
+    /* Copying is a reading of the argument's source, so an argument that has
+       none is refused here rather than compiled from a nil below. */
+    pattern = re_check_initialized(mrb, pattern);
   }
   else {
     if (!mrb_string_p(pattern)) {
@@ -701,7 +724,7 @@ regexp_case_match(mrb_state *mrb, mrb_value self)
 static mrb_value
 regexp_source(mrb_state *mrb, mrb_value self)
 {
-  return mrb_iv_get(mrb, self, MRB_IVSYM(source));
+  return re_check_initialized(mrb, self);
 }
 
 /*
@@ -712,6 +735,7 @@ regexp_source(mrb_state *mrb, mrb_value self)
 static mrb_value
 regexp_options(mrb_state *mrb, mrb_value self)
 {
+  re_check_initialized(mrb, self);
   uint32_t iflags = get_iflags(mrb, self);
   mrb_int opts = 0;
   if (iflags & RE_FLAG_IGNORECASE) opts |= 1;  /* Regexp::IGNORECASE */
@@ -726,6 +750,7 @@ regexp_options(mrb_state *mrb, mrb_value self)
 static mrb_value
 regexp_casefold_p(mrb_state *mrb, mrb_value self)
 {
+  re_check_initialized(mrb, self);
   return mrb_bool_value((get_iflags(mrb, self) & RE_FLAG_IGNORECASE) != 0);
 }
 
@@ -767,7 +792,7 @@ mrb_re_flags_cat(mrb_state *mrb, mrb_value str, uint32_t flags)
 static mrb_value
 regexp_to_s(mrb_state *mrb, mrb_value self)
 {
-  mrb_value src = mrb_iv_get(mrb, self, MRB_IVSYM(source));
+  mrb_value src = re_check_initialized(mrb, self);
   uint32_t flags = get_iflags(mrb, self);
   char off[RE_FLAG_LETTER_COUNT];
   mrb_int noff = 0;
@@ -795,7 +820,16 @@ static mrb_value
 regexp_inspect(mrb_state *mrb, mrb_value self)
 {
   mrb_value src = mrb_iv_get(mrb, self, MRB_IVSYM(source));
-  uint32_t flags = get_iflags(mrb, self);
+  uint32_t flags;
+
+  /* The one reader that answers for an uninitialized Regexp instead of
+     raising: an inspect that raises would leave the object undisplayable in
+     a backtrace or a debugger, which is where it is most likely to be met.
+     CRuby's rb_reg_inspect falls back to the default form for the same
+     reason, and this prints that same `#<Regexp:0x...>`. */
+  if (!mrb_string_p(src)) return mrb_any_to_s(mrb, self);
+
+  flags = get_iflags(mrb, self);
 
   mrb_value result = mrb_str_new_lit(mrb, "/");
   mrb_str_cat_str(mrb, result, src);
@@ -812,14 +846,14 @@ regexp_eql(mrb_state *mrb, mrb_value self)
 {
   mrb_value other;
   mrb_get_args(mrb, "o", &other);
+  /* The one object equal to an uninitialized Regexp is itself: identity holds
+     without reading either source, which is what CRuby answers first too. */
+  if (mrb_obj_eq(mrb, self, other)) return mrb_true_value();
   if (!mrb_obj_is_kind_of(mrb, other, mrb_class_get_id(mrb, MRB_SYM(Regexp)))) {
     return mrb_false_value();
   }
-  mrb_value src1 = mrb_iv_get(mrb, self, MRB_IVSYM(source));
-  mrb_value src2 = mrb_iv_get(mrb, other, MRB_IVSYM(source));
-  if (!mrb_string_p(src1) || !mrb_string_p(src2)) {
-    return mrb_bool_value(mrb_obj_eq(mrb, self, other));
-  }
+  mrb_value src1 = re_check_initialized(mrb, self);
+  mrb_value src2 = re_check_initialized(mrb, other);
   if (!mrb_str_equal(mrb, src1, src2)) return mrb_false_value();
   return mrb_bool_value(get_iflags(mrb, self) == get_iflags(mrb, other));
 }
@@ -830,8 +864,8 @@ regexp_eql(mrb_state *mrb, mrb_value self)
 static mrb_value
 regexp_hash(mrb_state *mrb, mrb_value self)
 {
-  mrb_value src = mrb_iv_get(mrb, self, MRB_IVSYM(source));
-  uint32_t h = mrb_string_p(src) ? mrb_str_hash(mrb, src) : 0;
+  mrb_value src = re_check_initialized(mrb, self);
+  uint32_t h = mrb_str_hash(mrb, src);
   h ^= get_iflags(mrb, self) * 0x9e3779b9;  /* mix flags into hash */
   return mrb_int_value(mrb, (mrb_int)h);
 }
