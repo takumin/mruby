@@ -281,3 +281,46 @@ SRC
   BinTest_MRubyBinDebugger.test(src, [{:cmd=>"ss",    :exp=>INVCMD}])
   BinTest_MRubyBinDebugger.test(src, [{:cmd=>"stepp", :exp=>INVCMD}])
 end
+
+def mrdb_status(args, stdin_data)
+  _, _, s = Open3.capture3(*(cmd_list('mrdb') + args), :stdin_data => stdin_data)
+  s
+end
+
+assert('the exit status reports how the program ended') do
+  # The command loop decided the status by itself -- an unconditional 0 -- so
+  # `mrdb prog.rb` answered success for a program that raised and for one that
+  # would not even compile, where `mruby prog.rb` answers 1 for both.
+  script = Tempfile.new(['test', '.rb'])
+
+  File.write(script.path, "puts 'ok'\n")
+  assert_true mrdb_status([script.path], "r\nq\n").success?
+
+  File.write(script.path, "raise 'boom'\n")
+  assert_false mrdb_status([script.path], "r\nq\n").success?
+
+  # A program that does not compile never runs, and the failed load is still
+  # the program's outcome.
+  File.write(script.path, "def f(\n")
+  assert_false mrdb_status([script.path], "q\n").success?
+end
+
+assert('the exit status reports a compiled program too') do
+  script, bin = Tempfile.new(['test', '.rb']), Tempfile.new(['test', '.mrb'])
+
+  File.write(script.path, "raise 'boom'\n")
+  system("#{cmd('mrbc')} -g -o #{bin.path} #{script.path}")
+  assert_false mrdb_status(['-b', bin.path], "r\nq\n").success?
+
+  File.write(script.path, "puts 'ok'\n")
+  system("#{cmd('mrbc')} -g -o #{bin.path} #{script.path}")
+  assert_true mrdb_status(['-b', bin.path], "r\nq\n").success?
+end
+
+assert('quitting before the program runs is not a failure') do
+  # Leaving the debugger without running is the user's own exit, not the
+  # program's, and it returns through DebuggerExit rather than the path above.
+  script = Tempfile.new(['test', '.rb'])
+  File.write(script.path, "raise 'boom'\n")
+  assert_true mrdb_status([script.path], "q\n").success?
+end
