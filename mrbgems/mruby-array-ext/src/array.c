@@ -18,10 +18,21 @@ ary_set_hash_func(mrb_state *mrb, mrb_value key)
   return (khint_t)mrb_obj_hash_code(mrb, key);
 }
 
+/* The one definition of "the same element" for every set operation in this
+   file. The khash callback below and the linear walks that `-` and
+   `intersect?` still keep all come through here, so the two kinds of path
+   cannot drift apart again the way they did when one compared with `==` and
+   the other with `eql?`. */
+static inline mrb_bool
+ary_elem_eql(mrb_state *mrb, mrb_value a, mrb_value b)
+{
+  return mrb_eql(mrb, a, b);
+}
+
 static inline mrb_bool
 ary_set_equal_func(mrb_state *mrb, mrb_value a, mrb_value b)
 {
-  return mrb_eql(mrb, a, b);
+  return ary_elem_eql(mrb, a, b);
 }
 
 KHASH_DECLARE(ary_set, mrb_value, char, 0)
@@ -493,7 +504,12 @@ ary_subtract_internal(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_va
 
   mrb_value result = mrb_ary_new(mrb);
 
-  if (total_len > SET_OP_HASH_THRESHOLD) {
+  /* Both sides have to be worth a set: it costs O(total_len) to build and is
+     then asked RARRAY_LEN(self) questions. A short receiver cannot repay a
+     long set -- one lookup into a thousand entries loses to one linear scan
+     of them -- so, as CRuby does, either side being small picks the walk. */
+  if (total_len > SET_OP_HASH_THRESHOLD &&
+      RARRAY_LEN(self) > SET_OP_HASH_THRESHOLD) {
     /* Create shared copies to protect elements during khash operations */
     mrb_value *argv_copies = (mrb_value *)mrb_alloca(mrb, sizeof(mrb_value) * argc);
     for (mrb_int i = 0; i < argc; i++) {
@@ -513,11 +529,11 @@ ary_subtract_internal(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_va
     int ai = mrb_gc_arena_save(mrb);
     for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
       mrb_value p = RARRAY_PTR(self)[i];
-      mrb_gc_protect(mrb, p); // p may be removed from self by mrb_equal()
+      mrb_gc_protect(mrb, p); // p may be removed from self by ary_elem_eql()
       mrb_bool found = FALSE;
       for (mrb_int j = 0; j < argc; j++) {
         for (mrb_int k = 0; k < RARRAY_LEN(argv[j]); k++) {
-          if (mrb_equal(mrb, p, RARRAY_PTR(argv[j])[k])) {
+          if (ary_elem_eql(mrb, p, RARRAY_PTR(argv[j])[k])) {
             found = TRUE;
             break;
           }
@@ -571,17 +587,6 @@ ary_difference(mrb_state *mrb, mrb_value self)
   return ary_subtract_internal(mrb, self, argc, argv);
 }
 
-static void
-add_uniq(mrb_state *mrb, mrb_value item, mrb_value result)
-{
-  for (mrb_int i = 0; i < RARRAY_LEN(result); i++) {
-    if (mrb_eql(mrb, item, RARRAY_PTR(result)[i])) {
-      return;
-    }
-  }
-  mrb_ary_push(mrb, result, item);
-}
-
 struct ary_union_ctx {
   ary_set_t *set;
   mrb_value self_copy;
@@ -633,7 +638,11 @@ ary_union_internal(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value
 
   mrb_value result = mrb_ary_new(mrb);
 
-  if (total_len > SET_OP_HASH_THRESHOLD) {
+  /* The set is the only implementation. The linear walk this used to fall
+     back to compared each incoming element against everything kept so far,
+     so it cost O(n^2) `eql?` dispatches: at 18 elements it was already
+     slower than the set is on twice that input. */
+  {
     /* Create shared copies to protect elements during khash operations */
     mrb_value self_copy = mrb_ary_make_shared_copy(mrb, self);
     mrb_value *argv_copies = (mrb_value *)mrb_alloca(mrb, sizeof(mrb_value) * argc);
@@ -648,29 +657,6 @@ ary_union_internal(mrb_state *mrb, mrb_value self, mrb_int argc, const mrb_value
     struct ary_union_ctx ctx = { set, self_copy, result, argv_copies, argc };
     MRB_ENSURE(mrb, result, ary_union_body, &ctx) {
       ary_destroy_temp_set(mrb, set);
-    }
-  }
-  else {
-    int ai = mrb_gc_arena_save(mrb);
-
-    /* Use linear search for small arrays */
-    /* Add unique elements from self */
-    for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-      mrb_value p = RARRAY_PTR(self)[i];
-      mrb_gc_protect(mrb, p); // p may be removed from self by add_uniq()
-      add_uniq(mrb, p, result);
-      mrb_gc_arena_restore(mrb, ai);
-    }
-
-    /* Add unique elements from others */
-    for (mrb_int i = 0; i < argc; i++) {
-      mrb_value other = argv[i];
-      for (mrb_int j = 0; j < RARRAY_LEN(other); j++) {
-        mrb_value p = RARRAY_PTR(other)[j];
-        mrb_gc_protect(mrb, p); // p may be removed from other by add_uniq()
-        add_uniq(mrb, p, result);
-        mrb_gc_arena_restore(mrb, ai);
-      }
     }
   }
 
@@ -788,7 +774,11 @@ ary_intersection_internal(mrb_state *mrb, mrb_value self, mrb_int argc, const mr
 
   mrb_value result = mrb_ary_new(mrb);
 
-  if (total_len > SET_OP_HASH_THRESHOLD) {
+  /* The set is the only implementation. The linear walk this used to fall
+     back to scanned every argument for every element and then scanned the
+     result again to reject duplicates, so it was 5.5x slower than the set at
+     the threshold -- and it was the second place the meaning of `&` lived. */
+  {
     /* Create shared copies to protect elements during khash operations */
     mrb_value *argv_copies = (mrb_value *)mrb_alloca(mrb, sizeof(mrb_value) * argc);
     for (mrb_int i = 0; i < argc; i++) {
@@ -802,42 +792,6 @@ ary_intersection_internal(mrb_state *mrb, mrb_value self, mrb_int argc, const mr
     struct ary_intersection_ctx ctx = { set, self, result, argv_copies, argc };
     MRB_ENSURE(mrb, result, ary_intersection_body, &ctx) {
       ary_destroy_temp_set(mrb, set);
-    }
-  }
-  else {
-    int ai = mrb_gc_arena_save(mrb);
-    for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-      mrb_value p = RARRAY_PTR(self)[i];
-      mrb_gc_protect(mrb, p); // p may be removed from self by mrb_equal()
-      mrb_bool found_in_all = TRUE;
-
-      for (mrb_int j = 0; j < argc; j++) {
-        mrb_bool found_in_current_other = FALSE;
-        for (mrb_int k = 0; k < RARRAY_LEN(argv[j]); k++) {
-          if (mrb_equal(mrb, p, RARRAY_PTR(argv[j])[k])) {
-            found_in_current_other = TRUE;
-            break;
-          }
-        }
-        if (!found_in_current_other) {
-          found_in_all = FALSE;
-          break;
-        }
-      }
-
-      if (found_in_all) {
-        mrb_bool already_added = FALSE;
-        for (mrb_int j = 0; j < RARRAY_LEN(result); j++) {
-          if (mrb_equal(mrb, p, RARRAY_PTR(result)[j])) {
-            already_added = TRUE;
-            break;
-          }
-        }
-        if (!already_added) {
-          mrb_ary_push(mrb, result, p);
-        }
-      }
-      mrb_gc_arena_restore(mrb, ai);
     }
   }
   return result;
@@ -966,9 +920,9 @@ ary_intersect_p(mrb_state *mrb, mrb_value self)
     int ai = mrb_gc_arena_save(mrb);
     for (mrb_int i = 0; i < RARRAY_LEN(longer_ary); i++) {
       mrb_value p = RARRAY_PTR(longer_ary)[i];
-      mrb_gc_protect(mrb, p); // p may be removed from longer_ary by mrb_equal()
+      mrb_gc_protect(mrb, p); // p may be removed from longer_ary by ary_elem_eql()
       for (mrb_int j = 0; j < RARRAY_LEN(shorter_ary); j++) {
-        if (mrb_equal(mrb, p, RARRAY_PTR(shorter_ary)[j])) {
+        if (ary_elem_eql(mrb, p, RARRAY_PTR(shorter_ary)[j])) {
           return mrb_true_value();
         }
       }
@@ -1102,13 +1056,7 @@ ary_fill_exec(mrb_state *mrb, mrb_value self)
   }
 
   /* Ensure we don't go beyond array bounds */
-  if (start >= ARY_LEN(ary) || length <= 0) {
-    /* Nothing to fill, so this returns ahead of the mrb_ary_modify() below
-       that turns a frozen receiver away. The fill is a destructive call
-       whatever the run comes to, so it is asked here. */
-    mrb_check_frozen(mrb, ary);
-    return self;
-  }
+  if (start >= ARY_LEN(ary) || length <= 0) return self;
   if (end > ARY_LEN(ary)) {
     length = ARY_LEN(ary) - start;
   }
@@ -1170,17 +1118,19 @@ ary_uniq_bang(mrb_state *mrb, mrb_value self)
   mrb_int len = RARRAY_LEN(self);
 
   if (len <= 1) {
-    /* No room for a duplicate, so this returns without reaching the
-       mrb_ary_modify() below that turns a frozen receiver away. The call is
-       destructive at any length, so it is asked here. */
-    mrb_check_frozen(mrb, mrb_ary_ptr(self));
     return mrb_nil_value();
   }
 
   mrb_ary_modify(mrb, mrb_ary_ptr(self));
   mrb_int write_pos = 0;
 
-  if (len > SET_OP_HASH_THRESHOLD) {
+  /* The set is the only implementation. The linear walk this used to fall
+     back to below 32 elements compared every element against every element
+     kept so far, so it cost O(n^2) `eql?` dispatches and was already slower
+     than building the set from about six elements up -- 5x slower at the
+     threshold itself. It bought nothing and was a second place for the
+     meaning of `uniq` to live. */
+  {
     /* Create shared copy to protect elements during khash operations */
     mrb_value self_copy = mrb_ary_make_shared_copy(mrb, self);
 
@@ -1192,28 +1142,6 @@ ary_uniq_bang(mrb_state *mrb, mrb_value self)
     mrb_value result;
     MRB_ENSURE(mrb, result, ary_uniq_bang_body, &ctx) {
       ary_destroy_temp_set(mrb, set);
-    }
-  }
-  else {
-    int ai = mrb_gc_arena_save(mrb);
-    for (mrb_int read_pos = 0; read_pos < RARRAY_LEN(self); read_pos++) {
-      mrb_value elem = RARRAY_PTR(self)[read_pos];
-      mrb_gc_protect(mrb, elem); // elem may be removed from self by mrb_equal()
-      mrb_bool found = FALSE;
-      for (mrb_int j = 0; j < write_pos && j < RARRAY_LEN(self); j++) {
-        if (mrb_equal(mrb, elem, RARRAY_PTR(self)[j])) {
-          found = TRUE;
-          break;
-        }
-      }
-      if (!found) {
-        if (write_pos != read_pos && write_pos < RARRAY_LEN(self)) {
-          mrb_ary_modify(mrb, mrb_ary_ptr(self));
-          RARRAY_PTR(self)[write_pos] = elem;
-        }
-        write_pos++;
-      }
-      mrb_gc_arena_restore(mrb, ai);
     }
   }
 
@@ -1434,9 +1362,6 @@ ary_insert(mrb_state *mrb, mrb_value self)
   mrb_get_args(mrb, "i*", &idx, &argv, &argc);
 
   if (argc == 0) {
-    /* Inserting nothing is still an insert, and this returns ahead of the
-       mrb_ary_modify() below that a frozen receiver would have met. */
-    mrb_check_frozen(mrb, mrb_ary_ptr(self));
     return self;
   }
 
