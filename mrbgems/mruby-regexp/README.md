@@ -294,6 +294,11 @@ there.
 #ifndef MRB_REGEXP_STACK_LIMIT
 #define MRB_REGEXP_STACK_LIMIT 2048
 #endif
+
+/* How deep a pattern may nest (the parser's own C stack) */
+#ifndef MRB_REGEXP_PARSE_DEPTH_LIMIT
+#define MRB_REGEXP_PARSE_DEPTH_LIMIT 4096
+#endif
 ```
 
 A search that reaches either limit raises `RegexpError`, `step limit over
@@ -357,6 +362,48 @@ The macro was called `MRB_REGEXP_RECURSION_LIMIT` while the engine recursed
 once per fork and the limit counted C frames. A build that still defines that
 name fails to compile: the two limits count different things, so an old value
 does not carry over and the build has to choose a new one.
+
+`MRB_REGEXP_PARSE_DEPTH_LIMIT` is the third limit and the odd one out: it
+bounds the compiler rather than a search, and what it guards is the C stack
+rather than memory or work. A pattern past it raises `RegexpError`, `parse
+depth limit over`, which is CRuby's message for the same refusal.
+
+Every construct that opens a level costs one: a group of any kind, a
+lookaround, an atomic group, and an inline option toggle, which encloses the
+rest of the group it stands in and so is a level of its own. `(?:` × 4096 and
+`(?i)` × 4096 are refused alike, at the same depth CRuby refuses them: the
+default is Onigmo's `ONIG_MAX_PARSE_DEPTH`.
+
+**A build on a stack smaller than about 3 MiB has to lower it.** The parser
+recurses once per level, so the ceiling is a property of the build's stack
+rather than of the engine, and the default is chosen for the refusal point
+rather than for the stack. A level costs about 600 bytes on a 64-bit `-O2`
+build, so the deepest pattern the default accepts spends some 2.4 MiB — and
+so does a deeper one before being refused, since the count is reached at the
+bottom of the recursion. Where the stack cannot pay that, the crash the limit
+exists to prevent comes back. A third of the stack is a reasonable share:
+
+| Stack   | A limit that fits           |
+| ------- | --------------------------- |
+| 8 MiB   | 4096 (default, CRuby-exact) |
+| 1 MiB   | 1024                        |
+| 256 KiB | 256                         |
+| 64 KiB  | 48                          |
+
+Divide the build's own figure, not this one: `-Os` and a 32-bit ABI both make
+a level cheaper, and `gcc -fstack-usage` over `re_compile.c` names it — sum
+the frames of `compile_alt` and `compile_seq`, the rest inlining into them.
+
+Lowering it costs little. Nesting this deep is not what a written pattern
+does — a handful of levels is ordinary and dozens are unusual — so a build
+that sets 256 still takes every pattern anyone writes, and gives up only the
+CRuby-exact refusal point. The limit stands between 1 and 1,048,576, and a
+build that sets it outside that fails to compile.
+
+The gem reaches an embedded target through `stdlib.gembox`, which
+`default.gembox` includes; a build that names its gems one by one (as the
+bare-metal configs under `build_config/` do) does not carry the gem at all
+and has nothing to size.
 
 Case folding beyond ASCII is not this gem's to configure. The table is
 core's, carried by any build that defines `MRB_UTF8_STRING` without
