@@ -2515,19 +2515,60 @@ assert("Regexp - pattern too large for its jump targets is refused") do
   assert_raise(RegexpError) { Regexp.new("(?:ab){32768}") }
 end
 
-assert("Regexp - a character property escape is refused, not read as letters") do
-  # The engine reads no character property. Left as an unknown escape,
-  # `\p{Alpha}` was the letters `p{Alpha}` and the pattern answered a request
-  # for a letter with the text of the request; inside a class it was worse,
-  # since every letter of the name became a member of the class.
-  assert_raise_with_message(RegexpError,
-                            "character property is not supported: /\\p{Alpha}/") do
-    Regexp.new("\\p{Alpha}")
+assert("Regexp - a character property escape names a property, not letters") do
+  # Left as an unknown escape, `\p{Alpha}` was the letters `p{Alpha}` and the
+  # pattern answered a request for a letter with the text of the request;
+  # inside a class it was worse, since every letter of the name became a
+  # member of the class.
+  assert_nil "p{Digit}"[/\p{Digit}/]
+  assert_nil "p{Digit}"[/[\p{Digit}]/]
+
+  # The names a POSIX bracket names too are the ones every build answers, ASCII
+  # included; what the build says above ASCII is unicode_prop.rb's and
+  # ascii_prop.rb's to assert, as is every other name.
+  assert_equal "a", "1a"[/\p{Alpha}/]
+  assert_equal "1", "a1"[/\P{Alpha}/]
+  assert_equal "_", "-_"[/\p{Word}/]
+  assert_equal "1", "a1"[/[\p{Digit}]/]
+  assert_nil "abc"[/\p{Digit}/]
+
+  # A name is read without its case, and without the underscores, hyphens and
+  # spaces in it, as CRuby reads one.
+  ["\\p{ALPHA}", "\\p{ alpha }", "\\p{Alpha}", "\\p{a_l-p h a}",
+   "\\p{Alphabetic}"].each do |src|
+    assert_equal "a", "1a"[Regexp.new(src)], src
   end
-  ["\\P{Alpha}", "[\\p{Han}]", "[\\P{L}]", "a\\p{Lu}b", "(?x)\\p{Space}",
-   "\\p{}", "\\p{"].each do |src|
+
+  # A `^` inside the braces negates the escape as `\P` does, and the two
+  # spellings cancel one another.
+  assert_equal "1", "a1"[/\p{^Alpha}/]
+  assert_equal "a", "1a"[/\P{^Alpha}/]
+
+  # A name nothing holds is refused. Which complaint it draws depends on
+  # whether the build has the tables to say what a name it does not answer
+  # itself would have been, so only the class is asserted here.
+  ["\\p{}", "\\p{^}", "\\p{Bogus}", "\\p{NoSuchPropertyAtAllHereOrAnywhere}",
+   "[\\p{Bogus}]"].each do |src|
     assert_raise(RegexpError, src) { Regexp.new(src) }
   end
+
+  # A `{` the pattern never closes ends the escape early. CRuby reports it as
+  # an invalid name and quotes the empty one rather than the letters written,
+  # which says less about what happened than this does.
+  ["\\p{", "\\p{Alpha", "[\\p{Alpha]", "[\\p{Alpha"].each do |src|
+    assert_raise(RegexpError, src) { Regexp.new(src) }
+  end
+  assert_raise_with_message(RegexpError,
+                            "unterminated character property: /\\p{Alpha/") do
+    Regexp.new("\\p{Alpha")
+  end
+
+  # A property names a set rather than a character, so it is no end of a
+  # range, which is what a POSIX bracket and a shorthand are not either.
+  assert_raise(RegexpError) { Regexp.new("[a-\\p{Alpha}]") }
+  assert_raise(RegexpError) { Regexp.new("[\\p{Alpha}-x]") }
+  # A `-` at the edge of the class is still a member beside it.
+  assert_equal "-", "-"[/[\p{Alpha}-]/]
 
   # It is the braces that name a property. CRuby reads a bare `\p`, and `\pL`
   # as well, as the letter, with only a warning, and so does this.

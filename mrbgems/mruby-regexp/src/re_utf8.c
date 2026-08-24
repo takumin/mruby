@@ -5,6 +5,7 @@
 */
 
 #include "re_internal.h"
+#include <string.h>
 
 #ifdef RE_UNICODE_CTYPE
 
@@ -43,11 +44,107 @@ mrb_re_ctype(uint32_t cp)
   return t;
 }
 
+#ifdef RE_UNICODE_PROP
+
+#include "re_prop.h"
+
+/* A token holds the kind in the byte above the value, and the compiler's
+   negation bit stands above both. */
+mrb_static_assert(RE_PROP_KIND_GC < (RE_PROP_NEG >> 8) &&
+                  RE_PROP_KIND_SCRIPT < (RE_PROP_NEG >> 8),
+                  "a property kind reaches the bit the negation is in");
+
+/* The entry of the last run starting at or below `cp`, which is the run it
+   falls in: the tables start at U+0000 and every codepoint is inside one. */
+static uint32_t
+prop_run(const uint32_t *runs, size_t count, uint32_t cp, int bits)
+{
+  size_t lo = 0, hi = count;
+  while (hi - lo > 1) {
+    size_t mid = lo + (hi - lo) / 2;
+    if ((runs[mid] >> bits) <= cp) lo = mid;
+    else hi = mid;
+  }
+  return runs[lo] & ((1u << bits) - 1);
+}
+
+mrb_bool
+mrb_re_prop_has(uint16_t prop, uint32_t cp)
+{
+  uint8_t id = (uint8_t)(prop & 0xff);
+  if ((prop >> 8) == RE_PROP_KIND_SCRIPT) {
+    return prop_run(re_prop_script_runs, RE_PROP_SCRIPT_RUN_COUNT, cp,
+                    RE_PROP_SCRIPT_BITS) == id;
+  }
+  uint32_t cat = prop_run(re_prop_gc_runs, RE_PROP_GC_RUN_COUNT, cp,
+                          RE_PROP_GC_BITS);
+  return (re_prop_gc_masks[id] >> cat) & 1;
+}
+
+mrb_bool
+mrb_re_prop_lookup(const char *name, size_t len, uint16_t *prop)
+{
+  size_t lo = 0, hi = RE_PROP_NAME_COUNT;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    const re_prop_name *e = &re_prop_names[mid];
+    size_t n = len < e->len ? len : e->len;
+    int cmp = memcmp(name, re_prop_name_chars + e->off, n);
+    if (cmp == 0) cmp = len < e->len ? -1 : (len > e->len ? 1 : 0);
+    if (cmp == 0) {
+      *prop = (uint16_t)((uint16_t)e->kind << 8 | e->id);
+      return TRUE;
+    }
+    if (cmp < 0) hi = mid;
+    else lo = mid + 1;
+  }
+  return FALSE;
+}
+
+/* Whether a class holds a codepoint through the property escapes in it: yes
+   when it holds a property the codepoint has, or a negated one it lacks. A
+   byte has no property, so it is in the class through a negated escape and
+   not through a positive one, which is how a byte reads a bracket too.
+
+   Under /i the question is put to the codepoint and to every character
+   sharing its folding, so `any` and `all` gather their answers: a positive
+   escape wants a property any of them has, a negated one a property any of
+   them lacks. The ASCII ones are left out, as they are for a bracket below;
+   see compile_charclass(). */
+static mrb_bool
+class_prop_match(const re_charclass *cc, uint32_t cp, mrb_bool byte)
+{
+  for (uint16_t i = 0; i < cc->num_props; i++) {
+    uint16_t prop = cc->props[i] & (uint16_t)~RE_PROP_NEG;
+    mrb_bool neg = (cc->props[i] & RE_PROP_NEG) != 0;
+    if (byte) {
+      if (neg) return TRUE;
+      continue;
+    }
+    mrb_bool any = mrb_re_prop_has(prop, cp), all = any;
+    if (cc->table_fold) {
+      uint32_t alt[MRB_UNI_MAX_UNFOLD];
+      int n = mrb_uni_case_unfold(cp, alt, MRB_UNI_MAX_UNFOLD);
+      for (int j = 0; j < n; j++) {
+        if (alt[j] < 128) continue;
+        mrb_bool t = mrb_re_prop_has(prop, alt[j]);
+        any = any || t;
+        all = all && t;
+      }
+    }
+    if (neg ? !all : any) return TRUE;
+  }
+  return FALSE;
+}
+
+#endif  /* RE_UNICODE_PROP */
+
 /* Whether a class holds a codepoint above ASCII through the POSIX brackets in
    it, once its ranges have said nothing: yes when the codepoint's type has a
-   bit of ctype_yes, or lacks a bit of ctype_no, and failing both whatever
-   utf8_any says. A byte, tagged RE_CLASS_BYTE by the caller, has no type: it
-   is in the class through a negated bracket and not through a positive one.
+   bit of ctype_yes, or lacks a bit of ctype_no, and failing both whatever the
+   property escapes and utf8_any say. A byte, tagged RE_CLASS_BYTE by the
+   caller, has no type: it is in the class through a negated bracket and not
+   through a positive one.
 
    Under /i a character is in the class when any character sharing its
    folding is, so the question is put to every one of them: a positive
@@ -55,11 +152,15 @@ mrb_re_ctype(uint32_t cp)
    lacks. The ASCII ones are left out, since what the class holds through an
    ASCII counterpart is in its ranges already; see compile_charclass(). */
 mrb_bool
-mrb_re_class_ctype_match(const re_charclass *cc, uint32_t cp)
+mrb_re_class_table_match(const re_charclass *cc, uint32_t cp)
 {
-  if (cp & RE_CLASS_BYTE) return cc->ctype_no != 0 || cc->utf8_any;
+  mrb_bool byte = (cp & RE_CLASS_BYTE) != 0;
+#ifdef RE_UNICODE_PROP
+  if (class_prop_match(cc, cp & ~RE_CLASS_BYTE, byte)) return TRUE;
+#endif
+  if (byte) return cc->ctype_no != 0 || cc->utf8_any;
   uint16_t any = mrb_re_ctype(cp), all = any;
-  if (cc->ctype_fold) {
+  if (cc->table_fold) {
     uint32_t alt[MRB_UNI_MAX_UNFOLD];
     int n = mrb_uni_case_unfold(cp, alt, MRB_UNI_MAX_UNFOLD);
     for (int i = 0; i < n; i++) {

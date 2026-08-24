@@ -21,6 +21,14 @@ simulation) with backtracking fallback.
   `cntrl`, `print`, `graph`, `ascii` and `punct`. Above ASCII each holds
   what CRuby's does where the build classifies characters by Unicode, and
   nothing where it does not; see Configuration
+- `\p{Name}`, `\P{Name}`, `\p{^Name}` character properties, inside a class
+  and outside one. What a name may be is a general category (`L`, `Lu`,
+  `Letter`, `Uppercase_Letter`), a script (`Han`, `Latin`, `Latn`), one of
+  the names a POSIX bracket carries (`Alpha`, `Word`, `XDigit`), `Any` or
+  `Assigned`. The case, the underscores, the hyphens and the spaces in a
+  name are not part of it. The categories and the scripts are read off a
+  table only a build classifying characters by Unicode carries; see
+  Configuration
 - `\d`, `\w`, `\s` digit, word, whitespace shortcuts, ASCII as in CRuby
 - `\D`, `\W`, `\S` negated shortcuts
 - `(...)` capture group
@@ -201,16 +209,28 @@ pattern analysis.
 - **Fixed-length lookbehind only**: `(?<=...)` and `(?<!...)`
   require a fixed-length pattern (no `*`, `+`, `?`, or alternation).
   Maximum 255 bytes.
-- **No Unicode properties**: `\p{Alpha}`, `\p{L}`, etc. are not
-  supported and raise `RegexpError`, inside a character class as much as
-  outside one. It is the braces that name a property: a bare `\p`, and `\pL`
-  as well, is the letter, which is how CRuby reads them too. The POSIX
-  brackets read the same data where the build carries it, so `[[:alpha:]]` is
-  the way to ask for a letter of any script.
-- **A set is not an end of a range**: a shorthand (`\d`, `\w`, ...) and a
-  POSIX bracket each name a set rather than a character, so `[a-\d]` and
-  `[\d-z]` raise `RegexpError` as they do in CRuby. A `-` at either edge of
-  the class is still a member: `[\d-]` holds the digits and the dash.
+- **Character properties are the categories, the scripts and the bracket
+  names**: `\p{L}`, `\p{Han}` and `\p{Alpha}` are read; the binary properties
+  beyond the ones a POSIX bracket carries (`\p{Math}`, `\p{Dash}`,
+  `\p{Emoji}`, and some ninety more) are not, each being a range list of its
+  own, and raise `RegexpError` naming the property. A general category or a
+  script takes the table only a build classifying characters by Unicode
+  carries; without it those names raise too, and the bracket names hold their
+  ASCII as `[[:alpha:]]` does. It is the braces that name a property: a bare
+  `\p`, and `\pL` as well, is the letter, which is how CRuby reads them too.
+- **`\P{X}` and `[\P{X}]` part company under `i`**: a class is closed under
+  folding and then negated, so `\P{Lu}` holds what no case of the character
+  is an uppercase letter for, and neither `Ā` nor `ā` is in it, where the
+  member in `[\P{Lu}]` holds what some case of it is not one for, which is
+  both. CRuby reads the two apart the same way. Without `i` they are one set.
+- **`\p{Punct}` is not `[[:punct:]]`**: the bracket takes the nine ASCII
+  symbols Onigmo gives it (``$+<=>^`|~``) and the property is the punctuation
+  categories alone, as in CRuby. Above ASCII the two are one set.
+- **A set is not an end of a range**: a shorthand (`\d`, `\w`, ...), a POSIX
+  bracket and a property escape each name a set rather than a character, so
+  `[a-\d]`, `[\d-z]` and `[a-\p{L}]` raise `RegexpError` as they do in CRuby.
+  A `-` at either edge of the class is still a member: `[\d-]` holds the
+  digits and the dash.
 - **No `\M-X` meta escape**: it sets the high bit, making a byte that starts
   no character, and there is no encoding here to read one against. It raises
   `RegexpError`, as it does in CRuby for a pattern that is not binary.
@@ -414,6 +434,20 @@ holds its ASCII and no character above it, so `[[:alpha:]]` misses `"あ"` and
 same, having no character to classify. `[[:xdigit:]]` and `[[:ascii:]]` are
 sets ASCII defines and hold nothing above it on any build. The table is 13.9KB
 of read-only data; `MRB_USE_ASCII_CTYPE` is what leaves it out.
+
+What `\p{...}` asks about is a third table, `re_prop.h`, carried on that same
+condition: the general category of every codepoint and the script of every
+codepoint, which is what a name that is not one of the bracket types names.
+There `\p{L}` holds `"漢"`, `\p{Han}` holds it and `\p{Hiragana}` does not, and
+a name may be written short or long (`Lu`, `Uppercase_Letter`; `Latn`,
+`Latin`) with its case and its separators as it likes. Under `/i` a property
+is asked of the character and of every character sharing its folding, the way
+a bracket is, so `\p{Lu}` under `/i` holds `"ā"`. The bracket names go on
+being answered off the bracket types, so `\p{Alpha}` holds its ASCII on every
+build; without this table a general category or a script raises
+`RegexpError` instead, naming the build rather than the property. The table
+is 22.9KB of runs and 4.9KB of names, and it is what carries the largest part
+of the property escape's cost.
 
 ## License
 
