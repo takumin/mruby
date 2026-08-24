@@ -93,6 +93,17 @@ assert("Enumerable#minmax") do
   assert_equal ["dog", "albatross"], a.minmax { |a, b| a.length <=> b.length }
 end
 
+assert("Enumerable#minmax refuses a pair it cannot order") do
+  # Neither end can be picked from a pair that stands in no order, which is
+  # what `<=>` answers nil for; a block is allowed to answer it too. It is
+  # refused the way `Enumerable#max` and `#min` refuse it.
+  assert_raise(ArgumentError) { [1, 'a'].minmax }
+  assert_raise(ArgumentError) { [1, 2].minmax {|a, b| nil} }
+
+  assert_equal ['a', 'a'], ['a'].minmax    # one element is never compared
+  assert_equal [nil, nil], [].minmax
+end
+
 assert("Enumerable#minmax_by") do
   assert_equal ["dog", "albatross"], %w(albatross dog horse).minmax_by { |x| x.length }
 end

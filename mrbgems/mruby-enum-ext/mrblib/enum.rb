@@ -377,13 +377,17 @@ module Enumerable
         first = false
       else
         val = val.__svalue
-        if block
-          max = val if block.call(val, max) > 0
-          min = val if block.call(val, min) < 0
-        else
-          max = val if (val <=> max) > 0
-          min = val if (val <=> min) < 0
+        cmp_max = block ? block.call(val, max) : (val <=> max)
+        cmp_min = block ? block.call(val, min) : (val <=> min)
+        # A pair that stands in no order answers nil, and a block may answer it
+        # too. Neither end can be picked from such a pair, so the comparison is
+        # refused rather than read as a number, the way `Enumerable#max` and
+        # `#min` refuse it.
+        if cmp_max.nil? || cmp_min.nil?
+          raise ArgumentError, "comparison of #{val.class} with #{(cmp_max.nil? ? max : min).class} failed"
         end
+        max = val if cmp_max > 0
+        min = val if cmp_min < 0
       end
     end
     [min, max]

@@ -61,13 +61,24 @@ module Comparable
       end
     end
 
+    # A bound that stands in no order with `self` answers nil, and there is no
+    # telling which side of it `self` falls on. The pair is refused the way the
+    # two bounds are refused above, rather than the nil being read as a number,
+    # which raised for having no `<` rather than for the comparison it could
+    # not make.
     unless min.nil?
       cmp = self <=> min
+      if cmp.nil?
+        raise ArgumentError, "comparison of #{self.class} with #{min.class} failed"
+      end
       return self if cmp == 0
       return min if cmp < 0
     end
     unless max.nil?
       cmp = self <=> max
+      if cmp.nil?
+        raise ArgumentError, "comparison of #{self.class} with #{max.class} failed"
+      end
       return max if cmp > 0
     end
     return self

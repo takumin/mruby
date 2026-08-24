@@ -230,11 +230,15 @@ module Enumerable
         result = val
         flag = false
       else
-        if block
-          result = val if yield(val, result) > 0
-        else
-          result = val if (val <=> result) > 0
+        cmp = block ? yield(val, result) : (val <=> result)
+        # A pair that stands in no order answers nil, and a block may answer it
+        # too. There is no maximum to pick from such a pair, so the comparison
+        # is refused rather than read as a number, which raised for having no
+        # `>` rather than for the comparison it could not make.
+        if cmp.nil?
+          raise ArgumentError, "comparison of #{val.class} with #{result.class} failed"
         end
+        result = val if cmp > 0
       end
     }
     result
@@ -257,11 +261,12 @@ module Enumerable
         result = val
         flag = false
       else
-        if block
-          result = val if yield(val, result) < 0
-        else
-          result = val if (val <=> result) < 0
+        cmp = block ? yield(val, result) : (val <=> result)
+        # see `max` above
+        if cmp.nil?
+          raise ArgumentError, "comparison of #{val.class} with #{result.class} failed"
         end
+        result = val if cmp < 0
       end
     }
     result

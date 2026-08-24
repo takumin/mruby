@@ -101,6 +101,23 @@ assert('Enumerable#min', '15.3.2.2.14') do
   assert_equal 'c', a.min {|i1,i2| i1.length <=> i2.length}
 end
 
+assert('Enumerable#max and #min refuse a pair they cannot order') do
+  # Neither has a value to pick from a pair that stands in no order, which is
+  # what `<=>` answers nil for; a block is allowed to answer it too. The nil
+  # used to be read as a number, so what came back named `NilClass` and the
+  # `>` it does not have rather than the comparison that failed.
+  assert_raise(ArgumentError) { [1, 'a'].max }
+  assert_raise(ArgumentError) { [1, 'a'].min }
+  assert_raise(ArgumentError) { [1, 2].max {|a, b| nil} }
+  assert_raise(ArgumentError) { [1, 2].min {|a, b| nil} }
+
+  # the first element is never compared, and one is answered without a pair
+  assert_equal 'a', ['a'].max
+  assert_equal 'a', ['a'].min
+  assert_nil [].max
+  assert_nil [].min
+end
+
 assert('Enumerable#member?', '15.3.2.2.15') do
   assert_true [1,2,3,4,5,6,7,8,9].member?(5)
   assert_false [1,2,3,4,5,6,7,8,9].member?(0)

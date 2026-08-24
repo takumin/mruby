@@ -19,3 +19,13 @@ assert("Comparable#clamp") do
     100.clamp(0...100)
   }
 end
+
+assert("Comparable#clamp refuses a bound it cannot be ordered against") do
+  # There is no telling which side of a bound `self` falls on when the two
+  # stand in no order, which is what `<=>` answers nil for. The pair is
+  # refused the way two bounds that cannot be ordered already are, rather
+  # than the nil being read as a number.
+  assert_raise(ArgumentError) { 1.clamp('a', 'z') }
+  assert_raise(ArgumentError) { 'a'.clamp(1, 2) }
+  assert_raise(ArgumentError) { 1.clamp('a'..'z') }
+end
