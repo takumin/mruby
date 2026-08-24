@@ -89,6 +89,20 @@ assert('every mutating method leaves an answer the string can stand behind') do
       # standing without its head or its tail.
       "delete_prefix!" => ->(s) { b = s.bytes.first; s.delete_prefix!(b.chr) if b },
       "delete_suffix!" => ->(s) { b = s.bytes.last;  s.delete_suffix!(b.chr) if b },
+      # Writes that reach past the core gem. The bitwise pair takes an operand
+      # of the receiver's own width, so it has something to do on every base.
+      "setbyte"        => ->(s) { s.setbyte(0, 0x80) },
+      "bytesplice"     => ->(s) { s.bytesplice(0, 1, "\x80") },
+      "bitwise_and!"   => ->(s) { s.bitwise_and!("\x7f" * s.bytesize) },
+      "bitwise_or!"    => ->(s) { s.bitwise_or!("\x80" * s.bytesize) },
+      "bitwise_xor!"   => ->(s) { s.bitwise_xor!("\xff" * s.bytesize) },
+      "bitwise_not!"   => ->(s) { s.bitwise_not! },
+      # Not a write at all, but it changes what the bytes are read as, which is
+      # the same answer by another route. The round trip is the direction that
+      # can turn a string nothing was wrong with into a broken one.
+      "force_encoding" => ->(s) { s.force_encoding("BINARY") },
+      "force_encoding back" =>
+                          ->(s) { s.force_encoding("BINARY"); s.force_encoding("UTF-8") },
     }
     # Valid and broken, ASCII and not, with the whitespace and the repetition
     # that make each write above find something to do.
@@ -98,6 +112,16 @@ assert('every mutating method leaves an answer the string can stand behind') do
     # Two readings, because they leave different answers behind: the walk
     # settles on VALID or BROKEN, while counting marks only 7BIT.
     reads = [->(s) { s.valid_encoding? }, ->(s) { s.length }]
+
+    # The list above is only a checklist while something keeps it honest. A
+    # method whose name ends in `!` changes its receiver, so one the build
+    # carries and the list does not name is one nothing is asking this of --
+    # which is how `delete_prefix!` and `delete_suffix!` stayed broken. The
+    # writes that do not announce themselves in their name (`<<`, `setbyte`,
+    # `force_encoding` and the rest above) still have to be added by hand.
+    untested = String.instance_methods.map { |m| m.to_s }
+                     .select { |m| m.end_with?("!") && m != "!" && !ops[m] }
+    assert_equal [], untested.sort, "String methods that change a receiver with no case here"
 
     ops.each do |name, op|
       bases.each do |base|
