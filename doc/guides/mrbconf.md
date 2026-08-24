@@ -247,6 +247,10 @@ end
 - The regexp POSIX brackets classify by Unicode above ASCII: `[[:alpha:]]`
   holds a letter of any script and `[[:^alpha:]]` rejects it, as in CRuby.
   Without this macro a bracket holds its ASCII and no character above it.
+- The regexp property escape reads a general category and a script off a
+  table of its own: `\p{L}` holds a letter of any script and `\p{Han}` a Han
+  character. Without this macro those names raise `RegexpError`; the names a
+  POSIX bracket also carries (`\p{Alpha}`) hold their ASCII either way.
 - `String#succ` steps a letter or a digit above ASCII within its own run of
   them and wraps at the end of it, as in CRuby (`"ת".succ` is `"אא"`).
   Without this macro nothing above ASCII is a letter or a digit, and the last
@@ -261,12 +265,14 @@ end
   while keeping its indexing: `String#downcase`, `#upcase`, `#capitalize`,
   `#swapcase` and `#casecmp?` answer for `'A'` to `'Z'` and hand every other
   character back as it stands, a regexp POSIX bracket holds its ASCII and no
-  character above it, and `String#succ` finds no letter and no digit above
-  ASCII to step.
+  character above it, a regexp property escape naming a general category or a
+  script raises `RegexpError`, and `String#succ` finds no letter and no digit
+  above ASCII to step.
 - Drops the Unicode tables the build would otherwise carry, core's case table,
-  mruby-regexp's type table and mruby-string-ext's table of the letters and
-  the digits. That is what the option is for: a target counting its bytes buys
-  the UTF-8 indexing of `MRB_UTF8_STRING` without the tables beside it.
+  mruby-regexp's type and property tables and mruby-string-ext's table of the
+  letters and the digits. That is what the option is for: a target counting
+  its bytes buys the UTF-8 indexing of `MRB_UTF8_STRING` without the tables
+  beside it.
 - Bytes that spell no character are handed back as they stand rather than
   refused with `ArgumentError`. That refusal belongs to the walk over
   characters, which is the walk this narrows away: what converts instead reads

@@ -180,15 +180,13 @@ def anchor_patterns
    "^a$", "(?m:^a$)", "a\\Z\\z"]
 end
 
-# The Unicode properties, as a sentinel rather than an axis. This engine
-# refuses `\p{...}` outright, so asking it about every property would write the
-# same refusal into the baseline once per property and would say nothing these
-# four do not. What they are for is the day it stops refusing: the refusal
-# stops being a difference, the baseline line goes GONE, and the tool has
-# reported a limitation that has stopped being one, which is the half of its
-# job that a corpus holding no property escape cannot do. Both spellings
-# README names are here, since an engine growing them need not grow both at
-# once.
+# The Unicode properties, as four patterns rather than an axis. What the two
+# engines can differ over here is how the escape is read, not which characters
+# a name comes to: the names are the Unicode Character Database's, and the gem
+# holds them against CRuby in its own property tests. Asking the corpus about
+# every name would write the same agreement down once per name. These four are
+# the shapes the escape takes instead, both spellings, negated and inside a
+# class, since each is read by a different part of the compiler.
 def property_patterns
   ["\\p{Alpha}", "\\P{Alpha}", "[\\p{Alpha}]", "\\p{L}"]
 end
@@ -252,7 +250,7 @@ AXIS_CASES = [
   "^a", "a$", "\\Aa", "a\\z", "a\\Z", "\\ba", "a\\B", "\\G", "a\\K", "\\R", "\\X",
   # alternation
   "a|b", "|a", "a|", "a|b|c", "(a|b)|c",
-  # property: the sentinel, in both spellings, negated, and in a class
+  # property: both spellings, negated, and in a class
   "\\p{Alpha}", "\\P{Alpha}", "[\\p{Alpha}]", "\\p{L}",
 ]
 
@@ -382,6 +380,32 @@ end
 POSIX_NAMES = %w[alpha digit alnum upper lower space blank xdigit word cntrl
                  print graph ascii punct]
 
+# The character properties, which are the other tables a class reads and are
+# asked here the way the brackets are. One column per name rather than one per
+# spelling: a name is a table lookup, and the corpus holds a character out of
+# every general category and every script, so one column is the whole of what
+# a name has to answer for. The names are every category and the groups above
+# them, a spread of scripts with `Common`, `Inherited` and `Unknown` among
+# them, the names a POSIX bracket also carries, since an engine may answer
+# those off the bracket rather than off the tables, `Any` and `Assigned`, and
+# one name written long, short and in a case the database does not use.
+PROPERTY_NAMES = %w[
+  L Lu Ll Lt Lm Lo LC M Mn Mc Me N Nd Nl No P Pc Pd Ps Pe Pi Pf Po
+  S Sm Sc Sk So Z Zs Zl Zp C Cc Cf Co Cs Cn
+  Han Latin Greek Cyrillic Hiragana Katakana Arabic Hebrew Thai Hangul
+  Common Inherited Unknown
+  Alpha Alnum Blank Cntrl Digit Graph Lower Print Punct Space Upper Word XDigit
+  ASCII Any Assigned
+  Letter Uppercase_Letter uppercase-letter Latn
+]
+
+# The names asked in every shape the escape takes as well: a category group, a
+# concrete category that has a case, a script, and a bracket name. The shapes
+# are read by different code, and `\P{X}` and the member inside a class part
+# company under /i, a class being closed under folding and then negated where
+# a member is negated as it stands.
+PROPERTY_SHAPES = %w[L Lu Han Alpha]
+
 # Every way to ask what a character is, in the order the columns come. A
 # pattern one engine will not compile is a column of `E` and one that raises
 # while matching a column of `X`, each an answer like any other and one the two
@@ -402,6 +426,17 @@ def classifiers
   # of it and is the one flag that changes what a class holds.
   ["[[:upper:]]", "[[:lower:]]",
    "[[:^upper:]]"].each { |src| out << [src, Regexp::IGNORECASE] }
+  PROPERTY_NAMES.each { |name| out << ["\\p{" + name + "}", 0] }
+  PROPERTY_SHAPES.each do |name|
+    ["\\P{" + name + "}", "\\p{^" + name + "}",
+     "[\\p{" + name + "}]", "[\\P{" + name + "}]"].each do |src|
+      out << [src, 0]
+    end
+    ["\\p{" + name + "}", "\\P{" + name + "}",
+     "[\\p{" + name + "}]", "[\\P{" + name + "}]"].each do |src|
+      out << [src, Regexp::IGNORECASE]
+    end
+  end
   out
 end
 
