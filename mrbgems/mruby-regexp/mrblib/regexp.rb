@@ -25,12 +25,8 @@ class Regexp
   # The two readers above are readings of a compiled pattern, and an object
   # from Regexp.allocate has none: no @source, no @flags, no capture table.
   # An empty table there is indistinguishable from a pattern that named
-  # nothing, so they refuse it the way the C readers do (see
-  # re_check_initialized() in src/regexp.c).
-  def __check_initialized
-    raise TypeError, "uninitialized Regexp" unless @source.is_a?(String)
-  end
-  private :__check_initialized
+  # nothing, so they refuse it through the same guard the C readers use
+  # (re_check_initialized() in src/regexp.c, reached by __check_initialized).
 
   # options is implemented in C (internal flags -> Ruby constants conversion)
 

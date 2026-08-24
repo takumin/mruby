@@ -411,6 +411,45 @@ assert("Regexp#dup and Regexp#clone") do
   assert_false frozen.dup.frozen?
 end
 
+assert("Regexp readers on a copy that never reached initialize_copy") do
+  # A subclass can override initialize_copy and never call super, which leaves
+  # the copy holding the original's @source and @flags and no pattern at all.
+  # The readers answer from the compiled pattern, so they refuse it the way
+  # they refuse Regexp.allocate: what says the object was initialized is
+  # DATA_PTR, which no IV copy carries over, not the source it inherited.
+  c = Class.new(Regexp) do
+    def initialize_copy(other)
+      self
+    end
+  end
+  d = c.new("(?<n>a)").dup
+  assert_raise(TypeError) { d.source }
+  assert_raise(TypeError) { d.options }
+  assert_raise(TypeError) { d.casefold? }
+  assert_raise(TypeError) { d.to_s }
+  assert_raise(TypeError) { d.hash }
+  assert_raise(TypeError) { d.names }
+  assert_raise(TypeError) { d.named_captures }
+  assert_raise(TypeError) { d == Regexp.new("a") }
+  assert_raise(TypeError) { d.match?("a") }
+
+  # nor can an IV write alone make an uninitialized Regexp answer
+  a = Regexp.allocate
+  a.instance_variable_set(:@source, "a")
+  a.instance_variable_set(:@flags, 0)
+  assert_raise(TypeError) { a.to_s }
+  assert_raise(TypeError) { a.source }
+  assert_raise(TypeError) { a.hash }
+
+  # and an initialized Regexp whose @source was replaced raises rather than
+  # reading whatever was put there as a String
+  r = Regexp.new("a")
+  r.instance_variable_set(:@source, nil)
+  assert_raise(TypeError) { r.to_s }
+  assert_raise(TypeError) { r.source }
+  assert_kind_of String, r.inspect
+end
+
 assert("Regexp#initialize_copy") do
   # reachable directly, so it refuses what dup and clone cannot hand it
   assert_raise(TypeError) { Regexp.new("a").dup.send(:initialize_copy, Regexp.new("b")) }

@@ -38,20 +38,34 @@ re_uninitialized_p(const mrb_regexp_pattern *pat)
 
 /* The pattern text a reader answers from, or TypeError when there is none.
    Regexp.allocate is on every class and hands out an object that never went
-   through regexp_init(): no @source, no @flags, a NULL DATA_PTR. The matchers
-   already refuse it through DATA_GET_PTR(), and the readers below refuse it
-   here, as CRuby's rb_reg_check() does at the top of each of its own.
+   through re_initialize(): no @source, no @flags, a NULL DATA_PTR. The
+   matchers already refuse it through DATA_GET_PTR(), and the readers below
+   refuse it here, as CRuby's rb_reg_check() does at the top of each of its
+   own.
 
-   The test is on @source rather than on DATA_PTR() so that it keeps the two
-   uninitialized shapes apart: regexp_init() sets the IVs before it compiles,
-   so a Regexp whose compile raised has a source and goes on answering
-   hash/eql?/inspect from it (see the comment there), while the allocated one
-   has nothing to answer from. */
+   Both fields are tested because they answer different questions and each is
+   reachable without the other:
+
+   - DATA_PTR says whether the object was ever initialized. It is the one
+     field only re_initialize() writes: mrb_iv_copy() does not carry it to a
+     copy and no instance_variable_set() can forge it, so a NULL there is an
+     object that never went through re_initialize() however it was made -
+     Regexp.allocate's, or a copy from a subclass that overrode
+     initialize_copy without calling super. It is set before the compile
+     starts, so a Regexp whose compile raised still passes here and goes on
+     answering hash/eql?/inspect from the source it does have (see the
+     comment in re_initialize()).
+
+   - @source is what the readers below hand to mrb_str_cat_str() and
+     RSTRING_PTR(), which take an RString and dereference it as one. It is an
+     ordinary IV, so instance_variable_set() can put anything behind it, and
+     checking the type here is what keeps that a TypeError rather than a
+     read through whatever was stored. */
 static mrb_value
 re_check_initialized(mrb_state *mrb, mrb_value re)
 {
   mrb_value src = mrb_iv_get(mrb, re, MRB_IVSYM(source));
-  if (!mrb_string_p(src)) {
+  if (!DATA_PTR(re) || !mrb_string_p(src)) {
     mrb_raise(mrb, E_TYPE_ERROR, "uninitialized Regexp");
   }
   return src;
@@ -753,6 +767,20 @@ regexp_case_match(mrb_state *mrb, mrb_value self)
 
   md = exec_match(mrb, self, str, 0);
   return mrb_bool_value(!mrb_nil_p(md));
+}
+
+/*
+ * Regexp#__check_initialized - the guard above, for the readers in mrblib
+ *
+ * `names` and `named_captures` are readings of a compiled pattern too, and
+ * only this side can see DATA_PTR, so they raise through here rather than
+ * testing @source from Ruby and missing what an IV cannot show.
+ */
+static mrb_value
+regexp_check_initialized(mrb_state *mrb, mrb_value self)
+{
+  re_check_initialized(mrb, self);
+  return self;
 }
 
 /*
@@ -2250,6 +2278,7 @@ mrb_mruby_regexp_gem_init(mrb_state *mrb)
   /* Class methods */
   mrb_define_method(mrb, re, "initialize", regexp_init, MRB_ARGS_ARG(1, 2));
   mrb_define_method(mrb, re, "initialize_copy", regexp_init_copy, MRB_ARGS_REQ(1));
+  mrb_define_private_method(mrb, re, "__check_initialized", regexp_check_initialized, MRB_ARGS_NONE());
   /* compile is defined in Ruby (mrblib) as alias for new */
   mrb_define_class_method(mrb, re, "escape", regexp_escape, MRB_ARGS_REQ(1));
   mrb_define_class_method(mrb, re, "quote", regexp_escape, MRB_ARGS_REQ(1));
