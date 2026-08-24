@@ -728,20 +728,50 @@ ary_intersection_body(mrb_state *mrb, void *data)
 {
   struct ary_intersection_ctx *ctx = (struct ary_intersection_ctx *)data;
 
-  for (mrb_int i = 0; i < ctx->argc; i++) {
-    ary_populate_temp_set(mrb, ctx->set, ctx->argv[i]);
-  }
-
-  int ai = mrb_gc_arena_save(mrb);
-  for (mrb_int i = 0; i < RARRAY_LEN(ctx->self); i++) {
-    mrb_value p = RARRAY_PTR(ctx->self)[i];
-    mrb_gc_protect(mrb, p); // p may be removed from self by kh_get(ary_set, ...)
-    khiter_t k = kh_get(ary_set, mrb, ctx->set, p);
-    if (!kh_is_end(ctx->set, k)) {
-      mrb_ary_push(mrb, ctx->result, p);
-      kh_del(ary_set, mrb, ctx->set, k);
+  /* An element belongs in the result only if it is in *every* other array, so
+     the arguments have to narrow the result one at a time. Pouring them all
+     into one set instead answers `self & (a | b | ...)`, which let an element
+     missing from one argument survive because another argument carried it. */
+  for (mrb_int j = 0; j < ctx->argc; j++) {
+    if (j > 0) {
+      kh_clear(ary_set, mrb, ctx->set);
     }
-    mrb_gc_arena_restore(mrb, ai);
+    ary_populate_temp_set(mrb, ctx->set, ctx->argv[j]);
+
+    int ai = mrb_gc_arena_save(mrb);
+    if (j == 0) {
+      /* The first argument also settles duplicates: the set gives up an
+         element the first time it is taken, so a later copy no longer finds
+         it and the result keeps one of each. */
+      for (mrb_int i = 0; i < RARRAY_LEN(ctx->self); i++) {
+        mrb_value p = RARRAY_PTR(ctx->self)[i];
+        mrb_gc_protect(mrb, p); // p may be removed from self by kh_get(ary_set, ...)
+        khiter_t k = kh_get(ary_set, mrb, ctx->set, p);
+        if (!kh_is_end(ctx->set, k)) {
+          mrb_ary_push(mrb, ctx->result, p);
+          kh_del(ary_set, mrb, ctx->set, k);
+        }
+        mrb_gc_arena_restore(mrb, ai);
+      }
+    }
+    else {
+      /* Later arguments only drop elements, so the result is compacted in
+         place; `write_pos` never runs ahead of the read position. */
+      mrb_int write_pos = 0;
+      for (mrb_int i = 0; i < RARRAY_LEN(ctx->result); i++) {
+        mrb_value p = RARRAY_PTR(ctx->result)[i];
+        mrb_gc_protect(mrb, p); // p may be removed from result by kh_get(ary_set, ...)
+        khiter_t k = kh_get(ary_set, mrb, ctx->set, p);
+        if (!kh_is_end(ctx->set, k)) {
+          mrb_ary_modify(mrb, mrb_ary_ptr(ctx->result));
+          RARRAY_PTR(ctx->result)[write_pos++] = p;
+        }
+        mrb_gc_arena_restore(mrb, ai);
+      }
+      mrb_ary_resize(mrb, ctx->result, write_pos);
+    }
+
+    if (RARRAY_LEN(ctx->result) == 0) break;
   }
 
   return ctx->result;
