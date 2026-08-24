@@ -39,8 +39,8 @@ module Unicode
 
     private
 
-    def path(name)
-      UCD.path(@dir, name)
+    def each_line(name, &block)
+      UCD.each_line(@dir, name, &block)
     end
 
     # One field of a data file, as the codepoints it spells, or nil where the
@@ -59,7 +59,7 @@ module Unicode
       @simple_title = {}
       @category = {}
       @decomp = {}
-      File.foreach(path('UnicodeData.txt')) do |line|
+      each_line('UnicodeData.txt') do |line|
         f = line.chomp.split(';', -1)
         cp = Integer(f[0], 16)
         @category[cp] = f[2]
@@ -87,7 +87,7 @@ module Unicode
       @full_lower = {}
       @full_upper = {}
       @full_title = {}
-      File.foreach(path('SpecialCasing.txt')) do |line|
+      each_line('SpecialCasing.txt') do |line|
         line = line.sub(/#.*/, '').strip
         next if line.empty?
         code, lo, ti, up, cond = line.split(/\s*;\s*/)
@@ -105,7 +105,7 @@ module Unicode
     # would; both are the other answer for a source already covered here.
     def read_case_folding
       @full_fold = {}
-      File.foreach(path('CaseFolding.txt')) do |line|
+      each_line('CaseFolding.txt') do |line|
         line = line.sub(/#.*/, '').strip
         next if line.empty?
         code, status, mapping, = line.split(/\s*;\s*/)
