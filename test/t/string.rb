@@ -877,6 +877,20 @@ assert('String#reverse!', '15.2.10.5.30') do
   assert_equal 'cba', 'abc'.reverse!
 end
 
+assert('String#reverse! - a frozen receiver') do
+  # A string of one character or none reverses into itself and returns
+  # without writing, which is where the frozen check used to sit.
+  assert_raise(FrozenError) { ''.freeze.reverse! }
+  assert_raise(FrozenError) { 'a'.freeze.reverse! }
+  assert_raise(FrozenError) { 'ab'.freeze.reverse! }
+end
+
+assert('String#reverse!(UTF-8) - a frozen receiver') do
+  # One character of several bytes is the same early return, reached by the
+  # character count rather than the byte count.
+  assert_raise(FrozenError) { 'あ'.freeze.reverse! }
+end if UTF8STRING
+
 assert('String#reverse!(UTF-8)', '15.2.10.5.30') do
   a = 'こんにちは世界!'
   a.reverse!

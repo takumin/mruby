@@ -3084,7 +3084,13 @@ mrb_str_reverse_bang(mrb_state *mrb, mrb_value str)
   mrb_int utf8_len = mrb_str_char_len(mrb, str);
   mrb_int len = RSTR_LEN(s);
 
-  if (utf8_len < 2) return str;
+  if (utf8_len < 2) {
+    /* One character or none reverses into itself and returns here, ahead of
+       the str_modify_keep_cr() below that turns a frozen receiver away. The
+       call is destructive at any length, so it is asked here. */
+    mrb_check_frozen(mrb, s);
+    return str;
+  }
   if (utf8_len < len) {
     str_modify_keep_cr(mrb, s);
     p = RSTR_PTR(s);
@@ -3104,6 +3110,8 @@ mrb_str_reverse_bang(mrb_state *mrb, mrb_value str)
     str_modify_keep_cr(mrb, s);
     goto bytes;
   }
+  /* As above, for a build that reads one character per byte. */
+  mrb_check_frozen(mrb, s);
   return str;
 
  bytes:
@@ -3928,7 +3936,14 @@ mrb_str_cat(mrb_state *mrb, mrb_value str, const char *ptr, size_t len)
   struct RString *s = mrb_str_ptr(str);
   ptrdiff_t off = -1;
 
-  if (len == 0) return str;
+  /* An append of nothing writes nothing, but it is still an append, and the
+     only frozen check on this path is the one the modify below runs. Asking
+     here keeps `str << ""` answering FrozenError like an append that has
+     bytes to add, instead of passing over a frozen receiver in silence. */
+  if (len == 0) {
+    mrb_check_frozen(mrb, s);
+    return str;
+  }
   /* `len` has to be known to fit in an `mrb_int` before it is used as one:
      the conversion is otherwise free to make it negative, and the overflow
      check takes `mrb_int` parameters, so it would not see it. Checking ahead
