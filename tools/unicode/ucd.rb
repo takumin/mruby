@@ -25,6 +25,7 @@ module Unicode
       'PropList.txt'              => '130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd',
       'Scripts.txt'               => '9f5e50d3abaee7d6ce09480f325c706f485ae3240912527e651954d2d6b035bf',
       'DerivedAge.txt'            => 'f8ecdf768bdc210f201abd271d9bc587825618a86a7046a8146cc816393f1998',
+      'PropertyValueAliases.txt'  => '64e9a5f76f7a1e8b5a47d6a1f9a26522a251208f5276bdfa1559dac7cf2e827a',
     }.freeze
 
     FILES = CHECKSUMS.keys.freeze
@@ -76,7 +77,7 @@ module Unicode
     def self.general_categories(dir)
       gc = {}
       first = nil
-      File.foreach(path(dir, 'UnicodeData.txt')) do |line|
+      each_line(dir, 'UnicodeData.txt') do |line|
         f = line.chomp.split(';', -1)
         cp = Integer(f[0], 16)
         if f[1].end_with?('First>')
@@ -105,6 +106,23 @@ module Unicode
         props[prop] << (lo..(hi || lo))
       end
       props
+    end
+
+    # What PropertyValueAliases.txt calls the values of one property, as
+    # {"Latin" => ["Latn", "Latin"]}: the canonical long name against every
+    # name that stands for it, the short one and the long one among them. A
+    # line is "property ; short ; long ; further aliases", and the long name
+    # is the one the data files write, so it is the key here.
+    def self.value_aliases(dir, property)
+      values = {}
+      each_line(dir, 'PropertyValueAliases.txt') do |line|
+        line = line.sub(/#.*/, '').strip
+        next if line.empty?
+        f = line.split(/\s*;\s*/)
+        next unless f[0] == property
+        values[f[2]] = f[1..]
+      end
+      values
     end
 
     # The files are UTF-8, and a few of them say so only in a comment: a
