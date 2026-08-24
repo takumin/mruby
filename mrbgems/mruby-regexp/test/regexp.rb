@@ -336,7 +336,9 @@ assert("Regexp readers on an uninitialized regexp") do
   assert_raise(TypeError) { r.named_captures }
   assert_raise(TypeError) { r.hash }
   assert_raise(TypeError) { r.to_s }
-  assert_raise(TypeError) { r.dup.to_s }
+  # copying reads the source too, so it is refused at the copy
+  assert_raise(TypeError) { r.dup }
+  assert_raise(TypeError) { r.clone }
   assert_raise(TypeError) { r == Regexp.allocate }
   assert_raise(TypeError) { r == Regexp.new("abc") }
   assert_raise(TypeError) { Regexp.new(r) }
@@ -373,6 +375,49 @@ assert("Regexp readers on a regexp whose compile raised") do
   assert_false r == Regexp.new("abc")
   # but matching against it is still refused
   assert_raise(ArgumentError) { r =~ "(" }
+end
+
+assert("Regexp#dup and Regexp#clone") do
+  # The compiled pattern cannot be shared with the copy - one pattern is owned
+  # by one object - so the copy compiles its own from the same source and
+  # flags. Without that it answered the readers and refused every match.
+  r = Regexp.new("ab(?<n>c)", Regexp::IGNORECASE)
+  [r.dup, r.clone].each do |c|
+    assert_equal r.source, c.source
+    assert_equal r.options, c.options
+    assert_equal r.to_s, c.to_s
+    assert_equal r.names, c.names
+    assert_equal r.named_captures, c.named_captures
+    assert_true c == r
+    assert_equal r.hash, c.hash
+    assert_true c.match?("xABCy")
+    assert_equal 1, c =~ "xABCy"
+    assert_equal "C", c.match("xABCy")[:n]
+    assert_equal "x-y", "xABCy".gsub(c, "-")
+  end
+  # the copy owns its own pattern, so the original outlives it and vice versa
+  c = r.dup
+  100.times { r.dup }
+  GC.start
+  assert_true c.match?("ABC")
+  assert_true r.match?("ABC")
+  # a copy of a subclass instance is compiled the same way
+  sub = Class.new(Regexp).new("a+")
+  assert_true sub.dup.match?("aaa")
+  # clone carries the frozen state, and a frozen original still copies
+  frozen = Regexp.new("a", Regexp::IGNORECASE).freeze
+  assert_true frozen.clone.frozen?
+  assert_true frozen.clone.match?("A")
+  assert_false frozen.dup.frozen?
+end
+
+assert("Regexp#initialize_copy") do
+  # reachable directly, so it refuses what dup and clone cannot hand it
+  assert_raise(TypeError) { Regexp.new("a").dup.send(:initialize_copy, Regexp.new("b")) }
+  assert_raise(TypeError) { Regexp.new("a").dup.send(:initialize_copy, "b") }
+  # copying onto itself is a no-op, not a second compile
+  r = Regexp.new("a")
+  assert_true r.send(:initialize_copy, r).match?("a")
 end
 
 assert("Regexp#options") do
