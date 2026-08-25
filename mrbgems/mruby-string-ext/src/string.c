@@ -1443,22 +1443,30 @@ str_scrub_chunks(mrb_state *mrb, mrb_value self)
 }
 #endif
 
-/* Whether a run of bytes is nothing but ASCII. A byte below 0x80 stands for a
-   character of its own and is never part of one that began earlier, so a
-   prefix or a suffix of them is cut away exactly where a character ends: what
-   the rest of the string is read as goes on being the answer. One byte at or
-   above 0x80 is enough to make the cut a place a character may straddle. */
+/* Whether byte offset `k` of `s` is where a character begins, so that cutting
+   the string in two there leaves whole characters on either side and what the
+   rest is read as is still the answer. Only the one byte has to be looked at:
+   a UTF-8 continuation byte is 10xxxxxx and no other byte is, so a byte that
+   is not one begins a character. Both ends of the string are such a place.
+
+   Asked before the cut, of a string that has an answer to keep: one carrying
+   nothing has none, and one that indexes by byte has a character per byte and
+   nothing recorded about them, so neither is worth reading a byte for. */
 static mrb_bool
-str_bytes_ascii_p(const char *p, mrb_int len)
+str_cut_keeps_cr(struct RString *s, mrb_int k)
 {
-  for (const char *e = p + len; p < e; p++) {
-    if ((*p & 0x80) != 0) return FALSE;
-  }
-  return TRUE;
+#ifdef MRB_UTF8_STRING
+  if (RSTR_CODERANGE(s) == MRB_STR_CODERANGE_UNKNOWN) return FALSE;
+  if (RSTR_SINGLE_BYTE_P(s)) return TRUE;
+  if (k <= 0 || k >= RSTR_LEN(s)) return TRUE;
+  return ((uint8_t)RSTR_PTR(s)[k] & 0xc0) != 0x80;
+#else
+  (void)s; (void)k;
+  return FALSE;
+#endif
 }
 
-/* What a cut of `keep_cr` bytes leaves the string saying about itself. This is
-   mrb_str_modify_keep_cr()'s rule without the unsharing, which a cut that
+/* mrb_str_modify_keep_cr()'s rule without the unsharing, which a cut that
    writes no byte has no use for. */
 static void
 str_cut_coderange(struct RString *s, mrb_bool keep_cr)
@@ -1498,8 +1506,8 @@ str_del_prefix_bang(mrb_state *mrb, mrb_value self)
   if (plen > slen) return mrb_nil_value();
   char *s = RSTR_PTR(str);
   if (!str_prefix_p(mrb, self, ptr, plen)) return mrb_nil_value();
-  /* Read off the argument before anything below can run a collection. */
-  mrb_bool keep_cr = str_bytes_ascii_p(ptr, plen);
+  /* What is left begins at `plen`; read that before the cut moves it. */
+  mrb_bool keep_cr = str_cut_keeps_cr(str, plen);
   if (!mrb_frozen_p(str) && (RSTR_SHARED_P(str) || RSTR_FSHARED_P(str))) {
     /* Sliding the start of a shared buffer writes no byte, so there is nothing
        to unshare -- and nothing here drops the answer the string was carrying,
@@ -1570,10 +1578,8 @@ str_del_suffix_bang(mrb_state *mrb, mrb_value self)
   if (plen > slen) return mrb_nil_value();
   if (!str_suffix_p(mrb, self, ptr, plen)) return mrb_nil_value();
   /* Cutting the end back writes no byte, so there is nothing to unshare. What
-     the string says about its own bytes stands only where the suffix was
-     nothing but ASCII; a suffix carrying more may be the tail of a character
-     whose head stays behind, and that answer has to be asked again. */
-  mrb_bool keep_cr = str_bytes_ascii_p(ptr, plen);
+     is left ends where the suffix begins, so that is the place to ask about. */
+  mrb_bool keep_cr = str_cut_keeps_cr(str, slen-plen);
   RSTR_SET_LEN(str, slen-plen);
   str_cut_coderange(str, keep_cr);
   return self;
