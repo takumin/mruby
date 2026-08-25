@@ -150,6 +150,10 @@ assert('a NaN is the object it is and no other') do
   assert_nil([a].index(b))
   assert_true([a].include?(a))
   assert_false([a].include?(b))
+  assert_equal(1, [a].count(a))
+  assert_equal(0, [a].count(b))
+  assert_true([1.0, a] == [1.0, a])
+  assert_false([1.0, a] == [1.0, b])
   assert_equal(1, ({a => 1})[a])
   assert_nil(({a => 1})[b])
 
