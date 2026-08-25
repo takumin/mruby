@@ -8,8 +8,9 @@
 #
 # The baseline beside this file holds the disagreements that are meant: a
 # construct this engine refuses rather than answers wrongly, a byte CRuby
-# settles with the pattern's encoding and this engine reads as a byte. Every
-# one of them is in README.md's limitations.
+# settles with the pattern's encoding and this engine reads as a byte, a
+# boundary it draws by its own tables where CRuby draws it by a Latin-1 one.
+# Every one of them is in README.md's limitations.
 # A disagreement that is not in the baseline is the thing this tool is for: an
 # escape that went back to being its own letter, a class that stopped holding
 # what it holds, a construct a newer CRuby gives a meaning this engine does not
@@ -23,9 +24,36 @@
 require 'rbconfig'
 require 'open3'
 
+require 'tmpdir'
+
+require_relative '../../../../tools/unicode/corpus_data'
+
 ROOT = File.expand_path('../../../..', __dir__)
 PROBE = File.join(__dir__, 'probe.rb')
+CORPUS = File.join(__dir__, 'corpus.rb')
 BASELINE = File.join(__dir__, 'baseline.txt')
+
+# The characters the corpus asks about are chosen out of a Unicode release,
+# and this CRuby has to carry that release for its answers to be about the
+# engine at all: a character assigned since is one it classifies as nothing,
+# so every bracket and every boundary reads the other way there. It would run,
+# and would report a row of the character axis as a disagreement between the
+# two engines when what is a release apart is the two databases.
+#
+# `\p{Age=...}` is the question, since what matters is the Unicode behind this
+# CRuby's tables rather than which Ruby it is. It takes the release in two
+# components, which is how MAX_AGE is spelled.
+CORPUS_UNICODE = Unicode::CorpusData::MAX_AGE
+begin
+  Regexp.new("\\p{Age=#{CORPUS_UNICODE}}")
+rescue StandardError
+  abort "this CRuby (#{RUBY_VERSION}) carries an older Unicode than the " \
+        "corpus, which is chosen out of #{CORPUS_UNICODE}.\nA character it " \
+        "has not heard of is classified as nothing there, which would read " \
+        "as a disagreement between the two engines rather than between the " \
+        "two databases.\nRun this under a CRuby with Unicode " \
+        "#{CORPUS_UNICODE} or later (4.0 is the first)."
+end
 
 update = ARGV.delete('--update')
 mruby = ARGV.shift || Dir[File.join(ROOT, 'build/*/bin/mruby')].sort.first
@@ -53,10 +81,16 @@ def run(cmd, what)
   [answers, build]
 end
 
-# Both engines are given the same bytes, which is what makes the two runs
-# comparable at all.
-cruby, = run([RbConfig.ruby, '-W0', PROBE], 'cruby')
-theirs, build = run([mruby, PROBE], File.basename(mruby))
+# mruby runs one file, so the generated corpus and the probe are handed over
+# as one. Both engines are given the same bytes, which is what makes the two
+# runs comparable at all.
+cruby = theirs = build = nil
+Dir.mktmpdir do |tmp|
+  probe = File.join(tmp, 'probe.rb')
+  File.write(probe, File.read(CORPUS) + "\n" + File.read(PROBE))
+  cruby, = run([RbConfig.ruby, '-W0', probe], 'cruby')
+  theirs, build = run([mruby, probe], File.basename(mruby))
+end
 
 version = "ruby #{RUBY_VERSION}p#{RUBY_PATCHLEVEL} #{RUBY_PLATFORM}"
 

@@ -251,6 +251,12 @@ pattern analysis.
   folds each side and compares, so it matches where the capture and the
   repeat hold the same characters in different widths (`k` and `K`).
   CRuby declines to fold across a width change there.
+- **`\b` reads `[[:word:]]` below U+0100 too**: CRuby draws a word boundary
+  beside `²`, `³`, `¹` and `½`, which its own `[[:word:]]` does not hold; it
+  reads a character under 256 off a Latin-1 word table for the boundary and
+  off the Unicode tables for the bracket. Here the two are the same question
+  at every codepoint, so neither takes them. The difference is CRuby's own
+  rather than a rule Ruby states.
 - **Step limit on backtracking**: Patterns that require the
   backtracking engine are subject to a step limit.
 - **Backward search walks forward**: the engine searches forward only,
@@ -419,43 +425,63 @@ of read-only data; `MRB_USE_ASCII_CTYPE` is what leaves it out.
 
 Everything under Limitations is a place this engine answers a pattern
 differently from CRuby, and the list is kept by hand. What keeps it honest is
-`tools/difftest`, which runs a corpus of patterns through both engines and
-reports where they disagree:
+`tools/difftest`, which runs a corpus through both engines and reports where
+they disagree:
 
 ```console
 $ rake regexp:difftest
-3120 patterns, 63 known differences, no new ones
+3458 patterns, 64 known differences, no new ones
 ```
 
-`probe.rb` holds the corpus and runs under either engine, printing a line per
-pattern: where a match starts in each of a fixed list of subjects, what it
-captured, and which class it raised when it refused. The patterns are generated
-from the axes rather than listed, so an escape, a quantifier or a class form is
-covered in every context it can stand in — every printable ASCII character after
-a backslash, alone and beside a literal and inside a class and as an end of a
-range; every quantifier on every kind of atom; the groups, the anchors, the
-backreferences and the POSIX brackets.
+`probe.rb` holds the corpus and runs under either engine. It asks along two
+axes, since a pattern and a character are worth asking about differently.
+
+The **pattern axis** prints a line per pattern: where a match starts in each of
+a fixed list of subjects, what it captured, and which class it raised when it
+refused. The patterns are generated from the axes rather than listed, so an
+escape, a quantifier or a class form is covered in every context it can stand
+in — every printable ASCII character after a backslash, alone and beside a
+literal and inside a class and as an end of a range; every quantifier on every
+kind of atom; the groups, the anchors, the backreferences and the POSIX
+brackets.
+
+The **character axis** turns that around: a line per character, a column per
+way of classifying one — the POSIX brackets and their complements, the
+shorthands, the boundaries, `.`, and a few of them under `i`. The characters
+come out of the Unicode Character Database, by the rule
+`tools/unicode/corpus_data.rb` states and written out as `corpus.rb` by `rake
+unicode:generate` with the tables, so a version bump moves the questions with
+the answers. They are one out of every class the engine's tables tell apart —
+every general category, every script, each POSIX type and its complement, the
+shapes case folding comes in, the widths the encoding changes at, and the whole
+of ASCII — each the lowest codepoint in its class, which is the member that
+does not move as Unicode grows.
+
+Picking by rule rather than by hand is what found the `\b` difference above. A
+list written by hand reaches for `Ā` and `ā` to stand for "a letter with a
+case", and those are U+0100 and U+0101 — one codepoint above the Latin-1 table
+where CRuby answers by other rules.
 
 `compare.rb` runs it in both and checks the disagreements against
 `baseline.txt`, which holds the ones that are meant: a construct this engine
 refuses rather than answers wrongly, a byte CRuby settles with the pattern's
-encoding. Every line in it is one of the limitations above. A disagreement that
-is not in the baseline is what the tool is for, and it fails on one; a baseline
-line that has stopped disagreeing fails too, so that a fix prunes the list
-rather than leaving it to describe an engine that has moved on. `rake
-regexp:difftest:update` takes a new baseline.
+encoding, a boundary the two draw off different tables. Every line in it is one
+of the limitations above. A disagreement that is not in the baseline is what
+the tool is for, and it fails on one; a baseline line that has stopped
+disagreeing fails too, so that a fix prunes the list rather than leaving it to
+describe an engine that has moved on. `rake regexp:difftest:update` takes a new
+baseline.
 
-Two things bound what it can say. The answers are the host CRuby's, so a
-different one — another Onigmo, another Unicode release behind its tables — may
-disagree for reasons that are not this engine's; the baseline records which
-CRuby it was taken with. And a baseline describes the build it was taken
-against, since a build reading its strings as bytes or classifying them by ASCII
-answers differently wherever a table is read; `compare.rb` refuses a build that
-is not the one its baseline describes rather than reporting every one of those
-as a regression.
+Two things bound what it can say, and `compare.rb` refuses rather than
+reporting either as a regression. The characters are chosen out of the Unicode
+release the tables are generated from, so a CRuby carrying an older one would
+call a character it has not heard of nothing at all; the check is `\p{Age=}`
+and CRuby 4.0 is the first that passes it. And a baseline describes the build
+it was taken against, since a build reading its strings as bytes or classifying
+them by ASCII answers differently wherever a table is read.
 
-Both are why this is a task to run rather than a job in the workflows, which use
-whatever CRuby a runner ships.
+Both are why this is a task to run rather than a job in the workflows, which
+use whatever CRuby a runner ships.
 
 ## License
 
