@@ -536,9 +536,14 @@ is asked of the character and of every character sharing its folding, the way
 a bracket is, so `\p{Lu}` under `/i` holds `"ā"`. The bracket names go on
 being answered off the bracket types, so `\p{Alpha}` holds its ASCII on every
 build; without this table a general category or a script raises
-`RegexpError` instead, naming the build rather than the property. The table
-is 22.9KB of runs and 4.9KB of names, and it is what carries the largest part
-of the property escape's cost.
+`RegexpError` instead, naming the build rather than the property.
+
+What it costs, measured as the growth of `ci/gcc-clang`'s `bintest` `mruby`
+on x86-64 rather than counted off the table's own bytes: read-only data grows
+28.1KB and code 3.8KB, of which the table is 28.0KB, the compiler that reads
+a name 2.6KB and the code that reads the table 1.2KB. A build that classifies
+by ASCII carries neither table and grows 2.2KB, which is the parser reading
+the escape and refusing the names it has no data for.
 
 ## Checking against CRuby
 
