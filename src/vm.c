@@ -3559,7 +3559,6 @@ RETRY_TRY_BLOCK:
 #define OP_CMP_BODY(op,v1,v2) (v1(regs[a]) op v2(regs[a+1]))
 
 #ifdef MRB_NO_FLOAT
-#define value_nan_p(v) FALSE
 #define OP_CMP(op,sym) do {\
   int result;\
   /* need to check if op is overridden */\
@@ -3579,7 +3578,6 @@ RETRY_TRY_BLOCK:
   }\
 } while(0)
 #else
-#define value_nan_p(v) (mrb_float_p(v) && isnan(mrb_float(v)))
 /* The usual arithmetic conversions would round an `mrb_int` wider than the
    significand onto a neighbouring Float, so a mixed pair asks
    `mrb_int_float_cmp()` for the order of the two values themselves. It answers
@@ -3628,10 +3626,19 @@ RETRY_TRY_BLOCK:
          is equal to itself -- except a NaN, which is equal to nothing at all,
          itself included. What `mrb_obj_eq()` reads is the representation, and
          a boxing that carries a Float in an `mrb_value` gives a NaN the same
-         one every time, so without the test below `Float::NAN == Float::NAN`
-         answered true in a boxed build and false in `MRB_NO_BOXING`. The pair
-         falls to `Float#==` instead, which answers false in either. */
-      if (mrb_obj_eq(mrb, regs[a], regs[a+1]) && !value_nan_p(regs[a])) {
+         one every time, so the shortcut answered `Float::NAN == Float::NAN`
+         true in a boxed build and left it to `Float#==` under `MRB_NO_BOXING`.
+         The same expression answered differently depending on how the build
+         stores a Float.
+
+         No Float takes the shortcut now. Asking whether this one is a NaN
+         would answer the same, but the question decodes the Float, which is a
+         call out of the dispatch loop -- one the whole loop pays for in
+         registers, at about 5% of a Float-heavy program even where the
+         opcode never runs. A Float has nothing to gain from the shortcut
+         anyway: the comparison below reads the pair as numbers, which is
+         where a Float's `==` lives. */
+      if (!mrb_float_p(regs[a]) && mrb_obj_eq(mrb, regs[a], regs[a+1])) {
         SET_TRUE_VALUE(regs[a]);
       }
       else if (mrb_symbol_p(regs[a])) {
