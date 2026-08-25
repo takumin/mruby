@@ -137,7 +137,9 @@ assert('mruby -r option (file not found)') do
 end
 
 assert('mruby -v option') do
-  ver_re = '\Amruby \d+\.\d+\.\d+.* \(\d+-\d+-\d+\)\n'
+  # The revision is named where the build could read one out of the source
+  # repository, and absent where it could not.
+  ver_re = '\Amruby \d+\.\d+\.\d+.* \(\d+-\d+-\d+( revision [0-9a-f]+)?\)\n'
   assert_mruby(/#{ver_re}\z/, "", true, %w[-v])
   # Verbose output is the irep disassembly followed by the program output.
   # Debug builds print prism's AST dump first; PRISM_BUILD_MINIMAL stubs the

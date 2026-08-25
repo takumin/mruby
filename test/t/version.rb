@@ -17,6 +17,11 @@ assert('MRUBY_REVISION') do
   end
 end
 
+assert('MRUBY_DESCRIPTION names the revision it was built from') do
+  skip 'built without a revision' if MRUBY_REVISION.empty?
+  assert_include(MRUBY_DESCRIPTION, " revision #{MRUBY_REVISION}")
+end
+
 assert('MRUBY_DESCRIPTION') do
   assert_include(MRUBY_DESCRIPTION, MRUBY_VERSION)
   assert_include(MRUBY_DESCRIPTION, MRUBY_RELEASE_DATE)

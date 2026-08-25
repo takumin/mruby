@@ -121,9 +121,15 @@ MRB_BEGIN_DECL
  * `src/version.c` includes ahead of this header. Only that one source is
  * compiled with the revision, so a commit recompiles a single object rather
  * than every one of them.
+ *
+ * `MRUBY_REVISION_STR` is what `MRUBY_DESCRIPTION` names the revision with,
+ * and is nothing at all where there is no revision to name.
  */
 #ifndef MRUBY_REVISION
 #define MRUBY_REVISION ""
+#define MRUBY_REVISION_STR ""
+#else
+#define MRUBY_REVISION_STR " revision " MRUBY_REVISION
 #endif
 
 /*
@@ -139,10 +145,10 @@ MRB_BEGIN_DECL
 /*
  * mruby's version, and release date.
  */
-#define MRUBY_DESCRIPTION     \
-  "mruby " MRUBY_VERSION      \
-  MRUBY_PATCHLEVEL_STR        \
-  " (" MRUBY_RELEASE_DATE ")" \
+#define MRUBY_DESCRIPTION                        \
+  "mruby " MRUBY_VERSION                         \
+  MRUBY_PATCHLEVEL_STR                           \
+  " (" MRUBY_RELEASE_DATE MRUBY_REVISION_STR ")" \
 
 /*
  * mruby's copyright information.

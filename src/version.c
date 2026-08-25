@@ -1,8 +1,8 @@
 /*
 ** The build writes the revision it read out of the source tree to
-** `mruby/revision.h`, which this file is alone in including: the constant
-** below carries the revision without any other object being compiled with it,
-** so a commit recompiles this one and no more.
+** `mruby/revision.h`, which this file is alone in including: the revision
+** reaches `MRUBY_DESCRIPTION` and the constant below without any other object
+** being compiled with it, so a commit recompiles this one and no more.
 **
 ** Not every build writes the header, so ask for it only where the compiler can
 ** tell us whether it is there; `mruby/version.h` answers with an empty
