@@ -113,6 +113,41 @@ MRB_API double mrb_float_read(const char *p, char **endp);
 #else
   typedef double mrb_float;
 #endif
+
+/* A NaN is equal to nothing at all, its own operand included, so `==` can
+   never find one and a container searching for the NaN it holds has only the
+   object to go by. Each NaN made carries a count of its own in the low bits of
+   its payload, which is what tells two of them apart: no arithmetic reads
+   those bits, every one of the patterns is still a NaN, and the count needs no
+   allocation. A count that wraps leaves two NaNs that far apart holding the
+   same bits, which is the reuse a freed address gets elsewhere.
+
+   How the count reaches a value is up to the boxing: `boxing_word.h` has a
+   word of its own for a NaN and counts in that, while the two below put the
+   count in the Float itself. */
+#ifdef MRB_USE_FLOAT32
+  typedef uint32_t mrb_float_bits;
+# define MRB_NAN_SERIAL_MAX 0x3fffff    /* 22 bits of a 23-bit significand */
+#else
+  typedef uint64_t mrb_float_bits;
+# define MRB_NAN_SERIAL_MAX 0xffffff    /* 24 bits of a 52-bit significand */
+#endif
+
+/* The count lives in `mrb_state`, whose layout is not known here: this header
+   is where `mrb_float_value()` expands the boxing's own float macro, and that
+   is above the definition of the struct. */
+MRB_API uint32_t mrb_nan_serial_next(mrb_state *mrb);
+
+static inline mrb_float
+mrb_nan_serialize(mrb_float f, uint32_t n)
+{
+  union { mrb_float f; mrb_float_bits u; } x;
+
+  x.f = f;
+  x.u = (x.u & ~(mrb_float_bits)MRB_NAN_SERIAL_MAX) |
+        (mrb_float_bits)(n & MRB_NAN_SERIAL_MAX);
+  return x.f;
+}
 #endif
 
 #if defined _MSC_VER && _MSC_VER < 1900

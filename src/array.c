@@ -1566,6 +1566,27 @@ mrb_ary_last(mrb_state *mrb, mrb_value self)
  * ISO 15.2.12.5.14
  */
 static mrb_value
+mrb_ary_include(mrb_state *mrb, mrb_value self)
+{
+  mrb_value obj = mrb_get_arg1(mrb);
+
+  /* `Enumerable#include?` reads `==`, which no NaN answers -- an array could
+     not find the very NaN it holds. `mrb_equal()` looks for the object first
+     and asks `==` after, which is how `Array#index` and `#delete` search and
+     what CRuby's own `include?` does. The two now answer alike, and the loop
+     costs a block yield less per element than the one it replaces.
+
+     The length and the pointer are read afresh each turn: `==` may run Ruby
+     that grows or shrinks the array under us. */
+  for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
+    if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
+      return mrb_true_value();
+    }
+  }
+  return mrb_false_value();
+}
+
+static mrb_value
 mrb_ary_index_m(mrb_state *mrb, mrb_value self)
 {
   mrb_value obj, blk;
@@ -2506,6 +2527,8 @@ static const mrb_mt_entry array_rom_entries[] = {
   MRB_MT_ENTRY(mrb_ary_eq,           MRB_OPSYM(eq),            MRB_ARGS_REQ(1)),
   MRB_MT_ENTRY(mrb_ary_eql,          MRB_SYM_Q(eql),           MRB_ARGS_REQ(1)),
   MRB_MT_ENTRY(mrb_ary_first,        MRB_SYM(first),           MRB_ARGS_OPT(1)),                   /* 15.2.12.5.13 */
+  MRB_MT_ENTRY(mrb_ary_include,      MRB_SYM_Q(include),       MRB_ARGS_REQ(1)),                   /* 15.3.2.2.10 */
+  MRB_MT_ENTRY(mrb_ary_include,      MRB_SYM_Q(member),        MRB_ARGS_REQ(1)),                   /* 15.3.2.2.15 */
   MRB_MT_ENTRY(mrb_ary_index_m,      MRB_SYM(index),           MRB_ARGS_OPT(1)),                   /* 15.2.12.5.14 */
   MRB_MT_ENTRY(mrb_ary_init,         MRB_SYM(initialize),      MRB_ARGS_OPT(2) | MRB_MT_PRIVATE),  /* 15.2.12.5.15 */
   MRB_MT_ENTRY(mrb_ary_replace_m,    MRB_SYM(initialize_copy), MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),  /* 15.2.12.5.16 */

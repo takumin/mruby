@@ -95,6 +95,18 @@ mrb_obj_to_sym(mrb_state *mrb, mrb_value name)
   return 0;  /* not reached */
 }
 
+#ifndef MRB_NO_FLOAT
+/*
+ * Hands out the count that tells one NaN from the next. See the comment on
+ * `mrb_nan_serialize()` in `mruby/value.h`.
+ */
+MRB_API uint32_t
+mrb_nan_serial_next(mrb_state *mrb)
+{
+  return mrb->nan_serial++;
+}
+#endif
+
 #if !defined(MRB_NO_FLOAT) && !defined(MRB_NAN_BOXING)
 static mrb_int
 mrb_float_id(mrb_float f)
@@ -208,8 +220,24 @@ mrb_obj_id(mrb_value obj)
 #define WORDBOX_FLOAT_NZERO       0x06  /* -0.0 */
 #define WORDBOX_FLOAT_PINF        0x0a  /* +Infinity */
 #define WORDBOX_FLOAT_NINF        0x0e  /* -Infinity */
-#define WORDBOX_FLOAT_NAN         0x12  /* NaN (all NaN bit patterns normalize to this) */
-#define WORDBOX_FLOAT_SENTINEL_MAX  WORDBOX_FLOAT_NAN
+/* A NaN is equal to nothing at all, its own operand included, so `==` can
+   never find one and a container searching for the NaN it holds has only the
+   object to go by. Every NaN therefore gets a word of its own: the sentinel
+   plus a count, which keeps the float tag in the bottom two bits and needs no
+   allocation. The words this reserves are unreachable by the rotation encoding
+   below -- their pre-image is a bit pattern whose exponent lies outside the
+   inline range, and such a float is heap-allocated before the encoding is
+   reached.
+
+   `MRB_NAN_SERIAL_MAX` keeps the count narrow enough that the word the
+   decoder tests against stays a 32-bit constant, which is what the comparison
+   in front of every Float read is worth. See `mruby/value.h` for what the
+   count is for and what a wrap costs. */
+#define WORDBOX_FLOAT_NAN         0x12  /* NaN, with the count at 0 */
+#define WORDBOX_FLOAT_NAN_SERIAL(n) \
+  (WORDBOX_FLOAT_NAN + (((uintptr_t)(n) & MRB_NAN_SERIAL_MAX) << 2))
+#define WORDBOX_FLOAT_SENTINEL_MAX \
+  WORDBOX_FLOAT_NAN_SERIAL(MRB_NAN_SERIAL_MAX)
 
 #if defined(MRB_USE_FLOAT32) && !defined(MRB_64BIT)
 /*
@@ -313,7 +341,7 @@ mrb_word_boxing_float_value(mrb_state *mrb, mrb_float f)
       else if (bits == UINT64_C(0xFFF0000000000000))
         v.w = WORDBOX_FLOAT_NINF;
       else
-        v.w = WORDBOX_FLOAT_NAN;
+        v.w = WORDBOX_FLOAT_NAN_SERIAL(mrb_nan_serial_next(mrb));
     }
     else if (exp >= WORDBOX_FLOAT_EXP_MIN && exp <= WORDBOX_FLOAT_EXP_MAX) {
       uintptr_t w = (uintptr_t)wordbox_rotl64(bits - WORDBOX_FLOAT_ADDEND, WORDBOX_FLOAT_ROTATE);
@@ -389,8 +417,8 @@ mrb_word_boxing_value_float(mrb_value v)
       case WORDBOX_FLOAT_NZERO: return (mrb_float)(-0.0);
       case WORDBOX_FLOAT_PINF:  return (mrb_float)( INFINITY);
       case WORDBOX_FLOAT_NINF:  return (mrb_float)(-INFINITY);
-      case WORDBOX_FLOAT_NAN:   return (mrb_float)  NAN;
-      default: break;  /* not reached */
+      /* every other word the range holds is a NaN with its count on it */
+      default:                  return (mrb_float)  NAN;
       }
     }
     return (mrb_float)wordbox_u64_to_float64(

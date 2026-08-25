@@ -355,6 +355,14 @@ struct mrb_state {
 
   mrb_gc gc;
 
+#ifndef MRB_NO_FLOAT
+  /* Counts the NaNs made so far. A NaN is equal to nothing at all, its own
+     operand included, so a container searching for one has only the object to
+     go by; the count is what tells two of them apart. See the comment on
+     `mrb_nan_serialize()` in `mruby/value.h`. */
+  uint32_t nan_serial;
+#endif
+
   mrb_bool bootstrapping;
 
 #ifndef MRB_NO_METHOD_CACHE

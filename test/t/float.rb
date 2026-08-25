@@ -124,6 +124,43 @@ assert('Float#==', '15.2.9.3.7') do
   assert_false 3.1 == 3.2
 end
 
+assert('a NaN is the object it is and no other') do
+  # A NaN is equal to no value, its own included, so `==` can never find one.
+  # A container searching for the NaN it holds has nothing but the object to go
+  # by, which is why every NaN is made with a count of its own on it: two NaNs
+  # made apart are two objects, and one copied around stays one.
+  #
+  # The two below are built at run time from a variable so that nothing folds
+  # them into a single literal, and every answer here is the same whichever
+  # boxing the build uses -- that is what the count is for.
+  z = [0.0][0]
+  a = z / z
+  b = z / z
+  c = a
+
+  assert_predicate(a, :nan?)
+  assert_predicate(b, :nan?)
+
+  assert_true(a.equal?(a))
+  assert_true(a.equal?(c))          # the same object, passed around
+  assert_false(a.equal?(b))         # two NaNs, made apart
+  assert_false(a.equal?(Float::NAN))
+
+  assert_equal(0, [a].index(a))
+  assert_nil([a].index(b))
+  assert_true([a].include?(a))
+  assert_false([a].include?(b))
+  assert_equal(1, ({a => 1})[a])
+  assert_nil(({a => 1})[b])
+
+  # a Float that is equal to itself is found by what it is equal to
+  x = z + 1.5
+  y = z + 1.5
+  assert_true([x].include?(y))
+  assert_equal(0, [x].index(y))
+  assert_equal(1, ({x => 1})[y])
+end
+
 assert('Float comparison with an Integer it cannot hold') do
   # A Float keeps fewer significant bits than an mrb_int, so an integer past
   # the significand rounds onto a neighbouring Float when the two are compared
