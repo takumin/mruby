@@ -23,8 +23,11 @@
 require 'rbconfig'
 require 'open3'
 
+require 'tmpdir'
+
 ROOT = File.expand_path('../../../..', __dir__)
 PROBE = File.join(__dir__, 'probe.rb')
+CORPUS = File.join(__dir__, 'corpus.rb')
 BASELINE = File.join(__dir__, 'baseline.txt')
 
 update = ARGV.delete('--update')
@@ -53,8 +56,16 @@ def run(cmd, what)
   [answers, build]
 end
 
-cruby, = run([RbConfig.ruby, '-W0', PROBE], 'cruby')
-theirs, build = run([mruby, PROBE], File.basename(mruby))
+# mruby runs one file, so the generated corpus and the probe are handed over
+# as one. Both engines are given the same bytes, which is what makes the two
+# runs comparable at all.
+cruby = theirs = build = nil
+Dir.mktmpdir do |tmp|
+  probe = File.join(tmp, 'probe.rb')
+  File.write(probe, File.read(CORPUS) + "\n" + File.read(PROBE))
+  cruby, = run([RbConfig.ruby, '-W0', probe], 'cruby')
+  theirs, build = run([mruby, probe], File.basename(mruby))
+end
 
 version = "ruby #{RUBY_VERSION}p#{RUBY_PATCHLEVEL} #{RUBY_PLATFORM}"
 

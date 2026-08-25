@@ -25,6 +25,7 @@ module Unicode
       'PropList.txt'              => '130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd',
       'Scripts.txt'               => '9f5e50d3abaee7d6ce09480f325c706f485ae3240912527e651954d2d6b035bf',
       'PropertyValueAliases.txt'  => '64e9a5f76f7a1e8b5a47d6a1f9a26522a251208f5276bdfa1559dac7cf2e827a',
+      'DerivedAge.txt'            => 'f8ecdf768bdc210f201abd271d9bc587825618a86a7046a8146cc816393f1998',
     }.freeze
 
     FILES = CHECKSUMS.keys.freeze

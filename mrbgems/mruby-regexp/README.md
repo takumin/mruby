@@ -267,6 +267,14 @@ pattern analysis.
   no case. What it refuses is held as ranges, which take in some uncased
   characters as well; see Configuration. A codepoint with no single
   counterpart to fold to (`ﬀ` to `ff`) is never folded by either build.
+- **`i` folds below U+0100 too, where CRuby does not**: Onigmo reads a
+  character under 256 off a Latin-1 table and does not fold it for a property
+  or a bracket, so `/\p{Ll}/i` misses `À` there and takes `Ā`. This engine
+  folds at every codepoint, so it takes both. The difference is CRuby's own,
+  not a rule Ruby states: `À` and `à` are a case pair either way.
+- **`\b` reads `[[:word:]]` below U+0100 too**: the same Latin-1 table makes
+  CRuby's `\b` sit beside `²`, `³`, `¹` and `½`, which its own `[[:word:]]`
+  does not hold. Here the boundary and the bracket agree at every codepoint.
 - **Case-insensitive backreferences match a superset**: `\1` under `i`
   folds each side and compares, so it matches where the capture and the
   repeat hold the same characters in different widths (`k` and `K`).
@@ -461,14 +469,40 @@ $ rake regexp:difftest
 3948 patterns, 108 known differences, no new ones
 ```
 
-`probe.rb` holds the corpus and runs under either engine, printing a line per
-pattern: where a match starts in each of a fixed list of subjects, what it
-captured, and which class it raised when it refused. The corpus is generated
-from the axes rather than listed, so an escape, a quantifier or a class form
-is covered in every context it can stand in — every printable ASCII character
-after a backslash, alone and beside a literal and inside a class and as an end
-of a range; every quantifier on every kind of atom; the groups, the anchors,
-the backreferences, the POSIX brackets and the property names.
+`probe.rb` holds the corpus and runs under either engine. It asks along two
+axes, since a pattern and a character are worth asking about differently.
+
+The **pattern axis** prints a line per pattern: where a match starts in each of
+a fixed list of subjects, what it captured, and which class it raised when it
+refused. The patterns are generated from the axes rather than listed, so an
+escape, a quantifier or a class form is covered in every context it can stand
+in — every printable ASCII character after a backslash, alone and beside a
+literal and inside a class and as an end of a range; every quantifier on every
+kind of atom; the groups, the anchors, the backreferences, the POSIX brackets
+and the property names.
+
+The **character axis** turns that around: a line per character, a column per
+way of classifying one. Both come out of the Unicode Character Database, by the
+rule `tools/unicode/corpus_data.rb` states and written out as `corpus.rb` by
+`rake unicode:generate` with the tables. The characters are one out of every
+class the engine's tables tell apart — every general category, every script,
+each POSIX type and its complement, the shapes case folding comes in, the
+widths the encoding changes at, and the whole of ASCII — each the lowest
+codepoint in its class, which is the member that does not move as Unicode
+grows. The columns are every property name a character can be asked about,
+the POSIX brackets, the shorthands, the boundaries and a handful under `i`.
+
+Each character is old enough for the CRuby it is compared against (Unicode
+13.0 or earlier, which is Ruby 3.0's), and a script with no character that old
+is left out of the columns as well: a name CRuby does not know would raise
+there and answer here, which is the two databases disagreeing rather than the
+two engines. What that costs is the classes newer than the floor, which the
+corpus does not ask about at all.
+
+Picking by rule is what found the two Latin-1 differences above. A list
+written by hand reaches for `Ā` and `ā` to stand for "a letter with a case",
+and those are U+0100 and U+0101 — one codepoint above where Onigmo stops
+folding.
 
 `compare.rb` runs it in both and checks the disagreements against
 `baseline.txt`, which holds the ones that are meant — a construct this engine
