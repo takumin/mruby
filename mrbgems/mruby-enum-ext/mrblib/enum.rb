@@ -369,25 +369,47 @@ module Enumerable
     min = nil
     first = true
 
-    self.each do |*val|
-      if first
+    # The block is asked for once rather than once an element, as in
+    # `Enumerable#max`; the body is the same either way but for what it
+    # compares with.
+    if block
+      self.each do |*val|
         val = val.__svalue
-        max = val
-        min = val
-        first = false
-      else
-        val = val.__svalue
-        cmp_max = block ? block.call(val, max) : (val <=> max)
-        cmp_min = block ? block.call(val, min) : (val <=> min)
-        # A pair that stands in no order answers nil, and a block may answer it
-        # too. Neither end can be picked from such a pair, so the comparison is
-        # refused rather than read as a number, the way `Enumerable#max` and
-        # `#min` refuse it.
-        if cmp_max.nil? || cmp_min.nil?
-          raise ArgumentError, "comparison of #{val.class} with #{(cmp_max.nil? ? max : min).class} failed"
+        if first
+          max = val
+          min = val
+          first = false
+        else
+          cmp_max = block.call(val, max)
+          cmp_min = block.call(val, min)
+          # A pair that stands in no order answers nil, and a block may answer
+          # it too. Neither end can be picked from such a pair, so it is
+          # refused the way `Enumerable#max` and `#min` refuse it. Both answers
+          # are tested for what they are: every number one can carry is true,
+          # and asking whether it is nil costs a call per element.
+          unless cmp_max && cmp_min
+            raise ArgumentError, "comparison of #{val.class} with #{(cmp_max ? min : max).class} failed"
+          end
+          max = val if cmp_max > 0
+          min = val if cmp_min < 0
         end
-        max = val if cmp_max > 0
-        min = val if cmp_min < 0
+      end
+    else
+      self.each do |*val|
+        val = val.__svalue
+        if first
+          max = val
+          min = val
+          first = false
+        else
+          cmp_max = (val <=> max)
+          cmp_min = (val <=> min)
+          unless cmp_max && cmp_min
+            raise ArgumentError, "comparison of #{val.class} with #{(cmp_max ? min : max).class} failed"
+          end
+          max = val if cmp_max > 0
+          min = val if cmp_min < 0
+        end
       end
     end
     [min, max]

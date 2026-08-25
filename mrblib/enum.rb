@@ -223,24 +223,44 @@ module Enumerable
   def max(&block)
     flag = true  # 1st element?
     result = nil
-    self.each {|*val|
-      val = val.__svalue
-      if flag
-        # 1st element
-        result = val
-        flag = false
-      else
-        cmp = block ? yield(val, result) : (val <=> result)
-        # A pair that stands in no order answers nil, and a block may answer it
-        # too. There is no maximum to pick from such a pair, so the comparison
-        # is refused rather than read as a number, which raised for having no
-        # `>` rather than for the comparison it could not make.
-        if cmp.nil?
-          raise ArgumentError, "comparison of #{val.class} with #{result.class} failed"
+    # The block is asked for once rather than once an element: what the loop
+    # does with a pair is the same either way, and the test is worth more
+    # outside it than the second copy of the body costs here.
+    if block
+      self.each {|*val|
+        val = val.__svalue
+        if flag
+          result = val
+          flag = false
+        else
+          cmp = yield(val, result)
+          # A pair that stands in no order answers nil, and a block may answer
+          # it too. There is no maximum to pick from such a pair, so the
+          # comparison is refused rather than read as a number, which raised
+          # for having no `>` rather than for the comparison that failed. The
+          # answer is tested for what it is: every number one can carry is
+          # true, and asking whether it is nil costs a call per element.
+          unless cmp
+            raise ArgumentError, "comparison of #{val.class} with #{result.class} failed"
+          end
+          result = val if cmp > 0
         end
-        result = val if cmp > 0
-      end
-    }
+      }
+    else
+      self.each {|*val|
+        val = val.__svalue
+        if flag
+          result = val
+          flag = false
+        else
+          cmp = (val <=> result)
+          unless cmp
+            raise ArgumentError, "comparison of #{val.class} with #{result.class} failed"
+          end
+          result = val if cmp > 0
+        end
+      }
+    end
     result
   end
 
@@ -254,21 +274,36 @@ module Enumerable
   def min(&block)
     flag = true  # 1st element?
     result = nil
-    self.each {|*val|
-      val = val.__svalue
-      if flag
-        # 1st element
-        result = val
-        flag = false
-      else
-        cmp = block ? yield(val, result) : (val <=> result)
-        # see `max` above
-        if cmp.nil?
-          raise ArgumentError, "comparison of #{val.class} with #{result.class} failed"
+    # see `max` above for why the block is asked for out here
+    if block
+      self.each {|*val|
+        val = val.__svalue
+        if flag
+          result = val
+          flag = false
+        else
+          cmp = yield(val, result)
+          unless cmp
+            raise ArgumentError, "comparison of #{val.class} with #{result.class} failed"
+          end
+          result = val if cmp < 0
         end
-        result = val if cmp < 0
-      end
-    }
+      }
+    else
+      self.each {|*val|
+        val = val.__svalue
+        if flag
+          result = val
+          flag = false
+        else
+          cmp = (val <=> result)
+          unless cmp
+            raise ArgumentError, "comparison of #{val.class} with #{result.class} failed"
+          end
+          result = val if cmp < 0
+        end
+      }
+    end
     result
   end
 

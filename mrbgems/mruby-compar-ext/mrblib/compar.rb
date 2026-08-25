@@ -68,7 +68,7 @@ module Comparable
     # not make.
     unless min.nil?
       cmp = self <=> min
-      if cmp.nil?
+      unless cmp
         raise ArgumentError, "comparison of #{self.class} with #{min.class} failed"
       end
       return self if cmp == 0
@@ -76,7 +76,7 @@ module Comparable
     end
     unless max.nil?
       cmp = self <=> max
-      if cmp.nil?
+      unless cmp
         raise ArgumentError, "comparison of #{self.class} with #{max.class} failed"
       end
       return max if cmp > 0
