@@ -1,3 +1,5 @@
+require "mruby/source"
+
 module MRuby
   class Amalgam
     # Top-level headers to include (internal dependencies are inlined recursively)
@@ -261,6 +263,24 @@ module MRuby
         end
         f.puts
       end
+
+      write_revision_define(f)
+    end
+
+    # The revision the amalgam was generated from, ahead of the version.h that
+    # reads it: the real build hands it to `src/version.c` through a generated
+    # `mruby/revision.h` that the consumer of the amalgam has no copy of, so
+    # without this the amalgam would describe itself as a build that could not
+    # tell what it was made from.
+    def write_revision_define(f)
+      revision = MRuby::Source::MRUBY_REVISION
+      return if revision.empty?
+
+      f.puts "/* The source revision this amalgam was generated from */"
+      f.puts "#ifndef MRUBY_REVISION"
+      f.puts "#define MRUBY_REVISION #{revision.inspect}"
+      f.puts "#endif"
+      f.puts
     end
 
     # The defines this build compiles with, which the consumer must compile with

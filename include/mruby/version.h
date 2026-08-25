@@ -112,6 +112,21 @@ MRB_BEGIN_DECL
 #endif
 
 /*
+ * The revision of the source mruby was built from, as the abbreviated commit
+ * hash of the repository holding it, or "" where the build had none to read:
+ * an unpacked release archive carries no repository, and a build driven by
+ * rules other than the ones under `tasks/` writes no answer.
+ *
+ * The build writes what it read to a generated `mruby/revision.h`, which
+ * `src/version.c` includes ahead of this header. Only that one source is
+ * compiled with the revision, so a commit recompiles a single object rather
+ * than every one of them.
+ */
+#ifndef MRUBY_REVISION
+#define MRUBY_REVISION ""
+#endif
+
+/*
  * The year mruby was first created.
  */
 #define MRUBY_BIRTH_YEAR 2010
