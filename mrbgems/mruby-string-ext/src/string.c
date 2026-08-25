@@ -1467,13 +1467,18 @@ str_cut_keeps_cr(struct RString *s, mrb_int k)
 }
 
 /* mrb_str_modify_keep_cr()'s rule without the unsharing, which a cut that
-   writes no byte has no use for. */
+   writes no byte has no use for. A build that records nothing has nothing to
+   say here, down to the arguments. */
 static void
 str_cut_coderange(struct RString *s, mrb_bool keep_cr)
 {
+#ifdef MRB_UTF8_STRING
   if (!keep_cr || RSTR_CODERANGE(s) == MRB_STR_CODERANGE_BROKEN) {
     RSTR_CODERANGE_SET(s, MRB_STR_CODERANGE_UNKNOWN);
   }
+#else
+  (void)s; (void)keep_cr;
+#endif
 }
 
 static mrb_bool
