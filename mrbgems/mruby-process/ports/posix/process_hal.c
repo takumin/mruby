@@ -414,6 +414,7 @@ static int
 plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_plan *plan)
 {
   const char *path_env = plan_path_env(params);
+  char *path_default = NULL;
   const char *name;
   size_t argc = 0, nparent = 0, nowned = 0, nenvp = 0, npath = 1, namelen, i, j;
   int keep_parent = !(params->flags & MRB_PROCESS_SPAWN_UNSETENV_OTHERS);
@@ -427,18 +428,40 @@ plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_p
   name = params->argv[0];
   namelen = strlen(name);
   if (params->kind == MRB_PROCESS_SPAWN_ARGV && strchr(name, '/') == NULL) {
-    npath = (path_env != NULL) ? count_elements(path_env) : 1;
+    if (path_env == NULL) {
+      /* No PATH to look on is not no places to look: execvp() falls back to
+         the one the host names, and a host that names none leaves the two
+         directories every system has.  Resolved before the arrays are sized,
+         so that what is counted is what is walked. */
+      size_t len = confstr(_CS_PATH, NULL, 0);
+
+      if (len > 0) {
+        path_default = (char*)mrb_malloc_simple(mrb, len);
+        if (path_default == NULL) goto nomem;
+        confstr(_CS_PATH, path_default, len);
+        path_env = path_default;
+      }
+      else {
+        path_env = "/bin:/usr/bin";
+      }
+    }
+    npath = count_elements(path_env);
   }
 
   /* One allocation for each array the child reads, and one for the strings
-     inside them.  The strings are the environment entries the deltas add,
-     the candidate images, and the default PATH where one has to be asked
-     for, which is the extra slot. */
+     inside them.  The strings are the environment entries the deltas add, the
+     candidate images, and the default PATH where one had to be asked for,
+     which is the extra slot. */
   plan->owned = (char**)mrb_malloc_simple(mrb, sizeof(char*) * (params->nenv + npath + 2));
   plan->path = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (npath + 1));
   plan->argv = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (argc + 4));
   if (plan->owned == NULL || plan->path == NULL || plan->argv == NULL) goto nomem;
   plan->owned[0] = NULL;
+  if (path_default != NULL) {
+    plan->owned[nowned++] = path_default;
+    plan->owned[nowned] = NULL;
+    path_default = NULL;   /* the plan frees it from here on */
+  }
 
   if (keep_parent && params->nenv == 0) {
     plan->envp = environ;
@@ -495,25 +518,6 @@ plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_p
     size_t n = 0;
     const char *p;
 
-    if (path_env == NULL) {
-      /* No PATH to look on is not no places to look: execvp() falls back to
-         the one the host names, and a host that names none leaves the two
-         directories every system has. */
-      size_t len = confstr(_CS_PATH, NULL, 0);
-
-      if (len > 0) {
-        char *def = (char*)mrb_malloc_simple(mrb, len);
-
-        if (def == NULL) goto nomem;
-        confstr(_CS_PATH, def, len);
-        plan->owned[nowned++] = def;
-        plan->owned[nowned] = NULL;
-        path_env = def;
-      }
-      else {
-        path_env = "/bin:/usr/bin";
-      }
-    }
     for (p = path_env; ; ) {
       const char *sep = strchr(p, ':');
       size_t len = (sep != NULL) ? (size_t)(sep - p) : strlen(p);
@@ -544,6 +548,7 @@ plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_p
   return 0;
 
 nomem:
+  mrb_free(mrb, path_default);
   plan_free(mrb, plan);
   errno = ENOMEM;
   return -1;
@@ -554,7 +559,7 @@ nomem:
    is close-on-exec, so a successful exec closes it and the parent's read
    ends at EOF with nothing to report.
 
-   Nothing here allocates: the one array it needs was allocated before the
+   Nothing here allocates: the arrays it needs were allocated before the
    fork. */
 static void
 child_exec(const mrb_process_spawn_params *params, const struct exec_plan *plan,

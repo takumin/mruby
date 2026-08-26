@@ -381,6 +381,11 @@ assert('Process.spawn looks a bare name up on the environment it gives') do
 
   # A name that is a path is not looked up at all, so no PATH is needed.
   assert_equal 3, ProcessTestUtil.run({"PATH" => nil}, "/bin/sh", "-c", "exit 3").exitstatus
+
+  # No PATH to look on is not no places to look: a bare name still falls back
+  # to the list the host names, which is longer than the nothing it was given
+  # and is what the arrays holding the candidates have to be sized from.
+  assert_equal 3, ProcessTestUtil.run({"PATH" => nil}, "sh", "-c", "exit 3").exitstatus
 end
 
 assert('Process.spawn with a command that does not exist') do
