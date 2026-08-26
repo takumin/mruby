@@ -83,9 +83,10 @@ mrb_value mrb_process_wait_set(mrb_state *mrb,
 
 void mrb_process_status_init(mrb_state *mrb, struct RClass *process);
 
-/* Build a Process::Status for a pid and the platform status it was reaped
-   with.  The status decodes itself through the HAL as it is asked questions. */
-mrb_value mrb_process_status_new(mrb_state *mrb, mrb_int pid, mrb_int raw_status);
+/* Build a Process::Status from a decoded status.  The status is a snapshot:
+   it outlives the record it came from, and the port that produced it is the
+   only thing that ever read the platform's bits. */
+mrb_value mrb_process_status_new(mrb_state *mrb, const mrb_process_status *status);
 
 /* The pid a Process::Status was built for.  What a wait returns is that pid,
    and the status is where the wait left it. */

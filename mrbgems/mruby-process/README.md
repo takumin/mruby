@@ -309,9 +309,6 @@ The HAL answers OS-level facts and performs OS-level operations:
   an already decoded `mrb_process_status`.
 - `mrb_hal_process_child_release()` — lets go of a child, once.
 - `mrb_hal_process_kill()` — delivers a signal.
-- `mrb_hal_process_status_decode()` — reads a native wait status into
-  `mrb_process_status`, for the one caller that has a raw status and no wait
-  behind it. See below.
 - `mrb_hal_process_clock_gettime()` / `_clock_getres()` — read a clock, and
   the granularity that reading came out of.
 - `mrb_hal_process_times()` — the four CPU time totals behind `Process.times`.
@@ -352,17 +349,18 @@ nothing of `$?`, `$$`, blocks, `Process::Status`, `Process::Tms` or the record
 table. What a signal is _called_ is `mruby-signal`'s to answer, and both
 callers reach its HAL directly.
 
-### Process::Status
+### A status is a snapshot
 
-A `Process::Status` stores only the pid and the raw platform status, and asks
-the HAL afresh for every question about it. Nothing above the HAL ever holds a
-decoded copy that could disagree with the platform.
+A wait status is decoded by the port that produced it, at the moment it was
+produced, and a `Process::Status` keeps the result. It is not a question
+re-asked of the platform later, because a status outlives the child it came
+from, and by then the pid it was decoded for may belong to someone else.
 
-`Process::Status.new` is undefined, as in CRuby, so a status that arrived from
-somewhere other than a wait performed here is built the way `Process.waitpid`
-builds one: by allocating an instance and handing `#initialize` the pid and the
-raw status. Nothing in this build takes that path any more, now that `IO.popen`
-waits through `Process.waitpid`.
+That is also why there is no way to build one by hand: `Process::Status.new` is
+undefined. A status comes from a wait.
+
+`Process::Status#to_i` returns the platform value the status was decoded from.
+Its layout is the platform's business; nothing above the port reads it.
 
 ### Design decisions
 
@@ -385,18 +383,18 @@ constrains; this list is a map.
 - At `mrb_close` every child still owing a reap gets one non-blocking wait and
   is then let go of; a blocking wait there would let a child that never
   finishes hang the interpreter's close (`src/child.c`).
-- A wait carries an already decoded status, and decoding stays callable on its
-  own for the one caller that has a raw status and no wait behind it, which is
-  what the `mruby-io` integration is (`src/status.c`).
+- A wait decodes its own status, and nothing else decodes one: the platform's
+  bits are read once, in the port that reported them and at the moment it
+  reported them (`src/status.c`).
 - `raw_status` is permanent, not a compatibility detail: it is what `#to_i`
   returns and the only thing a status needs to store.
 - Unsupported operations fail through `errno` (`ENOSYS`) rather than by the
   method being absent, so a program is told at the call site what this
   platform will not do.
-- `Process::Status.new` is undefined, as in CRuby; the allocator is left
-  alone so `mrb_obj_new()` keeps working (`src/status.c`).
-- A `Process::Status` is frozen once built; a subclass instance is not
-  (`status_initialize` in `src/status.c`).
+- `Process::Status.new` is undefined, as in CRuby, and nothing else builds one
+  either: a status comes from a wait (`src/status.c`).
+- A `Process::Status` is frozen once built (`mrb_process_status_new` in
+  `src/status.c`).
 - Wait flags and clock ids are mruby's own numbers, and a value naming none of
   them is refused in the common layer before a port sees it
   (`include/process_hal.h`).
@@ -410,10 +408,9 @@ constrains; this list is a map.
 - `Process.clock_getres` arrives with `Process.clock_gettime` and answers the
   granularity of the way a clock is read, never a period the clock is promised
   to advance on (`mrb_hal_process_clock_getres` in `include/process_hal.h`).
-- A pid, signal or raw status too large for the platform is refused with
-  `RangeError` in the common layer, where that can be said; `errno` has no
-  spelling for it (`mrb_process_int_arg` in `src/process.c`,
-  `status_initialize` in `src/status.c`).
+- A pid or a signal too large for the platform is refused with `RangeError` in
+  the common layer, where that can be said; `errno` has no spelling for it
+  (`mrb_process_int_arg` in `src/process.c`).
 - `Process.times` crosses the HAL as four more clock readings, never as ticks
   or a Float, and the conversion to Float happens once above it
   (`mrb_process_times` in `include/process_hal.h`).

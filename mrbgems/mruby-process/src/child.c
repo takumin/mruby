@@ -243,7 +243,7 @@ mrb_process_record_wait(mrb_state *mrb, mrb_process_record *record, unsigned int
   if (event_is_terminal(event.kind)) {
     record_finish(mrb, record);
   }
-  status = mrb_process_status_new(mrb, event.status.pid, event.status.raw_status);
+  status = mrb_process_status_new(mrb, &event.status);
   mrb_process_set_last_status(mrb, status);
   return status;
 }
@@ -276,7 +276,7 @@ mrb_process_wait_set(mrb_state *mrb, const mrb_process_wait_target *target,
   if (record != NULL && event_is_terminal(event.kind)) {
     record_finish(mrb, record);
   }
-  status = mrb_process_status_new(mrb, event.status.pid, event.status.raw_status);
+  status = mrb_process_status_new(mrb, &event.status);
   mrb_process_set_last_status(mrb, status);
   return status;
 }

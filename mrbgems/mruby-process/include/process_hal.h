@@ -73,7 +73,11 @@ typedef enum mrb_process_status_flags {
 
 /* A wait status in platform-neutral form.  Fields not selected by `flags`
    hold 0.  `raw_status` is the platform value the status was decoded from,
-   kept so that `Process::Status#to_i` can hand it back unchanged. */
+   kept so that `Process::Status#to_i` can hand it back unchanged; it is
+   opaque and platform-defined, and nothing above the port reads it.
+
+   The status is a snapshot rather than a question to be re-asked, because a
+   `Process::Status` outlives the child it came from. */
 typedef struct mrb_process_status {
   mrb_int pid;
   mrb_int raw_status;
@@ -384,22 +388,8 @@ void mrb_hal_process_child_set_udata(mrb_hal_process_child *child, void *udata);
 void *mrb_hal_process_child_udata(const mrb_hal_process_child *child);
 
 /*
- * HAL Interface - reading a status that did not come from a wait
+ * HAL Interface - clocks and CPU time
  */
-
-/*
- * Read a platform wait status into its neutral form.
- *
- * Every field of `status` is written, including `pid` and `raw_status`, which
- * are copied from the arguments.  Decoding cannot fail: a status the platform
- * does not recognize decodes to flags of 0.
- *
- * A wait decodes its own status, so this is for the one caller that has a raw
- * status and no wait behind it: `Process::Status.new(pid, raw_status)`, which
- * is how mruby-io publishes `$?` after an `IO.popen` stream closes.
- */
-void mrb_hal_process_status_decode(mrb_state *mrb, mrb_int pid, mrb_int raw_status,
-                                   mrb_process_status *status);
 
 /*
  * Read a clock.
