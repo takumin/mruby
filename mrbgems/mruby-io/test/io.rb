@@ -523,6 +523,7 @@ assert('IO#gets - paragraph mode') do
 end
 
 assert('IO.popen') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   begin
     $? = nil
     io = IO.popen("#{$cmd}echo mruby-io")
@@ -533,12 +534,15 @@ assert('IO.popen') do
     assert_equal out.class, String
     assert_include out, 'mruby-io'
 
+    pid = io.pid
     io.close
-    if Object.const_defined? :Process
-      assert_true $?.success?
-    else
-      assert_equal 0, $?
-    end
+    # Closing the stream waits for the command at the other end, and $? is
+    # how it finished: the child mruby-process handed this stream, waited
+    # for through the stream's own reference to it.
+    assert_kind_of Process::Status, $?
+    assert_equal pid, $?.pid
+    assert_true $?.success?
+    assert_equal pid, io.pid
 
     assert_true io.closed?
   rescue NotImplementedError => e
@@ -546,7 +550,48 @@ assert('IO.popen') do
   end
 end
 
+assert('IO.popen with a command that cannot be run') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
+  begin
+    # A spawn that fails leaves the pipes this opened to be closed on the way
+    # out, and what the caller is owed is still the Errno the attempt failed
+    # with rather than whatever the closing raised.
+    assert_raise(Errno::ENOENT) { IO.popen("   ") }
+  rescue NotImplementedError => e
+    skip e.message
+  end
+end
+
+assert('IO.popen with a failing command') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
+  begin
+    IO.popen("#{$cmd}exit 7") { |io| io.read }
+    assert_false $?.success?
+    assert_equal 7, $?.exitstatus
+  rescue NotImplementedError => e
+    skip e.message
+  end
+end
+
+assert('IO.popen read-write') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
+  skip "no `cat` to talk to on this platform" if MRubyIOTestUtil.win?
+  begin
+    IO.popen("cat", "r+") do |io|
+      assert_true io.pid > 0
+      io.write "hello\n"
+      io.close_write
+      assert_equal "hello\n", io.read
+    end
+    assert_true $?.success?
+  rescue NotImplementedError => e
+    skip e.message
+  end
+end
+
 assert('IO.popen with in option') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
+  skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
   begin
     IO.pipe do |r, w|
       w.write "hello\n"
@@ -561,6 +606,8 @@ assert('IO.popen with in option') do
 end
 
 assert('IO.popen with out option') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
+  skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
   begin
     IO.pipe do |r, w|
       IO.popen(MRubyIOTestUtil.win? ? "echo hello" : "echo 'hello'", "w", out: w) {}
@@ -573,6 +620,8 @@ assert('IO.popen with out option') do
 end
 
 assert('IO.popen with err option') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
+  skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
   begin
     IO.pipe do |r, w|
       cmd = MRubyIOTestUtil.win? ? "echo hello 1>&2" : "echo 'hello' 1>&2"
@@ -587,7 +636,22 @@ assert('IO.popen with err option') do
   end
 end
 
+assert('IO.popen leaves the command\'s standard error alone') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
+  skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
+  begin
+    # With no err: given, the child's standard error is this process's, so the
+    # pipe carries the command's output and nothing else.  The line the child
+    # writes to standard error therefore lands on this test run's, which is
+    # where it says it belongs.
+    assert_equal "out\n", IO.popen("echo out; echo 'this line belongs on stderr' 1>&2") { |i| i.read }
+  rescue NotImplementedError => e
+    skip e.message
+  end
+end
+
 assert('IO#close_write') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   begin
     io = IO.popen($cat, "r+")
     io.write "mruby-io\n"
@@ -696,6 +760,44 @@ assert('IO#close_write on a closed stream') do
   rescue NotImplementedError => e
     skip e.message
   end
+end
+
+assert('Process.spawn with close_others and a descriptor of its own') do
+  skip "no POSIX shell here" if MRubyIOTestUtil.win?
+  begin
+    Process
+  rescue NameError
+    skip "this build has no mruby-process"
+  end
+  skip "this build cannot create processes" unless Process.respond_to?(:spawn)
+
+  # What close_others closes is what the caller did not ask for, and an
+  # explicit redirection is asking: a sweep that took descriptor 3 with it
+  # would create it and then close it before the command ever ran.
+  IO.pipe do |r, w|
+    Process.waitpid(Process.spawn("echo hi >&3", 3 => w, close_others: true))
+    w.close
+    assert_equal "hi\n", r.read
+  end
+end
+
+assert('Process.spawn with one file named for two descriptors') do
+  skip "no POSIX shell here" if MRubyIOTestUtil.win?
+  begin
+    Process
+  rescue NameError
+    skip "this build has no mruby-process"
+  end
+  skip "this build cannot create processes" unless Process.respond_to?(:spawn)
+
+  # File redirection is the one part of Process.spawn that this gem is what
+  # serves, since the file is opened here, in the parent, so it is asserted
+  # where a File can be read back.  One file named for two descriptors is
+  # opened once and shared by both, the way `>file 2>&1` shares one: opening
+  # it once per descriptor would give each its own offset into the file, and
+  # each would write over what the other had written.
+  Process.waitpid(Process.spawn("echo out; echo err 1>&2", [1, 2] => $mrbtest_io_wfname))
+  assert_equal "out\nerr\n", File.read($mrbtest_io_wfname)
 end
 
 assert('IO.read') do

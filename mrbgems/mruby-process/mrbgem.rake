@@ -13,21 +13,27 @@ MRuby::Gem::Specification.new('mruby-process') do |spec|
   # Struct already does: the members, `#to_a`, `#==` and `#inspect`.
   spec.add_dependency 'mruby-struct', core: 'mruby-struct'
 
-  # mruby-process needs no I/O of its own.  One test does: mruby-io sets `$?`
-  # through this gem when an IO.popen stream closes, and that seam is asserted
-  # from this side.  The children the other tests need are their own, made
-  # with `Process.spawn`.  The dependency stops at the tests; see README.md.
-  spec.add_test_dependency 'mruby-io', core: 'mruby-io'
-
   # A gem's tests run in a state holding its dependency closure and nothing
   # else, so a test that means to name an Errno class has to ask for the gem
-  # that defines them.  Without this the tests still pass, by taking the
-  # branch that settles for any StandardError.
+  # that defines them.
   spec.add_test_dependency 'mruby-errno', core: 'mruby-errno'
 
   # Asking a Process::Status what instance_variables it hands out needs the
   # gem that defines Object#instance_variables in the first place.
   spec.add_test_dependency 'mruby-metaprog', core: 'mruby-metaprog'
+
+  # IO.popen belongs to mruby-io, and it is a pipe plus a child process, so
+  # that gem leaves the file defining it out of a build with no process gem in
+  # it.  Which of the two a configuration names first is the configuration's
+  # business: read before this one, mruby-io made that call without knowing
+  # this gem was coming, and what it decided is corrected here.  Neither gem
+  # depends on the other, and neither is added to a build by the other; each
+  # only asks what the build already holds.
+  io = build.gems.find {|g| g.name == 'mruby-io'}
+  if io
+    popen = File.join(io.dir, 'mrblib', 'popen.rb')
+    io.rbfiles << popen if File.exist?(popen) && !io.rbfiles.include?(popen)
+  end
 
   # `Process.times` reads CPU time through getrusage(2), whose <sys/resource.h>
   # is an XSI extension rather than base POSIX.  Whether a target has it is a

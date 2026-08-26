@@ -155,13 +155,8 @@ module ProcessTestUtil
     nil
   end
 
-  # IO.popen is still what one test here is about: mruby-io sets `$?` through
-  # this gem, and that seam is asserted from this side until mruby-io has a
-  # test of its own for it.
-  def self.popen?
-    Object.const_defined?(:IO) && IO.respond_to?(:popen)
-  end
-
+  # Whether this is a Windows build.  What a clock is read by, and how finely,
+  # is the port's, so the tests that pin a Win32 reading ask first.
   def self.windows?
     Object.const_defined?(:File) && !File::ALT_SEPARATOR.nil?
   end
@@ -919,22 +914,6 @@ assert('Process.wait2 with Process::WNOHANG') do
   assert_true status.signaled?
   assert_nil status.exitstatus
   assert_equal "KILL", Signal.signame(status.termsig)
-end
-
-assert('$? after IO.popen') do
-  # mruby-io builds the status it sets $? to when this gem is present, by
-  # allocating one and initializing it with the pid and the raw status.
-  # Neither gem depends on the other; this is the seam.
-  skip "IO.popen is not available" unless ProcessTestUtil.popen?
-  skip "IO#pid is a process handle, not a pid, here" if ProcessTestUtil.windows?
-  io = IO.popen("exit 0")
-
-  io.read
-  pid = io.pid
-  io.close
-  assert_kind_of Process::Status, $?
-  assert_equal pid, $?.pid
-  assert_true $?.success?
 end
 
 
