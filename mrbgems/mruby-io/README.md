@@ -169,6 +169,38 @@ Add the line below to your build configuration.
 | File#size                   |          |          |
 | File#truncate               |          |          |
 
+## IO.popen and mruby-process
+
+A pipe to a command is two things: a pipe, and a child process. This gem
+provides the first and **mruby-process** provides the second, and `IO.popen`
+is written in `mrblib` as the composition of `IO.pipe` and `Process.spawn`.
+
+That has three consequences worth knowing about:
+
+- `IO.popen` needs **mruby-process** in the build, and a build without it has
+  no `IO.popen` at all rather than one that fails when it is called: the file
+  defining the method is left out, so `IO.respond_to?(:popen)` answers for it
+  the way it answers for any other method. A platform with no `IO.pipe`, iOS
+  among them, leaves it out for the same reason, which is what this gem's old
+  `MRB_NO_IO_POPEN` used to say. The one case where the method is there and
+  raises `NotImplementedError` is a build of **mruby-process** made with
+  `MRB_NO_PROCESS_SPAWN`: the gem is present and only its spawning is not.
+- `IO#close` waits for the command at the other end and sets `$?` to a
+  `Process::Status`, through the same `Process.waitpid` anyone else would
+  call. A stream that is already closed is left as it is, so the wait happens
+  once however many times `#close` is called; a command that was already
+  waited for elsewhere leaves nothing to report, and `$?` keeps what that wait
+  set.
+- `IO#pid` names that command, and keeps naming it after the stream is closed.
+
+With nothing said about it, the command's standard error is left where this
+process's is, as it is in Ruby: diagnostics do not arrive in the pipe the
+command's output is read from. Pass `err:` an IO or a descriptor to place it
+somewhere else.
+
+`IO.popen("-")`, Ruby's spelling of "fork instead of executing a command", is
+not supported: mruby has no `fork`.
+
 ## Porting Note
 
 If your (non Windows) platform does not support `getpwnam(3)` for some reason, define `MRB_IO_NO_PWNAM`.

@@ -224,8 +224,9 @@ Process.waitpid(pid)         # -> pid, and $? says how it finished
 
 ## Architecture
 
-`mruby-process` and `mruby-io` are independent sibling gems. Neither needs the
-other to provide its own feature set:
+`mruby-process` and `mruby-io` are sibling gems. Neither includes the other's
+headers, neither declares a build dependency on the other, and neither is
+needed for the other's core feature set:
 
 ```text
              mruby
@@ -244,10 +245,22 @@ other to provide its own feature set:
  posix   win     posix   win         posix   win
 ```
 
-`IO.popen` is the one place the two capabilities meet, and it is served by
-`mruby-io`'s own private spawn/wait primitives rather than by anything here.
-`mrbgem.rake` names `mruby-io`, `mruby-errno` and `mruby-metaprog` as _test_
-dependencies only, for the reasons its comments give.
+`IO.popen` is where the two meet, and it is a composition rather than a third
+implementation: `mruby-io` writes it in `mrblib` as `IO.pipe` plus
+`Process.spawn`, resolves the `Process` constant when the method is called, and
+calls public methods on it. Nothing links across the gems. A build with
+`mruby-io` and without `mruby-process` has no `IO.popen` at all, since the file
+defining it is left out of that build.
+
+Process creation and process reaping therefore live in one place. There is one
+reaper in the build, and `mruby-io` is no longer it: waiting for a child is
+`Process`'s, and `IO#close` asks for it through `Process.waitpid`, which is the
+whole of what the two gems say to each other besides `Process.spawn`.
+
+`mrbgem.rake` names `mruby-errno` and `mruby-metaprog` as _test_ dependencies:
+a gem's tests run in a state holding its dependency closure and nothing else,
+so naming an `Errno` class in an assertion, or asking an object for its
+`instance_variables`, means asking for the gem that defines them.
 
 `mruby-signal` and `mruby-struct` are the two real dependencies. `Process.kill`
 takes a signal by name and `Process::Status#to_s` spells one out, and the
@@ -339,19 +352,17 @@ nothing of `$?`, `$$`, blocks, `Process::Status`, `Process::Tms` or the record
 table. What a signal is _called_ is `mruby-signal`'s to answer, and both
 callers reach its HAL directly.
 
-### Process::Status and mruby-io
+### Process::Status
 
-`mruby-io` sets `$?` after an `IO.popen` stream closes by building a status
-through `mrb_obj_new()` when the class happens to be defined — the same
-allocate-and-`#initialize` path `Process.waitpid` takes, since
-`Process::Status.new` is undefined. A status stores only the pid and the raw
-platform status and asks the HAL afresh for every question, so one `mruby-io`
-built reads exactly like one this gem reaped; `src/status.c` describes the
-seam.
+A `Process::Status` stores only the pid and the raw platform status, and asks
+the HAL afresh for every question about it. Nothing above the HAL ever holds a
+decoded copy that could disagree with the platform.
 
-The tests exercise that seam on POSIX only: on Windows `mruby-io` hands out a
-process handle as `IO#pid` and never sets `$?`, both of which are `mruby-io`'s
-to fix.
+`Process::Status.new` is undefined, as in CRuby, so a status that arrived from
+somewhere other than a wait performed here is built the way `Process.waitpid`
+builds one: by allocating an instance and handing `#initialize` the pid and the
+raw status. Nothing in this build takes that path any more, now that `IO.popen`
+waits through `Process.waitpid`.
 
 ### Design decisions
 
@@ -468,6 +479,11 @@ program can ask `Process.respond_to?(:spawn)` before it commits to a plan that
 needs a child. `process_hal.h` sets it for iOS, where a process may not spawn
 another, so that platform needs no configuring to be told the truth. Everything
 else, `Process.pid` and signals and `Process::Status`, is unaffected.
+
+`IO.popen` follows: with no `Process.spawn` to build on, it raises
+`NotImplementedError`. A build without this gem at all has no `IO.popen`
+either, and mruby-io leaves the method undefined there rather than defining one
+that cannot work.
 
 ## Adding a port
 
