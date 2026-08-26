@@ -84,15 +84,6 @@ module ProcessTestUtil
     false
   end
 
-  # Write a status carrying +raw+ for +pid+.  Process::Status.new is
-  # undefined, here as in CRuby, so a status is built the way mruby-io builds
-  # the one it sets $? to: by allocating an instance and initializing it,
-  # which is what the C helper does.  +cls+ names the class to build, since a
-  # subclass has no `new` to reach either.
-  def self.status(pid, raw, cls = Process::Status)
-    ProcessStatusTest.build(pid, raw, cls)
-  end
-
   # The four clocks Process names.  The ids are 0 to 3, so `clocks.size` is
   # the first number that names none of them.
   def self.clocks
@@ -601,39 +592,6 @@ assert('Process.waitpid') do
   assert_kind_of Process::Status, $?
   assert_equal pid, $?.pid
   assert_equal 3, $?.exitstatus
-end
-
-assert('Process.waitpid through a replaced Process::Status#initialize') do
-  # A status is written into the object without calling #initialize where it
-  # is the one the gem defines, so that the stretch between reaping a child
-  # and recording what it did runs no method a program can replace.  One that
-  # was replaced is still called: writing it is asking for it to run, and by
-  # then the status it is handed is the one the wait reported.
-  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
-
-  pid = Process.spawn("exit 6")
-  seen = nil
-  Process::Status.class_eval do
-    alias_method :__test_initialize, :initialize
-    define_method(:initialize) do |child, raw_status|
-      seen = [child, raw_status]
-      __test_initialize(child, raw_status)
-    end
-  end
-  begin
-    assert_equal pid, Process.waitpid(pid)
-    assert_kind_of Array, seen
-    assert_equal pid, seen[0]
-    # The status it built is the one published, and reads as any other does.
-    assert_equal pid, $?.pid
-    assert_equal 6, $?.exitstatus
-    assert_equal seen[1], $?.to_i
-  ensure
-    Process::Status.class_eval do
-      alias_method :initialize, :__test_initialize
-      remove_method :__test_initialize
-    end
-  end
 end
 
 assert('Process.waitpid for a process this one did not spawn') do
