@@ -388,6 +388,16 @@ assert('Process.spawn looks a bare name up on the environment it gives') do
   assert_equal 3, ProcessTestUtil.run({"PATH" => nil}, "sh", "-c", "exit 3").exitstatus
 end
 
+assert('Process.spawn with no command to run') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  assert_raise(ArgumentError) { Process.spawn }
+  # A command that is nothing but blanks names none: handing it to the shell
+  # would start one that does nothing and reports success.
+  assert_raise(StandardError) { Process.spawn("") }
+  assert_raise(StandardError) { Process.spawn("   ") }
+end
+
 assert('Process.spawn with a command that does not exist') do
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
 

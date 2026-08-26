@@ -662,6 +662,17 @@ resolve_redirects(const mrb_process_spawn_params *params, HANDLE slots[3])
   return 0;
 }
 
+/* A command line that is nothing but blanks names no command, and handing it
+   to the shell would start one that does nothing and reports success.  What
+   the caller asked to run does not exist, which is what ENOENT says. */
+static int
+command_is_blank(const char *cmd)
+{
+  if (cmd == NULL) return 1;
+  while (*cmd == ' ' || *cmd == '\t' || *cmd == '\n' || *cmd == '\r') cmd++;
+  return *cmd == '\0';
+}
+
 int
 mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
                       const mrb_process_spawn_params *params,
@@ -683,7 +694,8 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   wchar_t *workdir = NULL;
   int saved_errno;
 
-  if (params->argv == NULL || params->argv[0] == NULL || params->argv[0][0] == '\0') {
+  if (params->argv == NULL || params->argv[0] == NULL ||
+      command_is_blank(params->argv[0])) {
     errno = ENOENT;
     return -1;
   }
