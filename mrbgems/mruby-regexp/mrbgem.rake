@@ -41,6 +41,13 @@ MRuby::Gem::Specification.new('mruby-regexp') do |spec|
     spec.add_dependency 'mruby-symbol-ext', :core => 'mruby-symbol-ext'
   end
 
+  # Same deal for `$~` being per execution context (the slot lives on each
+  # context's ci stack): the test pinning that can only run where the build
+  # has mruby-fiber anyway; the test skips itself where Fiber is missing.
+  if build.gems.any? {|g| g.name == 'mruby-fiber'}
+    spec.add_test_dependency 'mruby-fiber', :core => 'mruby-fiber'
+  end
+
   # Same deal for taking a method back off a class. The test that pins `$&`
   # and `$1` reading the match rather than `MatchData#[]` redefines `[]` and
   # parks the original under another name, and dropping that name afterwards
