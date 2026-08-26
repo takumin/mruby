@@ -634,3 +634,12 @@ class String
     false
   end
 end
+
+# The seventeen overrides above are Ruby frames standing in for what CRuby
+# implements as C functions, frames with no `$~` slot of their own: the flag
+# makes each transparent to `$~` owner resolution, so a match inside
+# publishes into the calling scope, the way `rb_str_sub_bang()` does.
+Regexp.__backref_transparent(String, :match, :match?, :=~, :sub, :sub!,
+                             :gsub, :gsub!, :scan, :split, :slice!,
+                             :index, :rindex, :byteindex, :byterindex,
+                             :partition, :rpartition, :start_with?)

@@ -12,6 +12,8 @@
 #include <mruby/variable.h>
 #include <mruby/hash.h>
 #include <mruby/error.h>
+#include <mruby/gc.h>
+#include <mruby/proc.h>
 #include <mruby/internal.h>
 #include "re_internal.h"
 
@@ -734,6 +736,37 @@ regexp_s_search_p(mrb_state *mrb, mrb_value klass)
   mrb_get_args(mrb, "oo|i", &re, &str, &pos);
   check_regexp_arg(mrb, re);
   return exec_match_p(mrb, re, str, pos);
+}
+
+/*
+ * Regexp.__backref_transparent(klass, *names)
+ *
+ * Internal: flags the named irep methods of `klass` as transparent to `$~`
+ * owner resolution (MRB_PROC_BACKREF_SKIP). Each stands in for what CRuby
+ * implements as a C function, a frame with no slot of its own, so a match
+ * inside publishes into the calling scope and a read inside answers it.
+ * Redefining a flagged method sheds the flag with the proc, which is right:
+ * the replacement is an ordinary Ruby method with a scope of its own.
+ */
+static mrb_value
+regexp_s_backref_transparent(mrb_state *mrb, mrb_value klass)
+{
+  mrb_value target;
+  const mrb_value *names;
+  mrb_int len;
+
+  mrb_get_args(mrb, "C*", &target, &names, &len);
+  struct RClass *c = mrb_class_ptr(target);
+  for (mrb_int i = 0; i < len; i++) {
+    mrb_method_t m = mrb_method_search(mrb, c, mrb_obj_to_sym(mrb, names[i]));
+    if (MRB_METHOD_PROC_P(m)) {
+      struct RProc *p = (struct RProc*)MRB_METHOD_PROC(m);
+      if (p && !MRB_PROC_CFUNC_P(p) && p->gc_color != MRB_GC_RED) {
+        p->flags |= MRB_PROC_BACKREF_SKIP;
+      }
+    }
+  }
+  return mrb_nil_value();
 }
 
 /*
@@ -2452,6 +2485,7 @@ mrb_mruby_regexp_gem_init(mrb_state *mrb)
   mrb_define_class_method(mrb, re, "__byte_search", regexp_s_byte_search, MRB_ARGS_ARG(2, 2));
   mrb_define_class_method(mrb, re, "__byte_rsearch", regexp_s_byte_rsearch, MRB_ARGS_REQ(3));
   mrb_define_class_method(mrb, re, "__search_p", regexp_s_search_p, MRB_ARGS_ARG(2, 1));
+  mrb_define_class_method(mrb, re, "__backref_transparent", regexp_s_backref_transparent, MRB_ARGS_REQ(1)|MRB_ARGS_REST());
 
   /* Instance methods */
   mrb_define_method(mrb, re, "match", regexp_match, MRB_ARGS_ARG(1, 1)|MRB_ARGS_BLOCK());

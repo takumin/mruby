@@ -26,3 +26,7 @@ class Symbol
     self.to_s =~ re
   end
 end
+
+# The delegations forward to the String overrides; both frames have to be
+# transparent for a match on a Symbol to publish into the caller's `$~`.
+Regexp.__backref_transparent(Symbol, :match, :match?, :=~)

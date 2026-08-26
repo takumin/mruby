@@ -46,3 +46,8 @@ class MatchData
     regexp.names
   end
 end
+
+# `Regexp.last_match` only reads `$~`, and needs the transparency flag as
+# much as the writers in string_regexp.rb do: without it the read would land
+# in its own empty scope and answer nil always.
+Regexp.__backref_transparent((class << Regexp; self; end), :last_match)
