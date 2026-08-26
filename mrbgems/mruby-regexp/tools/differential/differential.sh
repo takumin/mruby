@@ -18,8 +18,9 @@
 # when timeout(1) exists), COMPARE_OPTS goes to compare.rb.
 #
 # CASES names a cases file to run in place of a generated one, so that a hand
-# written list, or the candidates minimize.rb draws from a case, goes through
-# the same runs; gen.rb is not called then and the gen options are refused.
+# written list, the corpus refusals.rb draws, or the candidates minimize.rb
+# draws from a case, goes through the same runs; gen.rb is not called then and
+# the gen options are refused.
 # NO_COMPARE=1 stops before compare.rb and leaves the outputs to be read.
 #
 # A run that dies (the timeout, a crash) is resumed after the case it died on,
