@@ -22,9 +22,9 @@ from, the second the `Struct` `Process::Tms` is one of.
 | Process.pid                       | o             | also `$$`                                |
 | Process.ppid                      | o             |                                          |
 | Process.kill                      | o             | no negative-signal form yet, see below   |
-| Process.spawn                     | o             | see below for what it does not take      |
+| Process.spawn                     | o             | absent under `MRB_NO_PROCESS_SPAWN`      |
 | Process.wait, .wait2              | o             | `.waitpid2` too; not `.waitall`          |
-| Process.waitpid                   | o             | sets `$?`; POSIX only, see below         |
+| Process.waitpid                   | o             | sets `$?`; see below                     |
 | Process.clock_gettime             | o             | seven units; symbolic clock ids          |
 | Process.clock_getres              | o             | takes `:hertz` too                       |
 | Process.times                     | o             | needs a build with Float, see below      |
@@ -167,11 +167,12 @@ before the exec. Where the spawn is a `posix_spawn(3)`, it is a file action
 appended after the redirections for the same reason, and a host whose
 `posix_spawn(3)` has no such action takes the fork instead.
 
-Windows has no `Process.spawn` at all: its port cannot create a process yet,
-so `process_hal.h` sets `MRB_NO_PROCESS_SPAWN` there and the method is left
-undefined rather than defined and always failing. `Process.respond_to?(:spawn)`
-is therefore an answer. iOS is the same, and stays that way: a process may not
-create another there.
+On Windows the child is created by `CreateProcessW()`, and the same argument
+shapes reach it: a single String goes to `cmd.exe`, an argv is quoted back
+into the one command line Win32 takes, and the environment is assembled into
+the sorted UTF-16 block the API asks for. Only descriptors 0, 1 and 2 can be
+redirected there, because `STARTUPINFO` has three slots and no more; anything
+else is `Errno::ENOTSUP`.
 
 ## Who owes the wait
 
@@ -241,6 +242,21 @@ defines rather than a class written again here. Nothing runs the other way.
 `mruby-time` is not a dependency: the two gems ask the host the same question
 directly, so there is no table that could drift between them, and depending on
 it would pull a `Time` class into every build that only asked for I/O.
+
+### Windows and the wide API
+
+Everything this gem hands Win32 goes through the wide entry points, and the
+port is where the conversion happens. A mruby String is bytes, holding UTF-8
+wherever it came from a Ruby literal, and the ANSI entry points would read one
+in whatever code page the machine is set to: a command, a path, an argument or
+an environment value spelled outside that code page would reach the child as
+something else, or not at all. Nothing above the port knows about UTF-16.
+
+The child is handed duplicates of exactly the handles it is meant to have,
+named in a `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Marking the originals
+inheritable and letting `CreateProcess` take every inheritable handle would
+leak one spawn's pipes into the next, and a pipe whose write end an unrelated
+child still holds never reaches EOF.
 
 ### The HAL boundary
 
@@ -409,15 +425,34 @@ constrains; this list is a map.
   only forgot the child would be the zombie it exists to prevent.
 - On Windows only `KILL` and `TERM` can be delivered (as
   `TerminateProcess()`), signal 0 asks whether the process can be opened, and
-  any other signal fails with `ENOSYS`. A wait status is the child's exit code
-  and nothing more, so a status always reads as exited, and `Process.waitpid`
-  fails for every process: `ECHILD` where a pid or any child is named, since
-  the port holds no handles until `Process.spawn` exists there, and `ENOSYS`
-  where the wait would have to be narrowed to a process group;
-  `ports/win/process_hal.c` says why.
+  any other signal fails with `ENOSYS`.
+- On Windows a wait status is the child's exit code and nothing more, so a
+  status there always reads as exited — even for a process this gem terminated
+  — and no child is ever reported as stopped.
+- On Windows, `Process.waitpid` answers only for a child this interpreter
+  spawned; any other pid is `Errno::ECHILD`. Win32 names a process to wait on
+  by handle, and the only handles the port has are the ones it opened by
+  spawning; a handle got by opening a process ID stands for any process the
+  caller may open rather than for a child of it, and waiting on such a handle
+  would report a stranger's exit code as a child's and publish it as `$?`.
+- On Windows only descriptors 0, 1 and 2 can be redirected: `STARTUPINFO` has
+  three slots and no more, and anything else fails with `Errno::ENOTSUP`. A
+  blocking `Process.wait` over more than `MAXIMUM_WAIT_OBJECTS` live children
+  fails with `Errno::EINVAL`, since `WaitForMultipleObjects()` takes no more
+  than that at a time and running it in chunks would not be a blocking wait
+  over the set; a non-blocking one is not limited.
 - On Windows `Process::Tms#cutime` and `#cstime` always read `0.0`: Win32
   reports no reaped child's CPU time, and CRuby's Windows build answers the
   same way.
+
+## Build configuration
+
+`MRB_NO_PROCESS_SPAWN` builds the gem without process creation. `Process.spawn`
+is then not defined at all, rather than defined and always failing, so a
+program can ask `Process.respond_to?(:spawn)` before it commits to a plan that
+needs a child. `process_hal.h` sets it for iOS, where a process may not spawn
+another, so that platform needs no configuring to be told the truth. Everything
+else, `Process.pid` and signals and `Process::Status`, is unaffected.
 
 ## Adding a port
 
