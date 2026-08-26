@@ -226,6 +226,11 @@ typedef struct mrb_process_redirect {
   mrb_int source_fd;             /* -1 for CLOSE */
 } mrb_process_redirect;
 
+typedef struct mrb_process_env_entry {
+  const char *name;
+  const char *value;             /* NULL means unset */
+} mrb_process_env_entry;
+
 /* How argv is to be read.  A single String is the shell's to take apart,
    which is what makes `Process.spawn("a > b")` a redirection and
    `Process.spawn("a", "> b")` an argument. */
@@ -234,19 +239,23 @@ typedef enum mrb_process_spawn_kind {
   MRB_PROCESS_SPAWN_SHELL = 1,   /* execute argv[0] through the system shell */
 } mrb_process_spawn_kind;
 
-#define MRB_PROCESS_SPAWN_CLOSE_OTHERS (1u << 0)
+#define MRB_PROCESS_SPAWN_CLOSE_OTHERS    (1u << 0)
+#define MRB_PROCESS_SPAWN_UNSETENV_OTHERS (1u << 1)
 
 /*
  * Spawn parameters
  *
- * Grouped in a struct so that later additions (an environment, a working
- * directory, process groups) do not change every port's signature.
+ * Grouped in a struct so that later additions (process groups, umask,
+ * resource limits) do not change every port's signature.
  */
 typedef struct mrb_process_spawn_params {
   mrb_process_spawn_kind kind;
   const char *const *argv;   /* NULL-terminated; SHELL reads argv[0] only */
+  const mrb_process_env_entry *env;   /* deltas against the parent environment */
+  size_t nenv;
   const mrb_process_redirect *redirects;
   size_t nredirects;
+  const char *chdir;         /* NULL means inherit */
   unsigned int flags;
 } mrb_process_spawn_params;
 

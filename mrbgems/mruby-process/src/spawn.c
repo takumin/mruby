@@ -3,8 +3,8 @@
 **
 ** See Copyright Notice in mruby.h
 **
-** The C half of Process.spawn.  CRuby's argument shape is `command...,
-** [options]`, and taking that apart in C would pile Hash, Array and IO case
+** The C half of Process.spawn.  CRuby's argument shape is `[env,]
+** command..., [options]`, and taking that apart in C would pile Hash, Array
 ** analysis in here; mrblib/process.rb does it instead and hands this down
 ** flat integer and string arrays.  What is left is the part that has to
 ** happen in C: checking that every element really is something the operating
@@ -19,14 +19,16 @@
 #include "process_internal.h"
 
 #include <errno.h>
+#include <string.h>
 
 #ifndef MRB_NO_PROCESS_SPAWN
 
-/* The two arrays the HAL reads.  They are freed together, including on the
+/* The three arrays the HAL reads.  They are freed together, including on the
    way out of a failure, because mrb_sys_fail() leaves by longjmp and takes
    any chance to free them with it. */
 struct spawn_bufs {
   const char **argv;
+  mrb_process_env_entry *env;
   mrb_process_redirect *redirects;
 };
 
@@ -34,8 +36,10 @@ static void
 bufs_free(mrb_state *mrb, struct spawn_bufs *bufs)
 {
   mrb_free(mrb, bufs->argv);
+  mrb_free(mrb, bufs->env);
   mrb_free(mrb, bufs->redirects);
   bufs->argv = NULL;
+  bufs->env = NULL;
   bufs->redirects = NULL;
 }
 
@@ -60,24 +64,25 @@ element_int(mrb_state *mrb, mrb_value ary, mrb_int idx)
 
 /*
  * call-seq:
- *   Process.__spawn(kind, argv, redirects, flags) -> pid
+ *   Process.__spawn(kind, argv, env, redirects, flags, chdir) -> pid
  *
  * The primitive Process.spawn is written on.  Everything here is already
- * flat: +argv+ is an array of Strings, and +redirects+ a [child_fd, kind,
- * source_fd, ...] array read in order.
+ * flat: +argv+ is an array of Strings, +env+ a [name, value_or_nil, ...]
+ * array, +redirects+ a [child_fd, kind, source_fd, ...] array read in order.
  */
 static mrb_value
 process_s___spawn(mrb_state *mrb, mrb_value self)
 {
-  mrb_value argv_ary, table_ary;
-  mrb_int kind, flags, argc, tablec, i;
+  mrb_value argv_ary, env_ary, table_ary, chdir;
+  mrb_int kind, flags, argc, envc, tablec, i;
   mrb_process_spawn_params params;
-  struct spawn_bufs bufs = { NULL, NULL };
+  struct spawn_bufs bufs = { NULL, NULL, NULL };
   mrb_int pid;
   int err;
 
-  mrb_get_args(mrb, "iAAi", &kind, &argv_ary, &table_ary, &flags);
+  mrb_get_args(mrb, "iAAAiS!", &kind, &argv_ary, &env_ary, &table_ary, &flags, &chdir);
   argc = RARRAY_LEN(argv_ary);
+  envc = RARRAY_LEN(env_ary);
   tablec = RARRAY_LEN(table_ary);
 
   if (kind != MRB_PROCESS_SPAWN_ARGV && kind != MRB_PROCESS_SPAWN_SHELL) {
@@ -85,6 +90,9 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
   }
   if (argc < 1) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "no command given");
+  }
+  if (envc % 2 != 0) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "malformed environment");
   }
   if (tablec % 3 != 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "malformed redirection table");
@@ -95,6 +103,14 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
      wrong between the allocation and the call. */
   for (i = 0; i < argc; i++) {
     element_cstr(mrb, argv_ary, i);
+  }
+  for (i = 0; i < envc; i += 2) {
+    const char *name = element_cstr(mrb, env_ary, i);
+    mrb_value value = mrb_ary_ref(mrb, env_ary, i + 1);
+    if (strchr(name, '=') != NULL) {
+      mrb_raisef(mrb, E_ARGUMENT_ERROR, "environment name contains '=': %s", name);
+    }
+    if (!mrb_nil_p(value)) element_cstr(mrb, env_ary, i + 1);
   }
   for (i = 0; i < tablec; i += 3) {
     mrb_int rkind = element_int(mrb, table_ary, i + 1);
@@ -118,13 +134,19 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
       mrb_process_int_arg(mrb, source, "descriptor");
     }
   }
+  if (!mrb_nil_p(chdir)) mrb_string_value_cstr(mrb, &chdir);
 
   bufs.argv = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (size_t)(argc + 1));
+  if (envc > 0) {
+    bufs.env = (mrb_process_env_entry*)
+      mrb_malloc_simple(mrb, sizeof(mrb_process_env_entry) * (size_t)(envc / 2));
+  }
   if (tablec > 0) {
     bufs.redirects = (mrb_process_redirect*)
       mrb_malloc_simple(mrb, sizeof(mrb_process_redirect) * (size_t)(tablec / 3));
   }
-  if (bufs.argv == NULL || (tablec > 0 && bufs.redirects == NULL)) {
+  if (bufs.argv == NULL || (envc > 0 && bufs.env == NULL) ||
+      (tablec > 0 && bufs.redirects == NULL)) {
     bufs_free(mrb, &bufs);
     mrb_raise(mrb, E_RUNTIME_ERROR, "out of memory");
   }
@@ -133,6 +155,11 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
     bufs.argv[i] = element_cstr(mrb, argv_ary, i);
   }
   bufs.argv[argc] = NULL;
+  for (i = 0; i < envc; i += 2) {
+    mrb_value value = mrb_ary_ref(mrb, env_ary, i + 1);
+    bufs.env[i / 2].name = element_cstr(mrb, env_ary, i);
+    bufs.env[i / 2].value = mrb_nil_p(value) ? NULL : element_cstr(mrb, env_ary, i + 1);
+  }
   for (i = 0; i < tablec; i += 3) {
     mrb_process_redirect *r = &bufs.redirects[i / 3];
     r->child_fd = element_int(mrb, table_ary, i);
@@ -142,9 +169,13 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
 
   params.kind = (mrb_process_spawn_kind)kind;
   params.argv = bufs.argv;
+  params.env = bufs.env;
+  params.nenv = (size_t)(envc / 2);
   params.redirects = bufs.redirects;
   params.nredirects = (size_t)(tablec / 3);
-  params.flags = (unsigned int)flags & MRB_PROCESS_SPAWN_CLOSE_OTHERS;
+  params.chdir = mrb_nil_p(chdir) ? NULL : RSTRING_PTR(chdir);
+  params.flags = (unsigned int)flags &
+                 (MRB_PROCESS_SPAWN_CLOSE_OTHERS | MRB_PROCESS_SPAWN_UNSETENV_OTHERS);
 
   if (mrb_hal_process_spawn(mrb, &params, &pid) != 0) {
     /* mrb_sys_fail() leaves by longjmp, so the buffers are freed first and
@@ -162,7 +193,7 @@ void
 mrb_process_spawn_init(mrb_state *mrb, struct RClass *process)
 {
   mrb_define_module_function_id(mrb, process, MRB_SYM(__spawn), process_s___spawn,
-                                MRB_ARGS_REQ(4));
+                                MRB_ARGS_REQ(6));
 }
 
 #else /* MRB_NO_PROCESS_SPAWN */

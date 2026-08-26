@@ -555,6 +555,26 @@ assert('Process.spawn without a shell') do
   assert_equal 3, ProcessTestUtil.run("/bin/sh", "-c", "exit 3").exitstatus
 end
 
+assert('Process.spawn looks a bare name up on the environment it gives') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # Where a bare name is found is worked out before the fork, since a child
+  # between fork() and exec() may not walk a PATH itself, and what it is
+  # looked up on is the PATH the child is being given rather than this
+  # process's.  So an environment that names nowhere to look finds nothing.
+  assert_raise(Errno::ENOENT) do
+    Process.spawn({"PATH" => "/nonexistent"}, "sh", "-c", "exit 0")
+  end
+
+  # A name that is a path is not looked up at all, so no PATH is needed.
+  assert_equal 3, ProcessTestUtil.run({"PATH" => nil}, "/bin/sh", "-c", "exit 3").exitstatus
+
+  # No PATH to look on is not no places to look: a bare name still falls back
+  # to the list the host names, which is longer than the nothing it was given
+  # and is what the arrays holding the candidates have to be sized from.
+  assert_equal 3, ProcessTestUtil.run({"PATH" => nil}, "sh", "-c", "exit 3").exitstatus
+end
+
 assert('Process.spawn with a command line that needs no shell') do
   skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
 
@@ -668,13 +688,38 @@ assert('Process.spawn with a descriptor number no descriptor can be') do
   assert_raise(RangeError) { Process.spawn("exit 0", 1 => big) }
 end
 
+assert('Process.spawn with an environment') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  assert_true ProcessTestUtil.run({"MRUBY_SPAWN_TEST" => "bar"},
+                                  'test "$MRUBY_SPAWN_TEST" = bar').success?
+  # A nil value removes a variable rather than setting it.
+  assert_true ProcessTestUtil.run({"MRUBY_SPAWN_TEST" => nil},
+                                  'test -z "$MRUBY_SPAWN_TEST"').success?
+  # An empty environment still takes the deltas: they are what to put in it,
+  # not what to change about the parent's.
+  assert_true ProcessTestUtil.run({"MRUBY_SPAWN_TEST" => "bar"},
+                                  'test "$MRUBY_SPAWN_TEST" = bar',
+                                  unsetenv_others: true).success?
+
+  # A name is a name, not half an entry.
+  assert_raise(ArgumentError) { Process.spawn({"A=B" => "c"}, "exit 0") }
+end
+
+assert('Process.spawn with chdir') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  assert_true ProcessTestUtil.run('test "`pwd`" = /', chdir: "/").success?
+  assert_raise(StandardError) { Process.spawn("exit 0", chdir: "/nonexistent") }
+end
+
 assert('Process.spawn with an option it does not take') do
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
 
   # An option nothing acts on is refused rather than dropped: a caller that
   # wrote one is expecting it to happen.  A redirection is an option too, so
   # what is refused is only what neither list holds.
-  assert_raise(ArgumentError) { Process.spawn("sh", "-c", "exit 0", chdir: "/") }
+  assert_raise(ArgumentError) { Process.spawn("sh", "-c", "exit 0", pgroup: true) }
 end
 
 assert('Process.waitpid') do
