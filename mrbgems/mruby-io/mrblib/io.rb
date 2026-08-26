@@ -39,39 +39,6 @@ class IO
 
   #
   # call-seq:
-  #   IO.popen(cmd, mode="r" [, opt])               -> io
-  #   IO.popen(cmd, mode="r" [, opt]) {|io| block } -> obj
-  #
-  # Runs the specified command as a subprocess; the subprocess's standard input
-  # and output will be connected to the returned IO object.
-  #
-  #   p IO.popen("date").read   #=> "Wed Apr  9 08:56:30 CDT 2003\n"
-  #   IO.popen("dc", "r+") {|f|
-  #     f.puts "5 2 *"
-  #     f.close_write
-  #     puts f.read
-  #   }
-  #
-  def self.popen(command, mode = 'r', **opts, &block)
-    if !self.respond_to?(:_popen)
-      raise NotImplementedError, "popen is not supported on this platform"
-    end
-    io = self._popen(command, mode, **opts)
-    return io unless block
-
-    begin
-      yield io
-    ensure
-      begin
-        io.close unless io.closed?
-      rescue IOError
-        # nothing
-      end
-    end
-  end
-
-  #
-  # call-seq:
   #   IO.pipe                    -> [read_io, write_io]
   #   IO.pipe {|read_io, write_io| ... } -> obj
   #
@@ -140,7 +107,75 @@ class IO
     str
   end
 
+  #
+  # call-seq:
+  #   ios.close -> nil
+  #
+  # Closes the stream.  For a stream `IO.popen` returned, the command at the
+  # other end is waited for as well, and `$?` is set to how it finished.
+  # That is why this is here rather than in C: the wait belongs to `Process`,
+  # and mruby-io asks for it through the same `Process.waitpid` anyone else
+  # would.  A stream that is already closed is left as it is, so the wait
+  # happens once however many times this is called.
+  #
+  def close
+    return nil if closed?
+    pid = @__pid
+    begin
+      _close
+    ensure
+      _wait_for_command(pid) if pid
+    end
+    nil
+  end
 
+  #
+  # call-seq:
+  #   ios.close_write -> nil
+  #
+  # Closes the write end of the stream.  Where that end is the whole stream,
+  # as it is for a stream `IO.popen` opened for reading, the command at the
+  # other end is waited for as `#close` waits for it.
+  #
+  def close_write
+    pid = @__pid
+    _close_write
+    _wait_for_command(pid) if pid && closed?
+    nil
+  end
+
+  #
+  # call-seq:
+  #   ios.pid -> integer or nil
+  #
+  # Returns the process ID of the command on the other end of the pipe, or
+  # `nil` if the stream is not a pipe to one.
+  #
+  #   io = IO.popen("date")
+  #   p io.pid   #=> 2056
+  #   io.read
+  #   io.close
+  #
+  def pid
+    @__pid
+  end
+
+  # Internal: remember the command this stream is a pipe to, so that #close
+  # can wait for it and #pid can name it.  IO.popen is the only caller.
+  def _pid=(pid)
+    @__pid = pid
+  end
+
+  # Internal: the wait #close owes the command at the other end.  What can go
+  # wrong is that the child has already been accounted for, by an explicit
+  # `Process.waitpid(io.pid)` or by a `Process.wait` that drew it, and then
+  # there is nothing left here to report and `$?` keeps what that wait set.
+  # The Errno class is not named because a build may have no mruby-errno.
+  private def _wait_for_command(pid)
+    Process.waitpid(pid)
+  rescue StandardError
+    nil
+  end
 
   #
   # call-seq:
@@ -152,8 +187,6 @@ class IO
   # Enumerable#hash will call IO#read() otherwise.
   #
   def hash
-    # We must define IO#hash here because IO includes Enumerable and
-    # Enumerable#hash will call IO#read() otherwise
     self.__id__
   end
 
