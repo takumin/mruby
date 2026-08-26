@@ -206,7 +206,7 @@ mrb_hal_process_ppid(mrb_state *mrb)
  * while one of them holds a lock leaves the child holding a lock nobody will
  * ever release.  So the PATH is walked here rather than by execvp() over
  * there, which is a call that can allocate.  What is left for the child is
- * execv() and a write down the error pipe.
+ * dup2(), close() and execv().
  */
 struct exec_plan {
   const char **argv;     /* what the image is run with */
@@ -403,10 +403,10 @@ nomem:
 /*
  * The fork path
  *
- * Where posix_spawn() is the one above, none of this is compiled: what it
- * is for is reporting a failed exec, and that call reports one itself.
+ * A request posix_spawn() cannot carry is carried by a child of this
+ * process's own; spawn_is_expressible() below is which requests those are.
+ * Where the host has no posix_spawn() at all, this is the only path there is.
  */
-#if !MRB_PROCESS_HAVE_POSIX_SPAWN
 
 static int
 fd_set_cloexec(int fd, int on)
@@ -461,18 +461,140 @@ errpipe(int fds[2])
   return 0;
 }
 
+/* Move `fd` above `least` and keep it out of the exec'd image.  Used for the
+   descriptors the child needs but the redirection table is about to write
+   over: the error pipe, and any source that is also a target. */
+static int
+fd_move_above(int fd, int least)
+{
+  int moved = fcntl(fd, F_DUPFD, least);
+
+  if (moved == -1) return -1;
+  if (fd_set_cloexec(moved, 1) == -1) {
+    close(moved);
+    return -1;
+  }
+  return moved;
+}
+
+/* Add `fd` to the ascending `keep` list, which holds no duplicates and
+   nothing below 3.  Called after fork(), so it does no more than compare and
+   move `int`s. */
+static void
+keep_add(int *keep, size_t *nkeep, int fd)
+{
+  size_t i, j;
+
+  if (fd < 3) return;
+  for (i = 0; i < *nkeep; i++) {
+    if (keep[i] == fd) return;
+    if (keep[i] > fd) break;
+  }
+  for (j = *nkeep; j > i; j--) keep[j] = keep[j - 1];
+  keep[i] = fd;
+  (*nkeep)++;
+}
+
+/* Close every descriptor from `low` up to and including `high`, or to the top
+   of the table when `high` is -1.  Where the top is is what the parent read
+   _SC_OPEN_MAX for: a sweep that stopped at a number picked here would leave
+   open exactly what the caller asked to have closed. */
+static void
+close_fds(int low, int high, long maxfd)
+{
+  int fd;
+
+  if (high < 0) {
+    high = (maxfd - 1 > (long)INT_MAX) ? INT_MAX : (int)(maxfd - 1);
+  }
+  for (fd = low; fd <= high; fd++) close(fd);
+}
+
 /* Everything the child does between fork() and exec().  It reports a failure
    by writing errno down `errfd`, which the parent is reading; the write end
    is close-on-exec, so a successful exec closes it and the parent's read
    ends at EOF with nothing to report.
 
-   Nothing here allocates: what it needs was worked out before the fork. */
+   Nothing here allocates: the arrays it needs were allocated before the
+   fork. */
 static void
-child_exec(const struct exec_plan *plan, int errfd)
+child_exec(const mrb_process_spawn_params *params, const struct exec_plan *plan,
+           int *sources, int errfd, int *keep, long maxfd)
 {
   size_t i;
   int err;
+  int low = 3;
   int denied = 0;
+  mrb_int max_target = -1;
+
+  for (i = 0; i < params->nredirects; i++) {
+    if (params->redirects[i].child_fd > max_target) {
+      max_target = params->redirects[i].child_fd;
+    }
+  }
+
+  /* Keep the error pipe out of the way of the descriptors about to be
+     written, so that a redirection cannot silence the report. */
+  if ((mrb_int)errfd <= max_target) {
+    int moved = fd_move_above(errfd, (int)max_target + 1);
+    if (moved == -1) goto fail;
+    close(errfd);
+    errfd = moved;
+  }
+
+  /* Save the parent-side sources that collide with a target.  dup2() is also
+     defined to do nothing at all when its two arguments are equal, including
+     nothing to the descriptor flags, and moving the source first is what
+     keeps that case from quietly leaving FD_CLOEXEC set. */
+  for (i = 0; i < params->nredirects; i++) {
+    if (params->redirects[i].kind != MRB_PROCESS_REDIR_PARENT) continue;
+    if ((mrb_int)sources[i] > max_target) continue;
+    sources[i] = fd_move_above(sources[i], (int)max_target + 1);
+    if (sources[i] == -1) goto fail;
+  }
+
+  /* Apply the table in order: a CHILD entry names the child's descriptor as
+     the entries before it have left it. */
+  for (i = 0; i < params->nredirects; i++) {
+    const mrb_process_redirect *r = &params->redirects[i];
+    int target = (int)r->child_fd;
+
+    switch (r->kind) {
+    case MRB_PROCESS_REDIR_CLOSE:
+      close(target);
+      break;
+    case MRB_PROCESS_REDIR_PARENT:
+      if (dup2(sources[i], target) == -1) goto fail;
+      if (fd_set_cloexec(target, 0) == -1) goto fail;
+      break;
+    case MRB_PROCESS_REDIR_CHILD:
+      if (dup2((int)r->source_fd, target) == -1) goto fail;
+      if (fd_set_cloexec(target, 0) == -1) goto fail;
+      break;
+    }
+  }
+
+  if (params->flags & MRB_PROCESS_SPAWN_CLOSE_OTHERS) {
+    /* "Everything else" is everything the caller did not ask for.  What it
+       did ask for is each descriptor this table wrote, and the error pipe,
+       which closing would silence the report this child owes its parent.
+       Sweeping over those would undo the redirection just performed: an
+       explicit `3 => io` would create descriptor 3 and then close it. */
+    size_t nkeep = 0;
+    size_t k;
+
+    for (i = 0; i < params->nredirects; i++) {
+      if (params->redirects[i].kind == MRB_PROCESS_REDIR_CLOSE) continue;
+      keep_add(keep, &nkeep, (int)params->redirects[i].child_fd);
+    }
+    keep_add(keep, &nkeep, errfd);
+
+    for (k = 0; k < nkeep; k++) {
+      if (low < keep[k]) close_fds(low, keep[k] - 1, maxfd);
+      low = keep[k] + 1;
+    }
+    close_fds(low, -1, maxfd);
+  }
 
   /* The command, tried at each name the parent worked out for it.  What
      execvp() does with the PATH is done there, before the fork, because none
@@ -556,19 +678,44 @@ read_child_error(int fd)
 /* Spawn the plan with fork() and exec(), a failed exec reported down a pipe.
    Returns 0 with *out_pid set, or -1 with errno set. */
 static int
-spawn_fork(const struct exec_plan *plan, pid_t *out_pid)
+spawn_fork(mrb_state *mrb, const mrb_process_spawn_params *params,
+           const struct exec_plan *plan, pid_t *out_pid)
 {
   int errfds[2] = { -1, -1 };
+  int *sources = NULL;
+  int *keep = NULL;
+  long maxfd;
   int child_errno, saved_errno;
   pid_t child;
+  size_t i;
 
-  if (errpipe(errfds) == -1) return -1;
+  /* Both arrays belong to the child as much as to this call: it may not
+     allocate between fork() and exec(), so what it will need is allocated
+     here.  `sources` is one per redirection, `keep` one per redirection plus
+     the error pipe.  How high descriptors go is read here for the same
+     reason, since sysconf() is not a call the child may make. */
+  sources = (int*)mrb_malloc_simple(mrb, sizeof(int) * (params->nredirects + 1));
+  keep = (int*)mrb_malloc_simple(mrb, sizeof(int) * (params->nredirects + 1));
+  if (sources == NULL || keep == NULL) {
+    errno = ENOMEM;
+    goto error;
+  }
+  for (i = 0; i < params->nredirects; i++) {
+    sources[i] = (int)params->redirects[i].source_fd;
+  }
+  maxfd = sysconf(_SC_OPEN_MAX);
+  /* A host that will not say has to be guessed at, and the guess is only
+     ever a floor: nothing above it can be closed, so it is made high enough
+     to cover what a process is likely to have open. */
+  if (maxfd < 0) maxfd = 65536;
+
+  if (errpipe(errfds) == -1) goto error;
 
   child = fork();
   if (child == -1) goto error;
   if (child == 0) {
     close(errfds[0]);
-    child_exec(plan, errfds[1]);
+    child_exec(params, plan, sources, errfds[1], keep, maxfd);
     /* not reached */
   }
 
@@ -587,6 +734,8 @@ spawn_fork(const struct exec_plan *plan, pid_t *out_pid)
     goto error;
   }
 
+  mrb_free(mrb, sources);
+  mrb_free(mrb, keep);
   *out_pid = child;
   return 0;
 
@@ -594,13 +743,56 @@ error:
   saved_errno = errno;
   if (errfds[0] != -1) close(errfds[0]);
   if (errfds[1] != -1) close(errfds[1]);
+  mrb_free(mrb, sources);
+  mrb_free(mrb, keep);
   errno = saved_errno;
   return -1;
 }
 
-#endif /* !MRB_PROCESS_HAVE_POSIX_SPAWN */
-
 #if MRB_PROCESS_HAVE_POSIX_SPAWN
+
+/* Whether posix_spawn() can carry this request.
+ *
+ * What it carries, it carries as a list of file actions written before there
+ * is a child to apply them to.  Two of the things a redirection table can ask
+ * for are not that shape and go to the fork path, which decides from inside
+ * the child.
+ */
+static int
+spawn_is_expressible(const mrb_process_spawn_params *params)
+{
+  size_t i;
+
+  /* :close_others is a sweep over the descriptors the caller did not name,
+     and what is open is what only the child can be asked. */
+  if (params->flags & MRB_PROCESS_SPAWN_CLOSE_OTHERS) return 0;
+
+  for (i = 0; i < params->nredirects; i++) {
+    const mrb_process_redirect *r = &params->redirects[i];
+
+    /* `1 => 1` leaves a descriptor open rather than moving it, which as a
+       file action is a dup2() of a descriptor onto itself.  That is defined
+       to clear FD_CLOEXEC, but only since POSIX.1-2008 TC2, and a host is
+       free to have posix_spawn() and not that.  The fork path clears the
+       flag with fcntl() and asks nothing of the host. */
+    if (r->kind == MRB_PROCESS_REDIR_CHILD && r->source_fd == r->child_fd) return 0;
+  }
+  return 1;
+}
+
+/* Duplicate `fd` above `least` and keep it out of the exec'd image, as
+   fd_move_above() does for the fork path, in the one call where the host has
+   it: there is no child on this side, but the descriptor is still one
+   another thread could carry away between the two calls. */
+static int
+spawn_dup_high(int fd, int least)
+{
+#ifdef F_DUPFD_CLOEXEC
+  return fcntl(fd, F_DUPFD_CLOEXEC, least);
+#else
+  return fd_move_above(fd, least);
+#endif
+}
 
 /* Spawn the plan with posix_spawn(), which creates the child and executes
    the image in the one call and answers with the errno an exec failed with.
@@ -608,20 +800,88 @@ error:
    no pipe for a failure to be carried back down.
    Returns 0 with *out_pid set, or -1 with errno set. */
 static int
-spawn_posix(const struct exec_plan *plan, pid_t *out_pid)
+spawn_posix(mrb_state *mrb, const mrb_process_spawn_params *params,
+            const struct exec_plan *plan, pid_t *out_pid)
 {
+  posix_spawn_file_actions_t actions;
+  int actions_ready = 0;
+  int *dups = NULL;
+  mrb_int max_target = -1;
   pid_t pid = -1;
   size_t i;
   int denied = 0;
+  int err = 0;
+
+  for (i = 0; i < params->nredirects; i++) {
+    if (params->redirects[i].child_fd > max_target) {
+      max_target = params->redirects[i].child_fd;
+    }
+  }
+
+  if (params->nredirects > 0) {
+    dups = (int*)mrb_malloc_simple(mrb, sizeof(int) * params->nredirects);
+    if (dups == NULL) {
+      err = ENOMEM;
+      goto done;
+    }
+    for (i = 0; i < params->nredirects; i++) dups[i] = -1;
+  }
+
+  err = posix_spawn_file_actions_init(&actions);
+  if (err != 0) goto done;
+  actions_ready = 1;
+
+  /* A source that is also one of the targets is duplicated out of the way
+     first: the actions are applied in order, and an earlier one would write
+     over a descriptor a later one still has to read. */
+  for (i = 0; i < params->nredirects; i++) {
+    const mrb_process_redirect *r = &params->redirects[i];
+
+    if (r->kind != MRB_PROCESS_REDIR_PARENT) continue;
+    if (r->source_fd > max_target) continue;
+    dups[i] = spawn_dup_high((int)r->source_fd, (int)max_target + 1);
+    if (dups[i] == -1) {
+      err = errno;
+      goto done;
+    }
+  }
+
+  /* The table, in order, as the child would have applied it.  What a dup2()
+     answers with is a descriptor that is not close-on-exec, so nothing here
+     has to clear the flag the way the fork path does. */
+  for (i = 0; i < params->nredirects; i++) {
+    const mrb_process_redirect *r = &params->redirects[i];
+    int target = (int)r->child_fd;
+
+    switch (r->kind) {
+    case MRB_PROCESS_REDIR_CLOSE:
+      /* Closing what is not open is what the caller asked for and is already
+         so, but as a file action it is a close() that fails, and one failed
+         action takes the whole spawn with it.  The child's table is this
+         process's until the exec, so the question is asked here. */
+      if (fcntl(target, F_GETFD) == -1 && errno == EBADF) continue;
+      err = posix_spawn_file_actions_addclose(&actions, target);
+      break;
+    case MRB_PROCESS_REDIR_PARENT:
+      err = posix_spawn_file_actions_adddup2(&actions,
+                                             dups[i] != -1 ? dups[i] : (int)r->source_fd,
+                                             target);
+      break;
+    case MRB_PROCESS_REDIR_CHILD:
+      err = posix_spawn_file_actions_adddup2(&actions, (int)r->source_fd, target);
+      break;
+    }
+    if (err != 0) goto done;
+  }
+
   /* The command, tried at each name the plan worked out for it.  What the
      child made of execv()'s errno is made here of posix_spawn()'s answer,
      which is that same number arrived at the same way.  A plan always names
      at least one image, so the walk always reaches an answer; the value set
      here is what a host that handed one over empty would report. */
-  int err = ENOENT;
-
+  err = ENOENT;
   for (i = 0; plan->path[i] != NULL; i++) {
-    err = posix_spawn(&pid, plan->path[i], NULL, NULL,
+    err = posix_spawn(&pid, plan->path[i], &actions, NULL,
                       (char*const*)plan->argv, environ);
     if (err == 0) goto done;
     switch (err) {
@@ -632,7 +892,7 @@ spawn_posix(const struct exec_plan *plan, pid_t *out_pid)
          nothing to fall back to and reports what it was told. */
       if (plan->sh_argv == NULL) goto done;
       plan->sh_argv[1] = plan->path[i];
-      err = posix_spawn(&pid, "/bin/sh", NULL, NULL,
+      err = posix_spawn(&pid, "/bin/sh", &actions, NULL,
                         (char*const*)plan->sh_argv, environ);
       goto done;
     case EACCES:
@@ -650,6 +910,13 @@ spawn_posix(const struct exec_plan *plan, pid_t *out_pid)
   if (denied) err = EACCES;
 
 done:
+  if (dups != NULL) {
+    for (i = 0; i < params->nredirects; i++) {
+      if (dups[i] != -1) close(dups[i]);
+    }
+    mrb_free(mrb, dups);
+  }
+  if (actions_ready) posix_spawn_file_actions_destroy(&actions);
   if (err != 0) {
     errno = err;
     return -1;
@@ -681,9 +948,14 @@ mrb_hal_process_spawn(mrb_state *mrb, const mrb_process_spawn_params *params,
   if (plan_build(mrb, params, &plan) != 0) return -1;
 
 #if MRB_PROCESS_HAVE_POSIX_SPAWN
-  if (spawn_posix(&plan, &child) != 0) goto error;
+  if (spawn_is_expressible(params)) {
+    if (spawn_posix(mrb, params, &plan, &child) != 0) goto error;
+  }
+  else if (spawn_fork(mrb, params, &plan, &child) != 0) {
+    goto error;
+  }
 #else
-  if (spawn_fork(&plan, &child) != 0) goto error;
+  if (spawn_fork(mrb, params, &plan, &child) != 0) goto error;
 #endif
 
   plan_free(mrb, &plan);

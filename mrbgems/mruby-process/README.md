@@ -22,7 +22,7 @@ from, the second the `Struct` `Process::Tms` is one of.
 | Process.pid                       | o             | also `$$`                                |
 | Process.ppid                      | o             |                                          |
 | Process.kill                      | o             | no negative-signal form yet, see below   |
-| Process.spawn                     | o             | command forms only so far, see below     |
+| Process.spawn                     | o             | no environment or chdir yet, see below   |
 | Process.wait, .wait2              | o             | `.waitpid2` too; not `.waitall`          |
 | Process.waitpid                   | o             | sets `$?`; POSIX only, see below         |
 | Process.clock_gettime             | o             | seven units; symbolic clock ids          |
@@ -114,8 +114,41 @@ What a `Process.spawn` creates, the caller owes a wait for, through
 `Process.waitpid`. Nothing reaps it at `mrb_close`, as nothing reaps it at
 exit in CRuby.
 
-The options `Process.spawn` takes in CRuby are not here yet: redirections, an
-environment, `:chdir`, `:close_others` and `:unsetenv_others` are separate
+## Redirecting the child's descriptors
+
+A trailing Hash is options. `:in`, `:out`, `:err` and plain descriptor numbers
+name the child's descriptors, and the value says what to put there:
+
+```ruby
+Process.spawn("cmd", out: io)                        # child's 1 -> io
+Process.spawn("cmd", out: io, err: [:child, :out])   # ... and 2>&1
+Process.spawn("cmd", out: "log.txt")                 # a file, opened here
+Process.spawn("cmd", [1, 2] => "log.txt")            # one file for both
+Process.spawn("cmd", 3 => :close)
+```
+
+The table is applied in the order it is written, so a later entry sees what an
+earlier one did. As in CRuby, `err: :out` is _not_ `2>&1`: a bare `:out` names
+the parent's descriptor 1, and merging inside the child is written
+`err: [:child, :out]`.
+
+A file named for more than one descriptor is opened once and shared by them,
+the way `>log 2>&1` shares one open file; opening it once per descriptor would
+give each its own offset and each would write over the other. A file is opened
+in the parent, by `File.open`, so the HAL never grows a notion of a filename
+and every other redirection form works in a build without mruby-io.
+
+`:close_others` closes the descriptors above 2 that the table does not name.
+What it closes is what nobody asked for, and an explicit redirection is
+asking, so `3 => io, close_others: true` leaves 3 alone. Descriptors this
+build opens are close-on-exec already, so it is rarely needed.
+
+`:close_others` is carried by a fork even where a `posix_spawn(3)` carries the
+rest, since what is open is what only the child can be asked, and so is a
+`1 => 1`, which asks for a descriptor to be left open rather than moved and is
+a file action not every host that has `posix_spawn(3)` defines.
+
+An environment for the child, `:chdir` and `:unsetenv_others` are separate
 changes. An option this build does not act on is refused with `ArgumentError`
 rather than dropped. `[cmdname, argv0]`, `pgroup`, `umask` and `rlimit_*` are
 not supported.

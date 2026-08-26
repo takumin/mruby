@@ -25,6 +25,14 @@ module Process
       "unset", "until", "while"
     ]
 
+    REDIR_PARENT = 0
+    REDIR_CHILD  = 1
+    REDIR_CLOSE  = 2
+
+    SPAWN_CLOSE_OTHERS = 1
+
+    SPAWN_OPTION_KEYS = [:close_others]
+
     class << self
       #
       # call-seq:
@@ -50,9 +58,33 @@ module Process
       # A command that cannot be run raises the Errno the attempt failed
       # with, rather than leaving a child that exited 127 to be guessed at.
       #
+      # A trailing Hash is options.  <code>:in</code>, <code>:out</code>,
+      # <code>:err</code> and plain descriptor numbers redirect the child's
+      # descriptors; the table is applied in order, so a later entry sees
+      # what an earlier one did:
+      #
+      #   Process.spawn("cmd", out: io)                  # child's 1 -> io
+      #   Process.spawn("cmd", out: io, err: [:child, :out])   # ... and 2>&1
+      #   Process.spawn("cmd", out: "log.txt")           # a file, opened here
+      #   Process.spawn("cmd", 3 => :close)
+      #
+      # As in CRuby, <code>err: :out</code> is *not* <code>2>&1</code>: a
+      # bare <code>:out</code> names the parent's descriptor 1, and merging
+      # inside the child is written <code>err: [:child, :out]</code>.
+      #
+      # <code>:close_others</code> closes the descriptors above 2 that the
+      # table does not name.  Descriptors this build opens are close-on-exec
+      # already, so it is rarely needed.
+      #
       def spawn(*args)
-        kind, argv = _spawn_normalize(args)
-        __spawn(kind, argv)
+        kind, argv, opts = _spawn_normalize(args)
+        table, opened = _spawn_redirects(opts)
+        flags = opts[:close_others] ? SPAWN_CLOSE_OTHERS : 0
+        begin
+          __spawn(kind, argv, table, flags)
+        ensure
+          opened.each { |io| io.close }
+        end
       end
 
       private
@@ -62,22 +94,16 @@ module Process
         if args.empty?
           raise ArgumentError, "wrong number of arguments (given 0, expected 1+)"
         end
-        # A trailing Hash is options.  None are supported here, and an option
-        # nothing acts on has to be refused rather than dropped: a caller that
-        # wrote one is expecting it to happen.
-        if args.size >= 2 && args[-1].is_a?(Hash)
-          args.pop.each_key do |key|
-            raise ArgumentError, "wrong exec option: #{key.inspect}"
-          end
-        end
+        opts = (args.size >= 2 && args[-1].is_a?(Hash)) ? args.pop : {}
 
         if args[0].is_a?(Array)
           raise NotImplementedError, "[cmdname, argv0] form is not supported"
         end
         if args.size == 1
-          _spawn_command_line(_spawn_str(args[0]))
+          kind, argv = _spawn_command_line(_spawn_str(args[0]))
+          [kind, argv, opts]
         else
-          [SPAWN_ARGV, args.map { |a| _spawn_str(a) }]
+          [SPAWN_ARGV, args.map { |a| _spawn_str(a) }, opts]
         end
       end
 
@@ -141,6 +167,81 @@ module Process
           raise TypeError, "no implicit conversion of #{v.class} into String"
         end
         v
+      end
+
+      def _spawn_redirects(opts)
+        table = []
+        opened = []
+        begin
+          opts.each do |key, value|
+            next if SPAWN_OPTION_KEYS.include?(key)
+            fds = (key.is_a?(Array) ? key : [key]).map { |k| _spawn_fd(k) }
+            next if fds.empty?
+            # What the value names is worked out once and then written for
+            # every descriptor that named it, so `[1, 2] => "log"` opens the
+            # file once and the two share that one open file, as `>log 2>&1`
+            # does.  Opening it once per descriptor would give each its own
+            # offset into the same file, and each would write over what the
+            # other had written.  Which way it is opened follows the first
+            # descriptor named, as it does in Ruby.
+            kind, source = _spawn_source(fds[0], value, opened)
+            fds.each { |fd| table << fd << kind << source }
+          end
+        rescue StandardError => e
+          # Named rather than re-raised bare: mruby's `raise` with no
+          # argument does not re-raise what is being rescued.
+          opened.each { |io| io.close }
+          raise e
+        end
+        [table, opened]
+      end
+
+      def _spawn_fd(v)
+        case v
+        when :in then 0
+        when :out then 1
+        when :err then 2
+        when Integer then v
+        else
+          return v.fileno if v.respond_to?(:fileno)
+          raise ArgumentError, "wrong exec redirect: #{v.inspect}"
+        end
+      end
+
+      # What one redirection value stands for, as the [kind, source] pair the
+      # table is written from.  +first_fd+ is the descriptor that decides how
+      # a file is opened when the value names one.
+      def _spawn_source(first_fd, value, opened)
+        case value
+        when :close
+          [REDIR_CLOSE, -1]
+        when String
+          io = _spawn_open(value, first_fd == 0 ? "r" : "w", nil)
+          opened << io
+          [REDIR_PARENT, io.fileno]
+        when Array
+          if value[0] == :child
+            [REDIR_CHILD, _spawn_fd(value[1])]
+          else
+            io = _spawn_open(value[0], value[1] || "r", value[2])
+            opened << io
+            [REDIR_PARENT, io.fileno]
+          end
+        else
+          [REDIR_PARENT, _spawn_fd(value)]
+        end
+      end
+
+      # Opening a file for the child happens here, in the parent, so that the
+      # HAL never grows a notion of a filename and every other redirection
+      # form works in a build without mruby-io.
+      def _spawn_open(path, mode, perm)
+        file = begin
+                 File
+               rescue NameError
+                 raise NotImplementedError, "file redirection requires mruby-io"
+               end
+        perm ? file.open(path, mode, perm) : file.open(path, mode)
       end
     end
   end
