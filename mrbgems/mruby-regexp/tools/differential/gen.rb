@@ -66,6 +66,13 @@
 #   atomic              `(?>...)`
 #   possessive          `*+` `++` `?+`, in place of the lazy mark; an interval
 #                       takes neither, since `{n,m}+` is a repeat of a repeat
+#   inline-option       the option letters `i`, `m` and `x` turned on and off
+#                       where the pattern stands, as the bare `(?i)` `(?-mix)`
+#                       `(?i-x)`, which reach to the end of the group holding
+#                       them, and as the scoped `(?i:...)`, which reaches its
+#                       body alone. A toggle says at least one letter, since
+#                       CRuby refuses `(?)`, and no quantifier lands on one,
+#                       since CRuby reads `(?i)*` as a repeat of nothing.
 #
 # All features are on unless -f or -w says otherwise. Every pattern compiles
 # under CRuby; what this gem refuses is reported by compare.rb.
@@ -74,7 +81,7 @@ require 'optparse'
 
 FEATURES = %w[lazy interval class anchor empty lookahead lookbehind
               lookaround-capture backref backref-name backref-forward
-              named-group atomic possessive].freeze
+              named-group atomic possessive inline-option].freeze
 
 opts = {
   seed: 1, count: 1000, depth: 2, quantify: 0.5, alphabet: "ab",
@@ -117,7 +124,9 @@ end
 # An atom is a piece of pattern and whether it can match empty. Whether it can
 # decides if a quantifier may go on it when the empty feature is off, so that
 # repetitions of empty-matching bodies appear only when asked for.
-Atom = Struct.new(:src, :empty)
+# `unrepeatable` marks the atoms no quantifier may follow at all, whatever the
+# features say: a bare option toggle is not a target a repeat can take.
+Atom = Struct.new(:src, :empty, :unrepeatable)
 
 def literal
   Atom.new(Regexp.escape($alphabet.sample), false)
@@ -136,6 +145,21 @@ def char_class
 end
 
 ANCHORS = %w[^ $ \A \z \Z \b \B].freeze
+
+# The option letters a toggle may carry, in the order they are written.
+OPTION_LETTERS = %w[i m x].freeze
+
+# The letters of one toggle, `on`, `on-off` or `-off`. At least one letter is
+# drawn, since CRuby refuses `(?)`, and the letters keep the order above so
+# that the same set is always spelled the same way.
+def inline_option
+  letters = OPTION_LETTERS.sample(rand(1..OPTION_LETTERS.size))
+  on = letters.sample(rand(0..letters.size))
+  off = letters - on
+  src = OPTION_LETTERS.select { |c| on.include?(c) }.join
+  src += "-" + OPTION_LETTERS.select { |c| off.include?(c) }.join unless off.empty?
+  src
+end
 
 # Quantifiers, with the mark of whether the result can match empty. Intervals
 # are drawn small so that a subject of a few characters can satisfy them. A
@@ -234,6 +258,8 @@ def atom(depth, groups, in_lookahead: false)
     empty_atom(groups)
   elsif r < 0.8 && on?("anchor")
     Atom.new(ANCHORS.sample, true)
+  elsif r < 0.85 && on?("inline-option")
+    Atom.new("(?#{inline_option})", true, true)
   elsif r < 0.9 && on?("class")
     char_class
   else
@@ -278,6 +304,8 @@ def group(depth, groups, in_lookahead: false)
     Atom.new(name ? "(?<#{name}>#{src})" : "(#{src})", empty)
   elsif on?("atomic") && rand < 0.3
     Atom.new("(?>#{src})", empty)
+  elsif on?("inline-option") && rand < 0.3
+    Atom.new("(?#{inline_option}:#{src})", empty)
   else
     Atom.new("(?:#{src})", empty)
   end
@@ -299,7 +327,7 @@ end
 def seq(depth, groups, in_lookahead: false)
   atoms = Array.new(rand(1..3)) do
     a = atom(depth, groups, in_lookahead: in_lookahead)
-    if rand < $quantify && (on?("empty") || !a.empty)
+    if rand < $quantify && !a.unrepeatable && (on?("empty") || !a.empty)
       q, qempty = quantifier
       Atom.new(a.src + q, a.empty || qempty)
     else
