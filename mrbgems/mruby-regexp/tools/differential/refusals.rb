@@ -23,6 +23,13 @@
 # stands. A name is drawn for a group the pattern opens and for one it does
 # not.
 #
+# Beside the sequences drawn over the forms, the corpus holds runs of plain
+# groups at the ceiling on how many a pattern may open, and references at the
+# numbers around it. That is where a number stops being one any pattern could
+# carry, and where the count of groups stops being one this gem compiles at
+# all, so those rows differ from the reference by design and are here to hold
+# the line where it is rather than to agree with CRuby.
+#
 # Options
 #   -g, --groups N     how many groups a pattern opens at most (3)
 #   -r, --refs N       the highest group number a reference names (4)
@@ -52,6 +59,12 @@ FORMS = [["(a", ")"], ["(?:a", ")"], ["(?<g%d>a", ")"], ["(?=(a", "))"]].freeze
 # of that line are drawn.
 BOUND = 2147483647
 
+# The most capture groups this gem opens: RE_MAX_CAPTURES less the whole
+# match. A reference above it names no group however many the pattern goes on
+# to open, which is why the parser holds such a number there rather than
+# letting it grow, and a pattern that opens more is refused whatever it says.
+MAX_GROUPS = 31
+
 refs = []
 0.upto(opts[:refs]) do |n|
   # `\0` is a NUL rather than a reference, and `\10` names group 10 or is an
@@ -61,10 +74,17 @@ refs = []
   refs << "\\k<#{n}>" << "\\k'#{n}'" << "\\k<-#{n}>" << "\\k'-#{n}'"
 end
 [BOUND, BOUND + 1].each { |n| refs << "\\k<#{n}>" << "\\k<-#{n}>" }
+# The last two numbers a group can carry and the two above them, which no
+# pattern reaches however long it is.
+(MAX_GROUPS - 1).upto(MAX_GROUPS + 2) { |n| refs << "\\k<#{n}>" << "\\k<-#{n}>" }
 1.upto(opts[:groups] + 1) { |n| refs << "\\k<g#{n}>" }
 
 seqs = [[]]
 1.upto(opts[:groups]) { |len| seqs.concat(FORMS.repeated_permutation(len).to_a) }
+# Sequences long enough for those numbers to name a group, and one past the
+# ceiling. The permutations above stay short, so these are runs of the plain
+# form rather than a walk over the four.
+(MAX_GROUPS - 1).upto(MAX_GROUPS + 1) { |len| seqs << [FORMS[0]] * len }
 
 cases = []
 seqs.each do |seq|
