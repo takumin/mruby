@@ -9,12 +9,16 @@ module ProcessTestUtil
     Process.respond_to?(:spawn)
   end
 
-  # Whether a single-String command reaches a POSIX shell.  Arithmetic
-  # expansion is the shell's own doing, so nothing on the PATH can stand in
-  # for it, and the answer reaches this side as an exit status.
+  # Whether a single-String command reaches a POSIX shell.  Running a command
+  # is not enough to ask it with: a Windows machine can have a POSIX `test` on
+  # its PATH, which `cmd.exe` then finds and runs, so `test 1 = 1` succeeds
+  # there while none of the shell syntax these tests rely on works.
+  # Arithmetic expansion reaching the exit status is the shell's own doing,
+  # and nothing on the PATH can stand in for it.  The answer is a number
+  # nothing is likely to have exited with for another reason.
   def self.posix_shell?
     return @posix_shell unless @posix_shell.nil?
-    @posix_shell = spawn? && run("exit $((1 + 1))").exitstatus == 2
+    @posix_shell = spawn? && run("exit $((6 * 7))").exitstatus == 42
   rescue StandardError
     @posix_shell = false
   end
@@ -331,7 +335,7 @@ assert('Process.kill passes the pid selectors on') do
 
   # The caller's own process group is one the caller is always in, so where
   # the platform reads the selectors as POSIX does, this one selects.
-  assert_equal 1, Process.kill(0, 0) unless ProcessTestUtil.windows?
+  assert_equal 1, Process.kill(0, 0) unless ProcessTestUtil.posix_reason
 end
 
 assert('a pid or a signal number too large for the platform') do

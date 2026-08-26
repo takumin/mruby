@@ -44,13 +44,8 @@
 
 /* A platform that does not let a process create another has no process
    creation whatever the configuration asks for, so it says so here rather
-   than leaving every build for it to be configured by hand.  iOS is one.
-   Windows is one until its port grows a spawn of its own. */
-#if defined(_WIN32) || defined(_WIN64)
-# ifndef MRB_NO_PROCESS_SPAWN
-#  define MRB_NO_PROCESS_SPAWN 1
-# endif
-#endif
+   than leaving every build for it to be configured by hand.  iOS is the one
+   this gem knows of. */
 #if defined(__APPLE__)
 # include <TargetConditionals.h>
 # if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
