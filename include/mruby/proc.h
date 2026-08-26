@@ -105,6 +105,13 @@ struct RProc {
 #define MRB_PROC_NOARG_P(p) (((p)->flags & MRB_PROC_NOARG) != 0)
 #define MRB_PROC_ALIAS 8192
 #define MRB_PROC_ALIAS_P(p) (((p)->flags & MRB_PROC_ALIAS) != 0)
+/* Reuses bit 0 of MRB_PROC_CASPEC_MASK below, which is read on cfunc procs
+ * only; this one is meaningful on irep procs only, the split MRB_PROC_NOARG
+ * documents in the other direction. An irep method proc carrying it is
+ * skipped when the owner of `$~` is resolved: the frame stands in for a C
+ * function, so a match publishes into its caller's scope. */
+#define MRB_PROC_BACKREF_SKIP 1 /* for irep (non-cfunc) procs */
+#define MRB_PROC_BACKREF_SKIP_P(p) (!MRB_PROC_CFUNC_P(p) && ((p)->flags & MRB_PROC_BACKREF_SKIP) != 0)
 
 /* Compressed aspec for cfunc procs (13 bits in RProc.flags).
  * Uses free bits 0-6 and 14-19 to store a compressed argument spec.

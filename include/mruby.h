@@ -182,6 +182,7 @@ typedef struct {
   struct RProc *blk;
   mrb_value *stack;
   const mrb_code *pc;           /* current address on iseq of this proc */
+  struct RObject *backref;      /* `$~` of this frame's scope; NULL = nil, otherwise a MatchData */
   union {
     struct REnv *env;
     struct RClass *target_class;

@@ -111,6 +111,22 @@ MRB_API void mrb_gv_remove(mrb_state *mrb, mrb_sym sym);
  */
 MRB_API void mrb_gv_define_virtual(mrb_state *mrb, mrb_sym sym, mrb_value (*get)(mrb_state*), void (*set)(mrb_state*, mrb_value));
 
+/**
+ * Reads `$~`: the slot of the Ruby scope owning it, resolved like CRuby's
+ * svar (a C frame writes through to the Ruby frame below it, a block shares
+ * its defining method's slot, and a scope that returned keeps its slot in
+ * its env, so a proc outliving it still reads its match). This is the
+ * storage `mrb_gv_get()` on `$~` answers from once mruby-regexp has
+ * registered its virtual global.
+ */
+MRB_API mrb_value mrb_vm_backref_get(mrb_state *mrb);
+
+/**
+ * Writes `$~` into the owning Ruby scope's slot. `v` must be nil or a
+ * MatchData; enforcing that (CRuby's TypeError) is left to the caller.
+ */
+MRB_API void mrb_vm_backref_set(mrb_state *mrb, mrb_value v);
+
 MRB_API mrb_value mrb_cv_get(mrb_state *mrb, mrb_value mod, mrb_sym sym);
 MRB_API void mrb_mod_cv_set(mrb_state *mrb, struct RClass * c, mrb_sym sym, mrb_value v);
 MRB_API void mrb_cv_set(mrb_state *mrb, mrb_value mod, mrb_sym sym, mrb_value v);

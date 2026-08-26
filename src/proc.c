@@ -174,8 +174,11 @@ mrb_proc_new_cfunc_with_env(mrb_state *mrb, mrb_func_t func, mrb_int argc, const
   mrb_field_write_barrier(mrb, (struct RBasic*)p, (struct RBasic*)e);
   MRB_ENV_CLOSE(e);
 
-  e->stack = (mrb_value*)mrb_malloc(mrb, sizeof(mrb_value) * argc);
+  /* +1: every closed env with a stack carries a slot past the locals (the
+     `$~` of an escaped scope; see mrb_env_unshare()), so size it here too */
+  e->stack = (mrb_value*)mrb_malloc(mrb, sizeof(mrb_value) * (argc+1));
   MRB_ENV_SET_LEN(e, argc);
+  SET_NIL_VALUE(e->stack[argc]);
 
   if (argv) {
     for (i = 0; i < argc; i++) {
@@ -548,7 +551,11 @@ mrb_proc_merge_lvar(mrb_state *mrb, mrb_irep *irep, struct REnv *env, int num, c
   }
 
   irep->lv = (mrb_sym*)mrb_realloc(mrb, (mrb_sym*)irep->lv, sizeof(mrb_sym) * (irep->nlocals - 1 /* self */ + num));
-  env->stack = (mrb_value*)mrb_realloc(mrb, env->stack, sizeof(mrb_value) * (irep->nlocals + num));
+  /* +1: every closed env with a stack carries a slot past the locals (the
+     `$~` of an escaped scope; see mrb_env_unshare()), so the new locals
+     shift it up rather than overwrite it */
+  env->stack = (mrb_value*)mrb_realloc(mrb, env->stack, sizeof(mrb_value) * (irep->nlocals + num + 1));
+  env->stack[irep->nlocals + num] = env->stack[irep->nlocals];
 
   mrb_sym *destlv = (mrb_sym*)irep->lv + irep->nlocals - 1 /* self */;
   mrb_value *destst = env->stack + irep->nlocals;
