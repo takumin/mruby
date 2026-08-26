@@ -1,0 +1,37 @@
+# Fallback compile command for clangd, used for every file in this tree when
+# there is no compile_commands.json. A compile_commands.json in this directory
+# wins over this file, so generating one (e.g. `bear -- rake`) still gives the
+# per-file flags of a real build.
+#
+# The include paths live here rather than in .clangd because clangd resolves a
+# relative path in this file against the directory holding it -- the project
+# root -- while a path added from .clangd resolves against the directory of the
+# file being edited, which differs per file. Settings that are not paths are
+# in .clangd instead.
+#
+# build/host/include carries the generated headers (mruby/presym/id.h, which
+# every MRB_SYM() expands into, and mruby/revision.h): run `rake` once for them
+# to exist. A build under another name (MRUBY_BUILD_DIR, or a target other than
+# `host`) needs its own line here.
+#
+# The gem include paths below are the ones the build hands to a gem that
+# depends on them; a gem added later with an include/ directory of its own
+# needs a line here too.
+-Iinclude
+-Ibuild/host/include
+-Imrbgems/hw-adc/include
+-Imrbgems/hw-gpio/include
+-Imrbgems/hw-i2c/include
+-Imrbgems/hw-pwm/include
+-Imrbgems/hw-spi/include
+-Imrbgems/hw-uart/include
+-Imrbgems/mruby-compiler/include
+-Imrbgems/mruby-compiler/lib/prism/include
+-Imrbgems/mruby-dir/include
+-Imrbgems/mruby-io/include
+-Imrbgems/mruby-process/include
+-Imrbgems/mruby-regexp/include
+-Imrbgems/mruby-signal/include
+-Imrbgems/mruby-socket/include
+-Imrbgems/mruby-task/include
+-Imrbgems/mruby-time/include

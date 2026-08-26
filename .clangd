@@ -1,3 +1,18 @@
+# Without a compile_commands.json, clangd falls back to a bare `clang <file>`:
+# no include paths, so the force-includes below resolve nothing and every
+# `#include <mruby/...>` is a file-not-found. compile_flags.txt next to this
+# file supplies those paths; a compile_commands.json, when the tree has one,
+# still wins over it. The paths have to live there rather than here, because a
+# relative path added from this file resolves against the directory of the
+# file being edited, not against the project root.
+#
+# Note that this file deliberately does not pin -std, even though the build
+# compiles C with -std=gnu99: below C11 `mrb_static_assert` expands to a
+# struct named after __COUNTER__, and clangd restarts that counter after the
+# preamble, so a header that force-includes mruby.h and then asserts collides
+# with an assert from the preamble. The default -std keeps `_Static_assert`,
+# which has no such name.
+
 # Most headers in this tree are written to be included after mruby.h rather
 # than to be parsed on their own, so a language server pointed at one directly
 # resolves none of its types: they all decay to implicit int, and
@@ -42,3 +57,38 @@ CompileFlags:
   Add:
     - --include=mruby.h
     - --include=mrc_irep.h
+
+---
+# mruby-compiler is built with MRC_TARGET_MRUBY, and mruby-bin-mrbc copies
+# that define from it because it links the gem's objects. Without it
+# mrc_common.h takes its standalone-mrbc branch, which never includes mruby.h
+# and makes `mrb_state` a macro for void: the sources still parse, but no
+# mrb_* declaration is in scope and every `mrb->` field resolves to nothing.
+#
+# PRISM_XALLOCATOR is what makes prism/defines.h include the gem's
+# prism_xallocator.h, so the vendored Prism sources see mruby's allocator.
+# Both are settings rather than paths, which is why they are here and the
+# include paths are not.
+If:
+  PathMatch:
+    - mrbgems/mruby-compiler/.*
+    - mrbgems/mruby-bin-mrbc/.*
+
+CompileFlags:
+  Add:
+    - -DMRC_TARGET_MRUBY
+    - -DPRISM_XALLOCATOR
+
+---
+# mruby-bin-debugger turns MRB_USE_DEBUG_HOOK on for the whole build (it is in
+# the default gembox), and mrdbconf.h #errors out without it, so its sources
+# are unreadable here unless this config supplies it. It is set for the gem
+# rather than globally: which gems a build carries is a build configuration
+# question, and the rest of the tree should not be read through the answer
+# this one gem happens to give.
+If:
+  PathMatch: mrbgems/mruby-bin-debugger/.*
+
+CompileFlags:
+  Add:
+    - -DMRB_USE_DEBUG_HOOK
