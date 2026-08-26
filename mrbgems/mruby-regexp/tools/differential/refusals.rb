@@ -1,8 +1,9 @@
-# Generate the cases for a differential run over the backreferences a pattern
-# may make, the ones it may not among them: every sequence of groups up to a
+# Generate the cases for a differential run over the references a pattern may
+# make, the ones it may not among them: every sequence of groups up to a
 # length, each paired with every spelling of a numbered, relative and named
-# reference, written after the groups, before them, and inside the last of
-# them.
+# backreference and subexpression call, written after the groups, before
+# them, and inside the last of them -- which for a call is where recursion
+# stands, wanted or refused.
 #
 #   ruby mrbgems/mruby-regexp/tools/differential/refusals.rb [options] > cases.txt
 #   CASES=cases.txt COMPARE_OPTS=-e bash \
@@ -72,12 +73,19 @@ refs = []
   # ever a reference.
   refs << "\\#{n}" if n.between?(1, 9)
   refs << "\\k<#{n}>" << "\\k'#{n}'" << "\\k<-#{n}>" << "\\k'-#{n}'"
+  # A subexpression call resolves as the reference does and is refused where
+  # one is, with lines of its own: `\g<0>` is the whole pattern where `\k<0>`
+  # names no group, `\g<+n>` counts forward where `\k` has no such form, and
+  # a call that re-enters the group it stands in may be `never ending
+  # recursion`. Those rows differ from a backreference's by design; whether
+  # each engine draws the lines in the same place is what the corpus asks.
+  refs << "\\g<#{n}>" << "\\g'#{n}'" << "\\g<-#{n}>" << "\\g'-#{n}'" << "\\g<+#{n}>"
 end
-[BOUND, BOUND + 1].each { |n| refs << "\\k<#{n}>" << "\\k<-#{n}>" }
+[BOUND, BOUND + 1].each { |n| refs << "\\k<#{n}>" << "\\k<-#{n}>" << "\\g<#{n}>" << "\\g<-#{n}>" }
 # The last two numbers a group can carry and the two above them, which no
 # pattern reaches however long it is.
-(MAX_GROUPS - 1).upto(MAX_GROUPS + 2) { |n| refs << "\\k<#{n}>" << "\\k<-#{n}>" }
-1.upto(opts[:groups] + 1) { |n| refs << "\\k<g#{n}>" }
+(MAX_GROUPS - 1).upto(MAX_GROUPS + 2) { |n| refs << "\\k<#{n}>" << "\\k<-#{n}>" << "\\g<#{n}>" << "\\g<-#{n}>" }
+1.upto(opts[:groups] + 1) { |n| refs << "\\k<g#{n}>" << "\\g<g#{n}>" }
 
 seqs = [[]]
 1.upto(opts[:groups]) { |len| seqs.concat(FORMS.repeated_permutation(len).to_a) }

@@ -73,6 +73,20 @@
 #                       body alone. A toggle says at least one letter, since
 #                       CRuby refuses `(?)`, and no quantifier lands on one,
 #                       since CRuby reads `(?i)*` as a repeat of nothing.
+#   call                subexpression calls. `\g<n>`, `\g'n'` and the relative
+#                       `\g<-n>` run a closed group's body again where the
+#                       call stands (a name in a named pattern), a capture
+#                       group may close with an optional call to itself, and
+#                       a pattern that consumes on every path may end with
+#                       `\g<0>?`. What keeps every drawn pattern compiling is
+#                       where a call may not stand: a recursive call reachable
+#                       from its group's entry with nothing consumed, or one
+#                       no path avoids, is `never ending recursion` in CRuby,
+#                       so a self-call goes only at the tail of a body that
+#                       consumes on every path, and only under a quantifier
+#                       that admits zero. Calls to closed groups make no cycle
+#                       at all, every body holding calls only to groups closed
+#                       before it.
 #
 # All features are on unless -f or -w says otherwise. Every pattern compiles
 # under CRuby; what this gem refuses is reported by compare.rb.
@@ -81,7 +95,7 @@ require 'optparse'
 
 FEATURES = %w[lazy interval class anchor empty lookahead lookbehind
               lookaround-capture backref backref-name backref-forward
-              named-group atomic possessive inline-option].freeze
+              named-group atomic possessive inline-option call].freeze
 
 opts = {
   seed: 1, count: 1000, depth: 2, quantify: 0.5, alphabet: "ab",
@@ -232,6 +246,27 @@ def backreference(groups)
   forms.sample
 end
 
+# A call to a group already closed, in whichever spellings apply, or nil when
+# nothing is closed. A closed group's body holds calls only to groups closed
+# before it, so these calls make no cycle and every pattern they stand in
+# compiles; the recursive shapes are drawn in group() and at the top level,
+# where what makes them compile can be seen to hold. The relative spelling
+# counts back over every group opened so far, so the group it names is spelled
+# from the count at the call.
+def call_reference(groups)
+  forms = []
+  if groups.named?
+    # A named pattern refuses a numbered call whatever its spelling, as it
+    # refuses a numbered backreference.
+    names = groups.closed_names
+    forms << "\\g<#{names.sample}>" << "\\g'#{names.sample}'" if names.any?
+  elsif groups.closed.any?
+    k = groups.closed.sample
+    forms << "\\g<#{k}>" << "\\g'#{k}'" << "\\g<-#{groups.opened + 1 - k}>"
+  end
+  forms.sample
+end
+
 # Fill in the forward references: any group the pattern has is one they may
 # name, whether or not it stands before them. The `\N` spelling is held to one
 # digit: a longer number standing before the groups it counts is an octal
@@ -257,6 +292,11 @@ def atom(depth, groups, in_lookahead: false)
   elsif depth > 0 && r < 0.5 && (on?("lookahead") || on?("lookbehind"))
     lookaround(depth, groups, in_lookahead: in_lookahead)
   elsif r < 0.6 && (ref = backreference(groups))
+    Atom.new(ref, true)
+  elsif r < 0.65 && on?("call") && (ref = call_reference(groups))
+    # Marked as able to match empty although a call consumes what its body
+    # does: CRuby's never-ending analysis reads a call's minimum as zero, and
+    # marking it here keeps the self-call guard in group() on the same page.
     Atom.new(ref, true)
   elsif r < 0.7 && on?("empty")
     empty_atom(groups)
@@ -304,6 +344,18 @@ def group(depth, groups, in_lookahead: false)
     src = body.src; empty = body.empty
   end
   if wrap
+    # A capture group may close with a call to itself: recursion, the shape
+    # the feature exists for. Two guards keep the pattern one CRuby compiles.
+    # The body must consume on every path (`!empty`, which alternation makes
+    # the or of its branches), or the call is reachable from the group's
+    # entry with nothing consumed; and the quantifier must admit zero, or no
+    # invocation completes without recursing. Either way lies `never ending
+    # recursion`.
+    if capture && on?("call") && !empty && rand < 0.3
+      q = rand < 0.5 ? "?" : "*"
+      q += "?" if on?("lazy") && rand < 0.4
+      src += "\\g<#{name || n}>#{q}"
+    end
     groups.close(n) if capture
     Atom.new(name ? "(?<#{name}>#{src})" : "(#{src})", empty)
   elsif on?("atomic") && rand < 0.3
@@ -355,7 +407,13 @@ opts[:count].times do
   # what a name changes reaches the whole pattern, a plain (...) capturing
   # nothing in one, so it is decided here rather than group by group.
   groups = Groups.new(on?("named-group") && rand < 0.5)
-  pat = resolve_forward(seq(opts[:depth], groups).src, groups.opened)
+  top = seq(opts[:depth], groups)
+  src = top.src
+  # `\g<0>` runs the whole pattern again, and may end one under the guards
+  # the self-call in group() states: a pattern that consumes on every path,
+  # a quantifier that admits zero.
+  src += "\\g<0>?" if on?("call") && !top.empty && rand < 0.1
+  pat = resolve_forward(src, groups.opened)
   if opts[:all_subjects]
     subjects.each { |s| puts "#{pat}\t#{s}" }
   else
