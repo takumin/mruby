@@ -453,6 +453,13 @@ $ bash mrbgems/mruby-regexp/tools/differential/differential.sh -n 10000 -s 2 -- 
 the alphabet, the nesting depth and the set of features to draw from
 (lookarounds, backreferences, atomic groups, repetitions whose body can match
 empty, and so on; `--list-features` names them, and `-w` leaves some out).
+A backreference is drawn in each spelling CRuby reads: `\1`, `\k<1>` and
+`\k'1'`, the relative `\k<-1>`, which counts back over the groups opened so
+far, and a reference standing before the group it names, which compiles and
+matches only once that group has captured. Some of the patterns declare their
+groups with `(?<gN>...)`, where a plain `(...)` captures nothing and a
+numbered reference is refused whatever its spelling, so the references in
+them name a group instead.
 Its subjects are every string over the alphabet up to a length (`-l`, four),
 and a repetition crosses one iteration per character, so a case built from
 them reaches no limit either engine sets; `-L` adds subjects that are runs of

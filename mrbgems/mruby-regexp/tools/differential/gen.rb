@@ -49,6 +49,20 @@
 #                       or two literals
 #   lookaround-capture  a capture group may open inside a lookahead
 #   backref             `\1`..`\9` to a group closed earlier in the pattern
+#   backref-name        the same reference spelled `\k<n>` or `\k'n'`, which
+#                       no digit bounds, and the relative `\k<-n>`, which
+#                       counts back over the groups opened so far and so may
+#                       name the group it stands in
+#   backref-forward     a reference to a group the pattern opens after it,
+#                       `\1(a)` and `\k<1>(a)`: valid in CRuby, and no match
+#                       until the group has captured, which is what a
+#                       repetition such as `(?:\1|(a))+` is written for
+#   named-group         some patterns declare their capture groups with
+#                       `(?<gN>...)`. A plain (...) then captures nothing and
+#                       takes no number, and a numbered reference is refused
+#                       whatever its spelling, so references in such a pattern
+#                       name a group instead. A name is never written before
+#                       the group carrying it, which CRuby refuses.
 #   atomic              `(?>...)`
 #   possessive          `*+` `++` `?+`, in place of the lazy mark; an interval
 #                       takes neither, since `{n,m}+` is a repeat of a repeat
@@ -59,7 +73,8 @@
 require 'optparse'
 
 FEATURES = %w[lazy interval class anchor empty lookahead lookbehind
-              lookaround-capture backref atomic possessive].freeze
+              lookaround-capture backref backref-name backref-forward
+              named-group atomic possessive].freeze
 
 opts = {
   seed: 1, count: 1000, depth: 2, quantify: 0.5, alphabet: "ab",
@@ -84,6 +99,10 @@ unknown = opts[:features] - FEATURES
 abort "unknown feature: #{unknown.join(', ')}" unless unknown.empty?
 abort "the alphabet needs at least two distinct characters" if opts[:alphabet].chars.uniq.size < 2
 abort "the alphabet cannot hold a tab or a newline" if opts[:alphabet] =~ /[\t\n\r]/
+# `\1` ends where its digits do, so a literal digit behind one would join it
+# and name a different group, or none.
+abort "the alphabet cannot hold a digit while `\\1` is generated" if opts[:alphabet] =~ /[0-9]/ &&
+                                                                    (opts[:features] & %w[backref backref-forward]).any?
 abort "a long subject needs a length of at least one" if opts[:long].any? { |l| l < 1 }
 
 srand(opts[:seed])
@@ -142,12 +161,65 @@ end
 
 # groups: the number of capture groups opened so far (which is how they are
 # numbered), and the numbers of those already closed, which is what a
-# backreference may name.
+# backreference may name. `named` says the pattern declares its groups with
+# names, and a plain (...) then captures nothing, so it takes no number here.
 class Groups
   attr_reader :opened, :closed
-  def initialize; @opened = 0; @closed = []; end
-  def open; @opened += 1; end
+  def initialize(named = false); @opened = 0; @closed = []; @names = {}; @named = named; end
+  def named?; @named; end
+  def open(name = nil)
+    @opened += 1
+    @names[@opened] = name if name
+    @opened
+  end
   def close(n); @closed << n; end
+  def closed_names; @closed.filter_map { |n| @names[n] }; end
+end
+
+# A forward reference stands where the pattern's group count is not known yet,
+# so it is written as this marker and filled in once the pattern is whole.
+# A quantifier lands on the marker as it would on the reference itself.
+FORWARD = "\0"
+
+# A reference to a group, in whichever spellings are on, or nil when the
+# pattern holds nothing this reference could name.
+def backreference(groups)
+  forms = []
+  if groups.named?
+    # A named pattern refuses a numbered reference whatever its spelling, so
+    # only a name reaches a group here, and only one already written.
+    names = groups.closed_names
+    if on?("backref-name") && names.any?
+      forms << "\\k<#{names.sample}>" << "\\k'#{names.sample}'"
+    end
+  else
+    small = groups.closed.select { |n| n <= 9 }
+    forms << "\\#{small.sample}" if on?("backref") && small.any?
+    if on?("backref-name")
+      forms << "\\k<#{groups.closed.sample}>" << "\\k'#{groups.closed.sample}'" if groups.closed.any?
+      forms << "\\k<-#{rand(1..groups.opened)}>" if groups.opened > 0
+    end
+    forms << FORWARD if on?("backref-forward")
+  end
+  forms.sample
+end
+
+# Fill in the forward references: any group the pattern has is one they may
+# name, whether or not it stands before them. The `\N` spelling is held to one
+# digit: a longer number standing before the groups it counts is an octal
+# escape and not a reference at all, while `\k<n>` is bounded by its brackets.
+def resolve_forward(pat, total)
+  pat.gsub(FORWARD) do
+    if total.zero?
+      # The pattern opened no group after all, so there is nothing to name; a
+      # literal leaves an atom where a quantifier may already have been drawn.
+      Regexp.escape($alphabet.sample)
+    elsif on?("backref-name") && rand < 0.5
+      "\\k<#{rand(1..total)}>"
+    else
+      "\\#{rand(1..[total, 9].min)}"
+    end
+  end
 end
 
 def atom(depth, groups, in_lookahead: false)
@@ -156,8 +228,8 @@ def atom(depth, groups, in_lookahead: false)
     group(depth, groups, in_lookahead: in_lookahead)
   elsif depth > 0 && r < 0.5 && (on?("lookahead") || on?("lookbehind"))
     lookaround(depth, groups, in_lookahead: in_lookahead)
-  elsif r < 0.6 && on?("backref") && groups.closed.any? { |n| n <= 9 }
-    Atom.new("\\#{groups.closed.select { |n| n <= 9 }.sample}", true)
+  elsif r < 0.6 && (ref = backreference(groups))
+    Atom.new(ref, true)
   elsif r < 0.7 && on?("empty")
     empty_atom(groups)
   elsif r < 0.8 && on?("anchor")
@@ -169,17 +241,18 @@ def atom(depth, groups, in_lookahead: false)
   end
 end
 
-# An atom that matches empty on its own. Two of the forms are capture groups
-# and take a number.
+# An atom that matches empty on its own. Two of the forms are groups, and take
+# a number unless the pattern is a named one and the group is written plain.
 def empty_atom(groups)
   c = Regexp.escape($alphabet.sample)
   case rand(4)
   when 0 then Atom.new("(?:)", true)
   when 1 then Atom.new("(?:#{c}|)", true)
   else
-    n = groups.open
-    groups.close(n)
-    Atom.new(rand < 0.5 ? "(#{c}|)" : "(|#{c})", true)
+    body = rand < 0.5 ? "#{c}|" : "|#{c}"
+    name = (groups.named? && rand < 0.7) ? "g#{groups.opened + 1}" : nil
+    groups.close(groups.open(name)) if name || !groups.named?
+    Atom.new(name ? "(?<#{name}>#{body})" : "(#{body})", true)
   end
 end
 
@@ -187,8 +260,12 @@ def group(depth, groups, in_lookahead: false)
   # A capture group inside a lookahead is what lookaround-capture allows; a
   # capture cannot open inside a lookbehind, so a lookbehind body is never
   # built here.
-  capture = rand < 0.4 && (!in_lookahead || on?("lookaround-capture"))
-  n = groups.open if capture
+  wrap = rand < 0.4 && (!in_lookahead || on?("lookaround-capture"))
+  # In a named pattern a plain (...) captures nothing and takes no number, so
+  # a group written that way is still drawn, and no reference can name it.
+  name = (wrap && groups.named? && rand < 0.7) ? "g#{groups.opened + 1}" : nil
+  capture = wrap && (!groups.named? || !name.nil?)
+  n = groups.open(name) if capture
   body = seq(depth - 1, groups, in_lookahead: in_lookahead)
   if rand < 0.4
     other = seq(depth - 1, groups, in_lookahead: in_lookahead)
@@ -196,9 +273,9 @@ def group(depth, groups, in_lookahead: false)
   else
     src = body.src; empty = body.empty
   end
-  if capture
-    groups.close(n)
-    Atom.new("(#{src})", empty)
+  if wrap
+    groups.close(n) if capture
+    Atom.new(name ? "(?<#{name}>#{src})" : "(#{src})", empty)
   elsif on?("atomic") && rand < 0.3
     Atom.new("(?>#{src})", empty)
   else
@@ -242,8 +319,11 @@ end
 subjects.uniq!
 
 opts[:count].times do
-  groups = Groups.new
-  pat = seq(opts[:depth], groups).src
+  # Half the patterns declare their groups with names when named-group is on:
+  # what a name changes reaches the whole pattern, a plain (...) capturing
+  # nothing in one, so it is decided here rather than group by group.
+  groups = Groups.new(on?("named-group") && rand < 0.5)
+  pat = resolve_forward(seq(opts[:depth], groups).src, groups.opened)
   if opts[:all_subjects]
     subjects.each { |s| puts "#{pat}\t#{s}" }
   else
