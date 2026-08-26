@@ -30,6 +30,14 @@ set_errno_from_win32(DWORD err)
   case ERROR_NOT_FOUND:
     errno = ESRCH;
     break;
+  case ERROR_FILE_NOT_FOUND:
+  case ERROR_PATH_NOT_FOUND:
+    errno = ENOENT;
+    break;
+  case ERROR_NOT_ENOUGH_MEMORY:
+  case ERROR_OUTOFMEMORY:
+    errno = ENOMEM;
+    break;
   default:
     errno = EINVAL;
     break;

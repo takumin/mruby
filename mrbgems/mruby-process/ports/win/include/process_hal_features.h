@@ -13,11 +13,12 @@
 #ifndef MRUBY_PROCESS_HAL_FEATURES_H
 #define MRUBY_PROCESS_HAL_FEATURES_H
 
-/* No wait.  Win32 waits on a handle, and a handle is got by opening a
-   process ID, which succeeds for any process this one may open and says
-   nothing about parentage: waiting on one would report a stranger's exit
-   code as a child's.  A port learns of its children when it creates them,
-   so `Process.wait` and its three other spellings are answerable once
-   spawn exists and not before. */
+/* WaitForMultipleObjects(): `Process.wait`, `Process.waitpid`,
+   `Process.wait2` and `Process.waitpid2`.  Win32 waits on a handle, and the
+   only handles this port has are the ones it opened by spawning, so a wait
+   here answers for a child this interpreter created and for nothing else: a
+   handle got by opening a process ID stands for any process the caller may
+   open and says nothing about parentage. */
+#define MRB_HAL_PROCESS_HAS_WAIT
 
 #endif /* MRUBY_PROCESS_HAL_FEATURES_H */
