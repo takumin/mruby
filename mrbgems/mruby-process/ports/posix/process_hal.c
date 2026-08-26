@@ -4,10 +4,10 @@
 ** See Copyright Notice in mruby.h
 **
 ** POSIX implementation of the process HAL using getpid(2), getppid(2),
-** waitpid(2), kill(2), clock_gettime(2) and clock_getres(2), falling back to
-** gettimeofday(2) where the host has no POSIX clocks, and getrusage(2) for
-** the CPU time totals behind Process.times, falling back to times(2) scaled
-** by sysconf(_SC_CLK_TCK) where the host has no getrusage(2).
+** fork(2)/exec(3), waitpid(2), kill(2), clock_gettime(2) and clock_getres(2),
+** falling back to gettimeofday(2) where the host has no POSIX clocks, and
+** getrusage(2) for the CPU time totals behind Process.times, falling back to
+** times(2) scaled by sysconf(_SC_CLK_TCK) where the host has no getrusage(2).
 ** Supported platforms: Linux, macOS, BSD, Unix
 */
 
@@ -19,11 +19,24 @@
 #include <sys/wait.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+/* The environment a child inherits, which posix_spawn() is handed rather than
+   left to work out for itself.  Apple keeps it behind a call in a library
+   whose image may be shared, where a variable could not be. */
+#if defined(__APPLE__)
+# include <crt_externs.h>
+# define environ (*_NSGetEnviron())
+#else
+extern char **environ;
+#endif
 
 /*
  * Feature Capabilities
@@ -88,6 +101,43 @@
 # endif
 #endif
 
+/* Whether this host has a posix_spawn() that answers for the exec.
+   posix_spawn() creates the child and executes the image in the one call, so
+   a spawn made with it needs neither a fork() in a process whose other
+   threads this VM knows nothing about, nor a pipe to carry a failed exec
+   back.  What it does need is that the call itself report that failure:
+   POSIX allows an implementation to create the child, let it exit 127 and say
+   nothing, which would leave a command that could not be run looking exactly
+   like a command that exited 127 of its own accord.  Whether a host does that
+   is not something a compile can ask, so it is named here rather than
+   probed.  Darwin reports it because posix_spawn() is a system call there;
+   glibc reports it from 2.24 on, through the page it shares with the child it
+   vforks.  A build whose host does the same can define this itself.
+   HAVE_POSIX_SPAWN, from mrbgem.rake, is whether the call is there at all.
+
+   Defining it to 0 is how a build says the other thing, and what the host is
+   is not all that decides it: under valgrind 3.27 a posix_spawn() whose exec
+   failed returns 0, so a run under that tool wants the fork path, which
+   reports through a pipe of its own and does not depend on the host at
+   all. */
+#ifndef MRB_PROCESS_HAVE_POSIX_SPAWN
+# ifdef HAVE_POSIX_SPAWN
+#  if defined(__APPLE__)
+#   define MRB_PROCESS_HAVE_POSIX_SPAWN 1
+#  elif defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+#   if __GLIBC_PREREQ(2, 24)
+#    define MRB_PROCESS_HAVE_POSIX_SPAWN 1
+#   endif
+#  endif
+# endif
+# ifndef MRB_PROCESS_HAVE_POSIX_SPAWN
+#  define MRB_PROCESS_HAVE_POSIX_SPAWN 0
+# endif
+#endif
+#if MRB_PROCESS_HAVE_POSIX_SPAWN
+# include <spawn.h>
+#endif
+
 /* Whether this host has getrusage(2), which is how Process.times reads CPU
    time here: RUSAGE_SELF and RUSAGE_CHILDREN are both XSI extensions
    (SUSv2), present on Linux, macOS and the BSDs but not guaranteed by base
@@ -138,6 +188,498 @@ mrb_hal_process_ppid(mrb_state *mrb)
   (void)mrb;
   return (mrb_int)getppid();
 }
+
+/*
+ * Spawning
+ */
+
+#ifndef MRB_NO_PROCESS_SPAWN
+
+/*
+ * What the child will execute, worked out before the fork
+ *
+ * A child between fork() and exec() may call only what is async-signal-safe.
+ * mruby needs no threads of its own for that to matter: it is an embeddable
+ * VM, so the process it runs in may already have others, and a fork made
+ * while one of them holds a lock leaves the child holding a lock nobody will
+ * ever release.  So the PATH is walked here rather than by execvp() over
+ * there, which is a call that can allocate.  What is left for the child is
+ * execv() and a write down the error pipe.
+ */
+struct exec_plan {
+  const char **argv;     /* what the image is run with */
+  const char **path;     /* images to try, in order; NULL-terminated */
+  const char **sh_argv;  /* what ENOEXEC falls back to, or NULL; the child
+                            writes the image it found into slot 1 */
+  char **owned;          /* every string allocated for the above */
+};
+
+/* "<a><sep><b>", with no separator when `sep` is 0. */
+static char*
+str_join(mrb_state *mrb, const char *a, size_t alen, char sep, const char *b, size_t blen)
+{
+  char *s = (char*)mrb_malloc_simple(mrb, alen + (sep ? 1 : 0) + blen + 1);
+  size_t n = alen;
+
+  if (s == NULL) return NULL;
+  memcpy(s, a, alen);
+  if (sep) s[n++] = sep;
+  memcpy(s + n, b, blen);
+  s[n + blen] = '\0';
+  return s;
+}
+
+static void
+plan_free(mrb_state *mrb, struct exec_plan *plan)
+{
+  size_t i;
+
+  if (plan->owned != NULL) {
+    for (i = 0; plan->owned[i] != NULL; i++) mrb_free(mrb, plan->owned[i]);
+    mrb_free(mrb, plan->owned);
+  }
+  mrb_free(mrb, (void*)plan->argv);
+  mrb_free(mrb, (void*)plan->path);
+  mrb_free(mrb, (void*)plan->sh_argv);
+  memset(plan, 0, sizeof(*plan));
+}
+
+static size_t
+count_elements(const char *s)
+{
+  size_t n = 1;
+
+  for (; *s != '\0'; s++) {
+    if (*s == ':') n++;
+  }
+  return n;
+}
+
+/* Build the plan.  Returns 0, or -1 with errno set. */
+static int
+plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_plan *plan)
+{
+  const char *path_env = getenv("PATH");
+  char *path_default = NULL;
+  const char *name;
+  size_t argc = 0, nowned = 0, npath = 1, namelen, i;
+
+  memset(plan, 0, sizeof(*plan));
+  while (params->argv[argc] != NULL) argc++;
+
+  name = params->argv[0];
+  namelen = strlen(name);
+  if (params->kind == MRB_PROCESS_SPAWN_ARGV && strchr(name, '/') == NULL) {
+    if (path_env == NULL) {
+      /* No PATH to look on is not no places to look: execvp() falls back to
+         the one the host names, and a host that names none leaves the two
+         directories every system has.  Resolved before the arrays are sized,
+         so that what is counted is what is walked. */
+      size_t len = confstr(_CS_PATH, NULL, 0);
+
+      if (len > 0) {
+        path_default = (char*)mrb_malloc_simple(mrb, len);
+        if (path_default == NULL) goto nomem;
+        confstr(_CS_PATH, path_default, len);
+        path_env = path_default;
+      }
+      else {
+        path_env = "/bin:/usr/bin";
+      }
+    }
+    npath = count_elements(path_env);
+  }
+
+  /* One allocation for each array the child reads, and one for the strings
+     inside them.  The strings are the candidate images, and the default PATH
+     where one had to be asked for, which is the extra slot.
+
+     Taken one at a time and terminated as it goes: what plan_free() walks to
+     find the strings is `owned` itself, so it has to be a list before
+     anything that can fail comes after it. */
+  plan->owned = (char**)mrb_malloc_simple(mrb, sizeof(char*) * (npath + 2));
+  if (plan->owned == NULL) goto nomem;
+  plan->owned[0] = NULL;
+  plan->path = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (npath + 1));
+  if (plan->path == NULL) goto nomem;
+  plan->argv = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (argc + 4));
+  if (plan->argv == NULL) goto nomem;
+  if (path_default != NULL) {
+    plan->owned[nowned++] = path_default;
+    plan->owned[nowned] = NULL;
+    path_default = NULL;   /* the plan frees it from here on */
+  }
+
+  if (params->kind == MRB_PROCESS_SPAWN_SHELL) {
+    /* One string, taken apart by the shell, which is whose work that is. */
+    plan->argv[0] = "sh";
+    plan->argv[1] = "-c";
+    plan->argv[2] = params->argv[0];
+    plan->argv[3] = NULL;
+    plan->path[0] = "/bin/sh";
+    plan->path[1] = NULL;
+    return 0;
+  }
+
+  for (i = 0; i <= argc; i++) plan->argv[i] = params->argv[i];
+
+  /* What execvp() does with a file that is not an executable image: hand it
+     to the shell, arguments and all.  Which image that was is known only
+     once one has been tried, so the child fills that slot in.  Built before
+     the images are chosen, because any of them can turn out to be one,
+     including the single image a name that is a path names. */
+  plan->sh_argv = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (argc + 3));
+  if (plan->sh_argv == NULL) goto nomem;
+  plan->sh_argv[0] = "sh";
+  plan->sh_argv[1] = NULL;
+  for (i = 1; i < argc; i++) plan->sh_argv[i + 1] = params->argv[i];
+  plan->sh_argv[argc + 1] = NULL;
+
+  if (strchr(name, '/') != NULL) {
+    plan->path[0] = name;
+    plan->path[1] = NULL;
+    return 0;
+  }
+
+  {
+    size_t n = 0;
+    const char *p;
+
+    for (p = path_env; ; ) {
+      const char *sep = strchr(p, ':');
+      size_t len = (sep != NULL) ? (size_t)(sep - p) : strlen(p);
+      char *cand;
+
+      /* An empty element is the current directory, as it is for execvp(). */
+      cand = (len == 0) ? str_join(mrb, ".", 1, '/', name, namelen)
+                        : str_join(mrb, p, len, '/', name, namelen);
+      if (cand == NULL) goto nomem;
+      plan->owned[nowned++] = cand;
+      plan->owned[nowned] = NULL;
+      plan->path[n++] = cand;
+      if (sep == NULL) break;
+      p = sep + 1;
+    }
+    plan->path[n] = NULL;
+  }
+  return 0;
+
+nomem:
+  mrb_free(mrb, path_default);
+  plan_free(mrb, plan);
+  errno = ENOMEM;
+  return -1;
+}
+
+/*
+ * The fork path
+ *
+ * Where posix_spawn() is the one above, none of this is compiled: what it
+ * is for is reporting a failed exec, and that call reports one itself.
+ */
+#if !MRB_PROCESS_HAVE_POSIX_SPAWN
+
+static int
+fd_set_cloexec(int fd, int on)
+{
+#if defined(F_GETFD) && defined(F_SETFD) && defined(FD_CLOEXEC)
+  int flags = fcntl(fd, F_GETFD);
+
+  if (flags == -1) return -1;
+  flags = on ? (flags | FD_CLOEXEC) : (flags & ~FD_CLOEXEC);
+  return fcntl(fd, F_SETFD, flags);
+#else
+  (void)fd; (void)on;
+  return 0;
+#endif
+}
+
+/*
+ * The pipe a failed exec is reported down.
+ *
+ * It has to be close-on-exec, and it has to become that in the call that
+ * creates it.  Between pipe() and the fcntl() that would set the flag,
+ * another thread of the embedding process can fork and exec, and the copy of
+ * the write end that child keeps is one this parent cannot close: the read
+ * below then reaches EOF when that unrelated child exits rather than when
+ * this one execs.  pipe2() sets the flag as it creates the descriptors and
+ * leaves no such window, and HAVE_PIPE2 is whether this host has it, asked of
+ * the compiler by mrbgem.rake since a `#if` here cannot read a header.
+ *
+ * The two calls remain for the hosts that have no atomic form to offer.
+ * macOS is one of them, so this is not only a path for old systems.  It
+ * closes the window no further than fcntl() can, which is to say that a fork
+ * and exec landing in it still carries the write end away.
+ */
+static int
+errpipe(int fds[2])
+{
+#ifdef HAVE_PIPE2
+  if (pipe2(fds, O_CLOEXEC) == 0) return 0;
+  if (errno != ENOSYS) return -1;
+  /* A kernel older than the C library it was built against says ENOSYS, and
+     the two calls below are what it has instead. */
+#endif
+  if (pipe(fds) == -1) return -1;
+  if (fd_set_cloexec(fds[0], 1) == -1 || fd_set_cloexec(fds[1], 1) == -1) {
+    int err = errno;
+    close(fds[0]);
+    close(fds[1]);
+    fds[0] = fds[1] = -1;
+    errno = err;
+    return -1;
+  }
+  return 0;
+}
+
+/* Everything the child does between fork() and exec().  It reports a failure
+   by writing errno down `errfd`, which the parent is reading; the write end
+   is close-on-exec, so a successful exec closes it and the parent's read
+   ends at EOF with nothing to report.
+
+   Nothing here allocates: what it needs was worked out before the fork. */
+static void
+child_exec(const struct exec_plan *plan, int errfd)
+{
+  size_t i;
+  int err;
+  int denied = 0;
+
+  /* The command, tried at each name the parent worked out for it.  What
+     execvp() does with the PATH is done there, before the fork, because none
+     of it is safe to do here. */
+  for (i = 0; plan->path[i] != NULL; i++) {
+    execv(plan->path[i], (char*const*)plan->argv);
+    switch (errno) {
+    case ENOEXEC:
+      /* A file that is not an executable image is handed to the shell, as
+         execvp() hands it to one.  Nothing is tried after that: the shell
+         either runs it or it does not.  A plan that is the shell already has
+         nothing to fall back to and reports what it was told. */
+      if (plan->sh_argv == NULL) goto fail;
+      plan->sh_argv[1] = plan->path[i];
+      execv("/bin/sh", (char*const*)plan->sh_argv);
+      goto fail;
+    case EACCES:
+      /* Something of that name is there and cannot be run.  Later names may
+         still work, and this is what is reported if none of them does. */
+      denied = 1;
+      break;
+    case ENOENT:
+    case ENOTDIR:
+      break;
+    default:
+      goto fail;
+    }
+  }
+  if (denied) errno = EACCES;
+
+fail:
+  err = errno;
+  if (err == 0) err = ENOEXEC;
+  {
+    /* The parent reads exactly this many bytes or nothing at all, so a write
+       cut short by a signal is finished rather than left half said.  Nobody
+       else writes to this pipe, so what is left to write is what has not
+       been written yet. */
+    const char *p = (const char*)&err;
+    size_t left = sizeof(err);
+
+    while (left > 0) {
+      ssize_t n = write(errfd, p, left);
+      if (n == -1) {
+        if (errno == EINTR) continue;
+        break;
+      }
+      p += n;
+      left -= (size_t)n;
+    }
+  }
+  _exit(127);
+}
+
+/* Read what the child reported, if anything.  Returns the errno the child
+   failed with, or 0 when the pipe reached EOF because exec succeeded. */
+static int
+read_child_error(int fd)
+{
+  char buf[sizeof(int)];
+  size_t got = 0;
+
+  while (got < sizeof(buf)) {
+    ssize_t n = read(fd, buf + got, sizeof(buf) - got);
+    if (n == -1) {
+      if (errno == EINTR) continue;
+      return 0;
+    }
+    if (n == 0) break;
+    got += (size_t)n;
+  }
+  if (got < sizeof(buf)) return 0;
+
+  {
+    int err;
+    memcpy(&err, buf, sizeof(err));
+    return err;
+  }
+}
+
+/* Spawn the plan with fork() and exec(), a failed exec reported down a pipe.
+   Returns 0 with *out_pid set, or -1 with errno set. */
+static int
+spawn_fork(const struct exec_plan *plan, pid_t *out_pid)
+{
+  int errfds[2] = { -1, -1 };
+  int child_errno, saved_errno;
+  pid_t child;
+
+  if (errpipe(errfds) == -1) return -1;
+
+  child = fork();
+  if (child == -1) goto error;
+  if (child == 0) {
+    close(errfds[0]);
+    child_exec(plan, errfds[1]);
+    /* not reached */
+  }
+
+  close(errfds[1]);
+  errfds[1] = -1;
+  child_errno = read_child_error(errfds[0]);
+  close(errfds[0]);
+  errfds[0] = -1;
+
+  if (child_errno != 0) {
+    /* The child never became the command, so it is this call's to clean up
+       rather than a child the caller now owns. */
+    int status;
+    while (waitpid(child, &status, 0) == -1 && errno == EINTR) {}
+    errno = child_errno;
+    goto error;
+  }
+
+  *out_pid = child;
+  return 0;
+
+error:
+  saved_errno = errno;
+  if (errfds[0] != -1) close(errfds[0]);
+  if (errfds[1] != -1) close(errfds[1]);
+  errno = saved_errno;
+  return -1;
+}
+
+#endif /* !MRB_PROCESS_HAVE_POSIX_SPAWN */
+
+#if MRB_PROCESS_HAVE_POSIX_SPAWN
+
+/* Spawn the plan with posix_spawn(), which creates the child and executes
+   the image in the one call and answers with the errno an exec failed with.
+   So there is no fork() here for another thread's lock to be caught in, and
+   no pipe for a failure to be carried back down.
+   Returns 0 with *out_pid set, or -1 with errno set. */
+static int
+spawn_posix(const struct exec_plan *plan, pid_t *out_pid)
+{
+  pid_t pid = -1;
+  size_t i;
+  int denied = 0;
+  /* The command, tried at each name the plan worked out for it.  What the
+     child made of execv()'s errno is made here of posix_spawn()'s answer,
+     which is that same number arrived at the same way.  A plan always names
+     at least one image, so the walk always reaches an answer; the value set
+     here is what a host that handed one over empty would report. */
+  int err = ENOENT;
+
+  for (i = 0; plan->path[i] != NULL; i++) {
+    err = posix_spawn(&pid, plan->path[i], NULL, NULL,
+                      (char*const*)plan->argv, environ);
+    if (err == 0) goto done;
+    switch (err) {
+    case ENOEXEC:
+      /* A file that is not an executable image is handed to the shell, as
+         execvp() hands it to one.  Nothing is tried after that: the shell
+         either runs it or it does not.  A plan that is the shell already has
+         nothing to fall back to and reports what it was told. */
+      if (plan->sh_argv == NULL) goto done;
+      plan->sh_argv[1] = plan->path[i];
+      err = posix_spawn(&pid, "/bin/sh", NULL, NULL,
+                        (char*const*)plan->sh_argv, environ);
+      goto done;
+    case EACCES:
+      /* Something of that name is there and cannot be run.  Later names may
+         still work, and this is what is reported if none of them does. */
+      denied = 1;
+      break;
+    case ENOENT:
+    case ENOTDIR:
+      break;
+    default:
+      goto done;
+    }
+  }
+  if (denied) err = EACCES;
+
+done:
+  if (err != 0) {
+    errno = err;
+    return -1;
+  }
+  *out_pid = pid;
+  return 0;
+}
+
+#endif /* MRB_PROCESS_HAVE_POSIX_SPAWN */
+
+int
+mrb_hal_process_spawn(mrb_state *mrb, const mrb_process_spawn_params *params,
+                      mrb_int *pid)
+{
+  struct exec_plan plan;
+  int saved_errno;
+  pid_t child;
+
+  /* The empty name names no file, and looking for it on the PATH would find
+     the directories themselves.  execve("") answers ENOENT and so does this,
+     which is also what a command line of nothing but blanks arrives as. */
+  memset(&plan, 0, sizeof(plan));
+  if (params->argv == NULL || params->argv[0] == NULL ||
+      params->argv[0][0] == '\0') {
+    errno = ENOENT;
+    return -1;
+  }
+
+  if (plan_build(mrb, params, &plan) != 0) return -1;
+
+#if MRB_PROCESS_HAVE_POSIX_SPAWN
+  if (spawn_posix(&plan, &child) != 0) goto error;
+#else
+  if (spawn_fork(&plan, &child) != 0) goto error;
+#endif
+
+  plan_free(mrb, &plan);
+  *pid = (mrb_int)child;
+  return 0;
+
+error:
+  saved_errno = errno;
+  plan_free(mrb, &plan);
+  errno = saved_errno;
+  return -1;
+}
+
+#else /* MRB_NO_PROCESS_SPAWN */
+
+int
+mrb_hal_process_spawn(mrb_state *mrb, const mrb_process_spawn_params *params,
+                      mrb_int *pid)
+{
+  (void)mrb; (void)params; (void)pid;
+  errno = ENOSYS;
+  return -1;
+}
+
+#endif /* MRB_NO_PROCESS_SPAWN */
 
 /*
  * Waiting
