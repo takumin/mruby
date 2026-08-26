@@ -50,10 +50,13 @@ module ProcessTestUtil
     nil
   end
 
-  # Tests that need to kill a child.
+  # Tests that need to stop, continue and kill a child.  Windows has none of
+  # that, and the parts of this gem they cover are not what it has.
   def self.signal_reason
     return posix_reason if posix_reason
-    return "the platform has no job-control signals" unless signal?(:KILL)
+    unless signal?(:KILL) && signal?(:STOP) && signal?(:CONT)
+      return "the platform has no job-control signals"
+    end
     nil
   end
 
@@ -725,11 +728,30 @@ end
 assert('Process.waitpid') do
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
 
+  # Waiting by number is the platform's own selector, but a number this
+  # interpreter spawned is also a record it holds, and the wait goes through
+  # that record so that the two cannot come apart.
   pid = Process.spawn("exit 3")
   assert_equal pid, Process.waitpid(pid)
   assert_kind_of Process::Status, $?
   assert_equal pid, $?.pid
   assert_equal 3, $?.exitstatus
+end
+
+assert('Process.waitpid for a process this one did not spawn') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # A pid reaches the platform as written, and what it answers for is the
+  # children the running process has.  Its own parent is not one of them, so
+  # this is ECHILD wherever a parent can be named at all.
+  ppid = begin
+           Process.ppid
+         rescue StandardError
+           nil
+         end
+  skip "this platform cannot name a parent process" unless ppid
+
+  assert_raise(Errno::ECHILD) { Process.waitpid(ppid) }
 end
 
 assert('Process.waitpid with Process::WNOHANG') do
@@ -752,13 +774,81 @@ assert('Process.waitpid with Process::WNOHANG') do
   assert_equal "KILL", Signal.signame($?.termsig)
 end
 
+assert('Process.waitpid with Process::WUNTRACED') do
+  skip ProcessTestUtil.signal_reason if ProcessTestUtil.signal_reason
+
+  pid = Process.spawn("sleep", "30")
+  Process.kill(:STOP, pid)
+  assert_equal pid, Process.waitpid(pid, Process::WUNTRACED)
+  assert_true $?.stopped?
+  assert_false $?.exited?
+  assert_equal "STOP", Signal.signame($?.stopsig)
+
+  # A stop is news about the child, not the end of it: it is still this
+  # interpreter's to wait for, so a wait that reports nothing is nil rather
+  # than Errno::ECHILD.
+  assert_nil Process.waitpid(pid, Process::WNOHANG)
+  Process.kill(:CONT, pid)
+  Process.kill(:KILL, pid)
+  assert_equal pid, Process.waitpid(pid)
+  assert_true $?.signaled?
+end
+
 assert('Process.waitpid with no child to wait for') do
-  # A pid reaped once is gone; waiting on it again has nothing to find.
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
 
+  # A pid reaped once is gone; waiting on it again has nothing to find, and
+  # the number may by then belong to someone else's process.  The record went
+  # with the wait, so nothing here still owes a reap for that number.
   pid = Process.spawn("exit 0")
   Process.waitpid(pid)
   assert_raise(Errno::ECHILD) { Process.waitpid(pid) }
+  assert_raise(Errno::ECHILD) { Process.waitpid(pid + 1000000) }
+end
+
+assert('Process.waitpid over a process group') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # A child inherits this process's group, so 0, the caller's own group,
+  # reaches it.  A pid below -1 is the same call with the group named
+  # outright, which would need a getpgrp this gem does not have.
+  pid = Process.spawn("exit 0")
+  assert_equal pid, Process.waitpid(0)
+  assert_true $?.exited?
+  assert_equal 0, $?.exitstatus
+
+  # The record the wait landed on is found from the pid it reported, so a
+  # group wait accounts for the child exactly as a wait that named it would:
+  # nothing is left owing a reap for it.
+  assert_raise(Errno::ECHILD) { Process.waitpid(pid) }
+end
+
+assert('Process.waitpid over a process group that has no number') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # A pid below -1 names the process group whose ID is that number negated,
+  # and the smallest Integer a build can hold has no negation.  Each of these
+  # is that number in some build and merely an out-of-range one in the rest,
+  # so what is asserted is that neither is negated and passed on: ECHILD
+  # where the number is an Integer this build holds, RangeError where it is
+  # wider than one.
+  [31, 63].each do |bits|
+    pid = begin
+            -(2 ** bits)
+          rescue StandardError
+            next   # this build cannot name the number at all
+          end
+    assert_raise(StandardError) { Process.waitpid(pid) }
+  end
+end
+
+assert('Process.waitpid over a process group with no child in it') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # A group holds whatever it holds; what a wait draws from it is the running
+  # process's children, so a group with none of them in it has nothing to
+  # report even where the group itself is populated.
+  assert_raise(Errno::ECHILD) { Process.waitpid(0) }
 end
 
 assert('Process.kill reports the error by itself') do
@@ -780,6 +870,14 @@ assert('Process.wait') do
   assert_kind_of Process::Status, $?
   assert_equal pid, $?.pid
   assert_equal 4, $?.exitstatus
+
+  pid = Process.spawn("exit 0")
+  # -1 is "whichever child finishes first", which need not be the one just
+  # started: another test may have left one behind.
+  reaped = Process.wait
+  reaped = Process.wait while reaped != pid
+  assert_equal pid, reaped
+  assert_true $?.success?
 end
 
 assert('Process.waitpid2, Process.wait2') do

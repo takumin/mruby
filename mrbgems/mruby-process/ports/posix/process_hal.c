@@ -174,6 +174,99 @@ extern char **environ;
 #define PID_FITS(pid) ((pid) >= (mrb_int)INT_MIN && (pid) <= (mrb_int)INT_MAX)
 
 /*
+ * Context and children
+ *
+ * A POSIX child is its pid and nothing more, since the kernel keeps the status
+ * slot the pid labels, and keeps it until the child is waited for.  The
+ * context still holds the live children, because a wait-any has to report
+ * *which* child it drew an event from, and only this list can turn the pid
+ * waitpid() returned back into the object the common layer knows.
+ */
+
+struct mrb_hal_process_child {
+  pid_t pid;
+  void *udata;
+  struct mrb_hal_process_child *next;
+};
+
+struct mrb_hal_process_context {
+  struct mrb_hal_process_child *children;
+};
+
+int
+mrb_hal_process_context_init(mrb_state *mrb, mrb_hal_process_context **out)
+{
+  mrb_hal_process_context *ctx =
+    (mrb_hal_process_context*)mrb_malloc_simple(mrb, sizeof(mrb_hal_process_context));
+
+  if (ctx == NULL) {
+    errno = ENOMEM;
+    return -1;
+  }
+  ctx->children = NULL;
+  *out = ctx;
+  return 0;
+}
+
+void
+mrb_hal_process_context_free(mrb_state *mrb, mrb_hal_process_context *ctx)
+{
+  struct mrb_hal_process_child *child, *next;
+
+  if (ctx == NULL) return;
+  for (child = ctx->children; child != NULL; child = next) {
+    next = child->next;
+    mrb_free(mrb, child);
+  }
+  mrb_free(mrb, ctx);
+}
+
+static struct mrb_hal_process_child*
+child_find(mrb_hal_process_context *ctx, pid_t pid)
+{
+  struct mrb_hal_process_child *child;
+
+  for (child = ctx->children; child != NULL; child = child->next) {
+    if (child->pid == pid) return child;
+  }
+  return NULL;
+}
+
+mrb_int
+mrb_hal_process_child_pid(const mrb_hal_process_child *child)
+{
+  return (mrb_int)child->pid;
+}
+
+void
+mrb_hal_process_child_set_udata(mrb_hal_process_child *child, void *udata)
+{
+  child->udata = udata;
+}
+
+void*
+mrb_hal_process_child_udata(const mrb_hal_process_child *child)
+{
+  return child->udata;
+}
+
+void
+mrb_hal_process_child_release(mrb_state *mrb, mrb_hal_process_context *ctx,
+                              mrb_hal_process_child *child)
+{
+  struct mrb_hal_process_child **link;
+
+  if (child == NULL) return;
+  for (link = &ctx->children; *link != NULL; link = &(*link)->next) {
+    if (*link == child) {
+      *link = child->next;
+      break;
+    }
+  }
+  mrb_free(mrb, child);
+}
+
+/*
  * Process Identity
  */
 
@@ -722,7 +815,7 @@ spawn_fork(mrb_state *mrb, const mrb_process_spawn_params *params,
   int *keep = NULL;
   long maxfd;
   int child_errno, saved_errno;
-  pid_t child;
+  pid_t pid;
   size_t i;
 
   /* Both arrays belong to the child as much as to this call: it may not
@@ -747,9 +840,9 @@ spawn_fork(mrb_state *mrb, const mrb_process_spawn_params *params,
 
   if (errpipe(errfds) == -1) goto error;
 
-  child = fork();
-  if (child == -1) goto error;
-  if (child == 0) {
+  pid = fork();
+  if (pid == -1) goto error;
+  if (pid == 0) {
     close(errfds[0]);
     child_exec(params, plan, sources, errfds[1], keep, maxfd);
     /* not reached */
@@ -765,14 +858,14 @@ spawn_fork(mrb_state *mrb, const mrb_process_spawn_params *params,
     /* The child never became the command, so it is this call's to clean up
        rather than a child the caller now owns. */
     int status;
-    while (waitpid(child, &status, 0) == -1 && errno == EINTR) {}
+    while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {}
     errno = child_errno;
     goto error;
   }
 
   mrb_free(mrb, sources);
   mrb_free(mrb, keep);
-  *out_pid = child;
+  *out_pid = pid;
   return 0;
 
 error:
@@ -979,12 +1072,14 @@ done:
 #endif /* MRB_PROCESS_HAVE_POSIX_SPAWN */
 
 int
-mrb_hal_process_spawn(mrb_state *mrb, const mrb_process_spawn_params *params,
-                      mrb_int *pid)
+mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
+                      const mrb_process_spawn_params *params,
+                      mrb_hal_process_child **out)
 {
+  struct mrb_hal_process_child *child;
   struct exec_plan plan;
   int saved_errno;
-  pid_t child;
+  pid_t pid;
 
   /* The empty name names no file, and looking for it on the PATH would find
      the directories themselves.  execve("") answers ENOENT and so does this,
@@ -996,26 +1091,37 @@ mrb_hal_process_spawn(mrb_state *mrb, const mrb_process_spawn_params *params,
     return -1;
   }
 
-  if (plan_build(mrb, params, &plan) != 0) return -1;
+  child = (struct mrb_hal_process_child*)mrb_malloc_simple(mrb, sizeof(*child));
+  if (child == NULL) {
+    errno = ENOMEM;
+    return -1;
+  }
+
+  if (plan_build(mrb, params, &plan) != 0) goto error;
 
 #if MRB_PROCESS_HAVE_POSIX_SPAWN
   if (spawn_is_expressible(params)) {
-    if (spawn_posix(mrb, params, &plan, &child) != 0) goto error;
+    if (spawn_posix(mrb, params, &plan, &pid) != 0) goto error;
   }
-  else if (spawn_fork(mrb, params, &plan, &child) != 0) {
+  else if (spawn_fork(mrb, params, &plan, &pid) != 0) {
     goto error;
   }
 #else
-  if (spawn_fork(mrb, params, &plan, &child) != 0) goto error;
+  if (spawn_fork(mrb, params, &plan, &pid) != 0) goto error;
 #endif
 
   plan_free(mrb, &plan);
-  *pid = (mrb_int)child;
+  child->pid = pid;
+  child->udata = NULL;
+  child->next = ctx->children;
+  ctx->children = child;
+  *out = child;
   return 0;
 
 error:
   saved_errno = errno;
   plan_free(mrb, &plan);
+  mrb_free(mrb, child);
   errno = saved_errno;
   return -1;
 }
@@ -1023,10 +1129,11 @@ error:
 #else /* MRB_NO_PROCESS_SPAWN */
 
 int
-mrb_hal_process_spawn(mrb_state *mrb, const mrb_process_spawn_params *params,
-                      mrb_int *pid)
+mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
+                      const mrb_process_spawn_params *params,
+                      mrb_hal_process_child **out)
 {
-  (void)mrb; (void)params; (void)pid;
+  (void)mrb; (void)ctx; (void)params; (void)out;
   errno = ENOSYS;
   return -1;
 }
@@ -1037,31 +1144,83 @@ mrb_hal_process_spawn(mrb_state *mrb, const mrb_process_spawn_params *params,
  * Waiting
  */
 
-int
-mrb_hal_process_waitpid(mrb_state *mrb, mrb_int pid, unsigned int flags,
-                        mrb_int *result_pid, mrb_int *raw_status)
+static mrb_process_event_kind
+event_kind(const mrb_process_status *status)
 {
+  if (status->flags & MRB_PROCESS_STATUS_STOPPED) return MRB_PROCESS_EVENT_STOPPED;
+  if (status->flags & MRB_PROCESS_STATUS_EXITED) return MRB_PROCESS_EVENT_EXITED;
+  if (status->flags & MRB_PROCESS_STATUS_SIGNALED) return MRB_PROCESS_EVENT_SIGNALED;
+  /* A status this platform does not classify still ended a wait, and the
+     child that produced it is gone either way. */
+  return MRB_PROCESS_EVENT_EXITED;
+}
+
+int
+mrb_hal_process_wait(mrb_state *mrb, mrb_hal_process_context *ctx,
+                     const mrb_process_wait_target *target, unsigned int flags,
+                     mrb_process_event *event)
+{
+  pid_t want;
   pid_t result;
   int status = 0;
   int options = 0;
-  (void)mrb;
 
-  if (!PID_FITS(pid)) {
-    errno = ECHILD;
-    return -1;
+  /* The scopes are the things waitpid(2) reads from its first argument, so
+     they are the same call with a different number. */
+  switch (target->scope) {
+  case MRB_PROCESS_WAIT_SCOPE_CHILD:
+    want = target->child->pid;
+    break;
+  case MRB_PROCESS_WAIT_SCOPE_PID:
+    /* A number no pid_t can hold labels no process, and so no child of this
+       one: the answer waitpid(2) gives for such a pid is the one given
+       here. */
+    if (!PID_FITS(target->pid)) {
+      errno = ECHILD;
+      return -1;
+    }
+    want = (pid_t)target->pid;
+    break;
+  case MRB_PROCESS_WAIT_SCOPE_ANY:
+    want = (pid_t)-1;
+    break;
+  default:
+    /* A group no pid_t can hold names no group this process is in, and so no
+       child of it: the answer waitpid(2) gives for such a group is the one
+       given here. */
+    if (!PID_FITS(target->group)) {
+      errno = ECHILD;
+      return -1;
+    }
+    want = (target->group == 0) ? 0 : -(pid_t)target->group;
+    break;
   }
+
   if (flags & MRB_PROCESS_WAIT_NOHANG) options |= WNOHANG;
   if (flags & MRB_PROCESS_WAIT_UNTRACED) options |= WUNTRACED;
 
   do {
-    result = waitpid((pid_t)pid, &status, options);
+    result = waitpid(want, &status, options);
   } while (result == -1 && errno == EINTR);
 
   if (result == -1) return -1;
 
-  /* result is 0 when WNOHANG found nothing ready; status is untouched then */
-  *result_pid = (mrb_int)result;
-  *raw_status = (result == 0) ? 0 : (mrb_int)status;
+  memset(event, 0, sizeof(*event));
+  if (result == 0) {
+    /* MRB_PROCESS_WAIT_NOHANG and nothing had happened */
+    event->kind = MRB_PROCESS_EVENT_NONE;
+    return 0;
+  }
+
+  mrb_hal_process_status_decode(mrb, (mrb_int)result, (mrb_int)status, &event->status);
+  event->kind = event_kind(&event->status);
+  /* Every scope but CHILD draws from this process's children, which is a
+     wider set than the ones spawned through here: the host application may
+     have forked its own.  Reporting such a child with none attached says so,
+     rather than guessing at an owner. */
+  event->child = (target->scope == MRB_PROCESS_WAIT_SCOPE_CHILD)
+                   ? target->child
+                   : child_find(ctx, result);
   return 0;
 }
 
@@ -1316,19 +1475,3 @@ mrb_hal_process_times(mrb_state *mrb, mrb_process_times *t)
 }
 
 #endif /* MRB_PROCESS_HAVE_GETRUSAGE */
-
-/*
- * HAL Initialization/Finalization
- */
-
-void
-mrb_hal_process_init(mrb_state *mrb)
-{
-  (void)mrb;
-}
-
-void
-mrb_hal_process_final(mrb_state *mrb)
-{
-  (void)mrb;
-}

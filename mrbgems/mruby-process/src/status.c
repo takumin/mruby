@@ -123,7 +123,7 @@ status_initialize(mrb_state *mrb, mrb_value self)
 static mrb_value
 status_pid(mrb_state *mrb, mrb_value self)
 {
-  return mrb_int_value(mrb, status_ivar(mrb, self, MRB_SYM(pid)));
+  return mrb_int_value(mrb, mrb_process_status_pid(mrb, self));
 }
 
 /*
@@ -346,6 +346,12 @@ status_to_s(mrb_state *mrb, mrb_value self)
     mrb_str_cat_lit(mrb, str, " (core dumped)");
   }
   return str;
+}
+
+mrb_int
+mrb_process_status_pid(mrb_state *mrb, mrb_value status)
+{
+  return status_ivar(mrb, status, MRB_SYM(pid));
 }
 
 mrb_value

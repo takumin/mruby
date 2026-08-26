@@ -50,6 +50,7 @@ from, the second the `Struct` `Process::Tms` is one of.
 | Process::Status#to_s              | o             |                                          |
 | Process::Status#inspect           | o             |                                          |
 | Process::Status#==                | o             | the raw status decides, not the pid      |
+| Process.detach                    |               | needs a waiter; mruby has no threads     |
 | Process.fork                      |               | inherently non-portable; separate change |
 | Process.exec                      |               | separate change                          |
 | Process.system                    |               | spawn plus wait; separate change         |
@@ -97,10 +98,6 @@ answers with that `Errno`, the spawn is that one call, and there is no fork
 here to be caught holding a lock another thread of the embedding process left
 behind. Where it has not, a fork reports what went wrong down a close-on-exec
 pipe, which reaches EOF with nothing in it when the exec succeeds.
-
-What a `Process.spawn` creates, the caller owes a wait for, through
-`Process.waitpid`. Nothing reaps it at `mrb_close`, as nothing reaps it at
-exit in CRuby.
 
 ## Redirecting the child's descriptors
 
@@ -176,6 +173,39 @@ undefined rather than defined and always failing. `Process.respond_to?(:spawn)`
 is therefore an answer. iOS is the same, and stays that way: a process may not
 create another there.
 
+## Who owes the wait
+
+Every child this interpreter spawns owes one wait, and what owes it is a
+record rather than a pid. A pid is a label the platform may hand to another
+process once the first has been reaped, so what a wait is given internally is
+the child itself: a pid on POSIX, a process HANDLE on Windows. Nothing of that
+reaches Ruby, where a pid is what CRuby takes and what is taken here.
+
+```ruby
+pid = Process.spawn("sleep 1")
+Process.waitpid(pid)         # -> pid, and $? says how it finished
+```
+
+- `Process.waitpid(pid)` waits by number, as `waitpid(2)` does, and the
+  children it draws from are the running process's. A host application that
+  forked a child of its own can be waited for through it, which is the point
+  of keeping the two apart: an ownership model that narrowed `Process.waitpid`
+  would leave that child waitable through `Process.wait(-1)` and unwaitable
+  through its own pid. A pid that names no child of this process is
+  `Errno::ECHILD`.
+- Waiting by number for a child this interpreter did spawn goes through the
+  record anyway, so the wait is given the child itself and not the number that
+  labels it: a pid the platform has since handed to a stranger cannot be what
+  is waited for.
+- A record exists exactly while its child owes a reap, so a child waited for
+  once is `Errno::ECHILD` the second time, as it is in CRuby. A wait event
+  that is not the end of the child, such as a stop reported through
+  `Process::WUNTRACED`, leaves the record where it was.
+- At `mrb_close`, every child still owing a reap gets one non-blocking wait
+  and is then let go of. A blocking wait there would let a child that never
+  finishes hang the interpreter's close, which is worse than the zombie the
+  child is left as until the host process exits.
+
 ## Architecture
 
 `mruby-process` and `mruby-io` are independent sibling gems. Neither needs the
@@ -220,13 +250,63 @@ promises. The port under `ports/<name>/` implements them; a gem named
 `hal-process-<conf>` may supply them instead, in which case the bundled ports
 are dropped from the build.
 
-The HAL answers OS-level facts and performs OS-level operations, nothing more.
-No POSIX type or macro appears above it, and it knows nothing of `$?`, `$$`,
-blocks, `Process::Status` or `Process::Tms`: everything Ruby promises lives in
-the common sources under `src/`, including which units a clock reading can be
-asked for in and the Floats a `Process::Tms` is built from. What a signal is
-_called_ is `mruby-signal`'s to answer, and both callers reach its HAL
-directly.
+The HAL answers OS-level facts and performs OS-level operations:
+
+- `mrb_hal_process_pid()`, `mrb_hal_process_ppid()` — the native process
+  identity, widened to `mrb_int`.
+- `mrb_hal_process_context_init()` / `_free()` — the context every child of
+  this interpreter is spawned into. Empty on POSIX, where the kernel already
+  knows what this process's children are; the live handles on Windows, where
+  nothing else does.
+- `mrb_hal_process_spawn()` — creates a child from a `mrb_process_spawn_params`
+  and hands back an opaque `mrb_hal_process_child`.
+- `mrb_hal_process_wait()` — waits over the set of children an
+  `mrb_process_wait_target` names, and reports an `mrb_process_event` carrying
+  an already decoded `mrb_process_status`.
+- `mrb_hal_process_child_release()` — lets go of a child, once.
+- `mrb_hal_process_kill()` — delivers a signal.
+- `mrb_hal_process_status_decode()` — reads a native wait status into
+  `mrb_process_status`, for the one caller that has a raw status and no wait
+  behind it. See below.
+- `mrb_hal_process_clock_gettime()` / `_clock_getres()` — read a clock, and
+  the granularity that reading came out of.
+- `mrb_hal_process_times()` — the four CPU time totals behind `Process.times`.
+
+What a child _is_ stays behind the HAL. A pid labels a child, and the platform
+may hand the same number to another process once the first has been reaped, so
+spawn returns an opaque `mrb_hal_process_child` and every wait takes that
+object rather than a number. The port keeps inside it whatever it really needs:
+a pid on POSIX, a HANDLE on Windows.
+
+Wait-one, wait-pid, wait-any and wait-group are one primitive because they are
+one system call with a different argument, and because emulating any of them
+from the others cannot be done honestly: polling live children with a
+non-blocking wait in a loop is not a blocking wait, and it burns the CPU while
+pretending otherwise. Those four are the sets a wait can draw from and there is
+nothing else, because nothing else is expressible: POSIX `waitpid()` has no
+form that takes an arbitrary subset.
+
+Only the first of them names a child this interpreter holds. The other three
+are the platform's own selectors, and the set they draw from is every child of
+the _process_: an embedded interpreter shares that set with the application
+that embedded it, which may have forked children the record table never heard
+of. A port therefore reports which child answered only when it is one of its
+own, and the common layer moves a record only then. What a port cannot do is
+invent the missing half: Windows can wait only on a handle it holds, so a pid
+it never spawned is `ECHILD` there.
+
+The common sources under `src/` implement everything Ruby promises: the module
+and class definitions, argument shapes and conversions, the child record table
+and its rules, `Process.waitpid` return semantics, the teardown policy, `$?`
+and `$$`, the `Process::WNOHANG` / `Process::WUNTRACED` constants, which units
+a clock reading can be asked for in, the Floats a `Process::Tms` is built
+from, and every `Process::Status` method.
+
+No POSIX type or macro — `pid_t`, `WIFEXITED`, `WEXITSTATUS`, `SIGTERM`,
+`WNOHANG`, `CLOCK_MONOTONIC` — appears above the HAL, and the HAL knows
+nothing of `$?`, `$$`, blocks, `Process::Status`, `Process::Tms` or the record
+table. What a signal is _called_ is `mruby-signal`'s to answer, and both
+callers reach its HAL directly.
 
 ### Process::Status and mruby-io
 
@@ -247,8 +327,25 @@ to fix.
 The full rationale for each decision lives as a comment beside the code it
 constrains; this list is a map.
 
-- The wait returns a raw status, decoded separately, so a status that arrived
-  from `mruby-io` decodes through the same path (`src/status.c`).
+- A child is an opaque `mrb_hal_process_child` rather than a pid: the platform
+  may hand the same number to another process once the first has been reaped
+  (`include/process_hal.h`).
+- Wait-one, wait-pid, wait-any and wait-group are one HAL primitive. They are
+  one system call with a different argument, and none can be emulated from the
+  others honestly (`mrb_hal_process_wait` in `include/process_hal.h`).
+- Only wait-one draws from the record table; the other three are the
+  platform's own selectors and reach every child of the running process,
+  including one the embedding application forked (`src/child.c`).
+- A record is reserved before the child exists and committed after it does, so
+  the step that can fail is never the one after the OS has acted. A record is
+  let go of at exactly one place, and only a terminal event reaches it
+  (`src/child.c`).
+- At `mrb_close` every child still owing a reap gets one non-blocking wait and
+  is then let go of; a blocking wait there would let a child that never
+  finishes hang the interpreter's close (`src/child.c`).
+- A wait carries an already decoded status, and decoding stays callable on its
+  own for the one caller that has a raw status and no wait behind it, which is
+  what the `mruby-io` integration is (`src/status.c`).
 - `raw_status` is permanent, not a compatibility detail: it is what `#to_i`
   returns and the only thing a status needs to store.
 - Unsupported operations fail through `errno` (`ENOSYS`) rather than by the
@@ -302,12 +399,22 @@ constrains; this list is a map.
   call's granularity; on the rare POSIX host without `clock_gettime(2)` the
   wall clock reads through `gettimeofday(2)` at microsecond resolution. The
   port sources detail the calls.
+- On a platform whose waits cannot be narrowed to a process group, the `pid`
+  selectors 0 and below -1 raise `Errno::ENOSYS`. Windows is one: a process
+  group there is what `GenerateConsoleCtrlEvent()` addresses, and nothing a
+  wait can be filtered by.
+- `Process.detach` is not implemented. What CRuby's returns is a Thread that
+  performs the wait, so that the child is reaped whenever it finishes and no
+  zombie is left; mruby has no threads to do that with, and a `detach` that
+  only forgot the child would be the zombie it exists to prevent.
 - On Windows only `KILL` and `TERM` can be delivered (as
   `TerminateProcess()`), signal 0 asks whether the process can be opened, and
   any other signal fails with `ENOSYS`. A wait status is the child's exit code
   and nothing more, so a status always reads as exited, and `Process.waitpid`
-  fails for every process (`ENOSYS` for -1, `ECHILD` for a specific pid) until
-  `Process.spawn` exists to make children; `ports/win/process_hal.c` says why.
+  fails for every process: `ECHILD` where a pid or any child is named, since
+  the port holds no handles until `Process.spawn` exists there, and `ENOSYS`
+  where the wait would have to be narrowed to a process group;
+  `ports/win/process_hal.c` says why.
 - On Windows `Process::Tms#cutime` and `#cstime` always read `0.0`: Win32
   reports no reaped child's CPU time, and CRuby's Windows build answers the
   same way.
@@ -317,5 +424,15 @@ constrains; this list is a map.
 Create `ports/<name>/process_hal.c` implementing every function in
 `include/process_hal.h`, then build with `conf.ports :<name>, :posix` so gems
 without a `<name>` port fall back. A port that cannot do something should set
-`errno` to `ENOSYS` and return the documented failure value rather than
-pretending to succeed.
+`errno` to `ENOSYS` — or `ENOTSUP` for a redirection it cannot express — and
+return the documented failure value rather than pretending to succeed.
+
+A port that creates a process by forking has one more rule to keep. Between
+`fork()` and `exec()` a child may call only what is async-signal-safe, and
+mruby needs no threads of its own for that to bite: it is embedded, so the
+process it runs in may already have some, and a fork taken while another thread
+holds a lock leaves the child holding a lock nobody will release. The bundled
+POSIX port therefore assembles the child's environment, resolves the command
+against the `PATH` it is being given, and reads `_SC_OPEN_MAX` before it forks,
+so that what is left on the other side is `dup2()`, `close()`, `chdir()` and
+`execve()`.
