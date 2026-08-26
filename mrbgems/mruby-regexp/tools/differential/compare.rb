@@ -14,6 +14,17 @@
 # answers is still compared for the one that answers. The messages each mruby
 # refused patterns with are counted per run and printed first.
 #
+# -e keeps the cases the reference refused and compares the message it refused
+# with, so that a pattern both sides reject for different reasons is a
+# difference rather than a case left out. run.rb has already taken the pattern
+# off the end of the message, leaving the text to compare. This is what the
+# per-run counts above can only hint at: a run whose messages come to the same
+# totals as the reference's may still have reached them on other patterns. A
+# LIMIT stays left out either way, being the harness killing a run rather than
+# anything the engine said. gen.rb draws only patterns CRuby compiles, so the
+# cases for this come from a corpus of its own, refusals.rb or a hand written
+# list, through differential.sh's CASES.
+#
 # The cases are sorted by what each run does against the reference: answers
 # the same, answers differently, ERR or LIMIT. With two mrubies, master and a
 # branch, "branch differs" is what the branch changed away from CRuby and
@@ -30,15 +41,18 @@
 #                      set (run=status,...), pattern, subject, reference
 #                      answer, run answers...
 #   -m, --match REGEX  only cases whose pattern matches (a Ruby regexp)
+#   -e, --errors       compare the message on the cases the reference refused,
+#                      rather than leaving them out
 
 require 'optparse'
 
-opts = { show: 5, all: false, match: nil }
+opts = { show: 5, all: false, match: nil, errors: false }
 OptionParser.new do |o|
   o.banner = "usage: ruby #{$0} [options] cruby.out mruby.out..."
   o.on("-s", "--show N", Integer) { |v| opts[:show] = v }
   o.on("-a", "--all") { opts[:all] = true }
   o.on("-m", "--match REGEX") { |v| opts[:match] = Regexp.new(v) }
+  o.on("-e", "--errors") { opts[:errors] = true }
 end.parse!
 abort "usage: ruby #{$0} [options] cruby.out mruby.out..." if ARGV.size < 2
 
@@ -88,9 +102,16 @@ n.times do |i|
   answers = runs.map { |r| split3(r[i]) }
   pat, subj = answers[0][0], answers[0][1]
   next if opts[:match] && pat !~ opts[:match]
+  ref_kind = kind(answers[0][2])
+  # Under -e a case the reference refused is compared on the message rather
+  # than left out, so a run's refusal is read as an answer here: it counts as
+  # the same only when it is the same message. A LIMIT is not a message and is
+  # left as one whichever side answered it.
+  on_message = opts[:errors] && ref_kind == "ERR"
   status = answers.each_with_index.map do |(_, _, ans), k|
-    if (kd = kind(ans))
-      messages[k]["#{kd}: #{ans.split(' ', 2)[1]}"] += 1
+    kd = kind(ans)
+    messages[k]["#{kd}: #{ans.split(' ', 2)[1]}"] += 1 if kd
+    if kd == "LIMIT" || (kd && !on_message)
       kd
     elsif ans == answers[0][2]
       "same"
@@ -98,7 +119,7 @@ n.times do |i|
       "differs"
     end
   end
-  if kind(answers[0][2])
+  if ref_kind && !on_message
     left_out += 1
     next
   end
@@ -109,9 +130,13 @@ end
 names.each_with_index do |name, k|
   next if messages[k].empty?
   total = messages[k].values.sum
-  puts "#{name}: #{total} #{k == 0 ? 'left out' : 'not answered'}"
+  # Under -e the reference's refusals are compared rather than left out, so
+  # only its limits leave a case out and the count of those is printed below.
+  ref_label = opts[:errors] ? "not answered" : "left out"
+  puts "#{name}: #{total} #{k == 0 ? ref_label : 'not answered'}"
   messages[k].sort_by { |_, c| -c }.each { |msg, c| puts "  #{c}  #{msg}" }
 end
+puts "left out: #{left_out}" if opts[:errors]
 puts "compared: #{compared}"
 
 # "master ERR, branch differs from cruby": the runs grouped by what they do,
