@@ -5,10 +5,11 @@
 **
 ** The C half of Process.spawn.  CRuby's argument shape is `[env,]
 ** command..., [options]`, and taking that apart in C would pile Hash, Array
-** analysis in here; mrblib/process.rb does it instead and hands this down
-** flat integer and string arrays.  What is left is the part that has to
-** happen in C: checking that every element really is something the operating
-** system can take, and marshalling them into the structs the HAL reads.
+** and IO case analysis in here; mrblib/process.rb does it instead and hands
+** this down flat integer and string arrays.  What is left is the part that
+** has to happen in C: validating the strings, marshalling them into the
+** structs the HAL takes, and owning the child the port created, so that the
+** wait it now owes has something owing it.
 */
 
 #include <mruby.h>
@@ -77,10 +78,13 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
   mrb_int kind, flags, argc, envc, tablec, i;
   mrb_process_spawn_params params;
   struct spawn_bufs bufs = { NULL, NULL, NULL };
-  mrb_int pid;
+  mrb_hal_process_child *child;
+  mrb_process_table *table;
+  mrb_process_record *record;
   int err;
 
   mrb_get_args(mrb, "iAAAiS!", &kind, &argv_ary, &env_ary, &table_ary, &flags, &chdir);
+
   argc = RARRAY_LEN(argv_ary);
   envc = RARRAY_LEN(env_ary);
   tablec = RARRAY_LEN(table_ary);
@@ -177,16 +181,25 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
   params.flags = (unsigned int)flags &
                  (MRB_PROCESS_SPAWN_CLOSE_OTHERS | MRB_PROCESS_SPAWN_UNSETENV_OTHERS);
 
-  if (mrb_hal_process_spawn(mrb, &params, &pid) != 0) {
+  /* The record is reserved before the child exists, because that is the step
+     that can fail: once the OS has created a process, nothing here may raise
+     before something owns the wait it owes. */
+  table = mrb_process_table_get(mrb);
+  record = mrb_process_record_reserve(mrb, table);
+
+  if (mrb_hal_process_spawn(mrb, mrb_process_table_context(table), &params, &child) != 0) {
     /* mrb_sys_fail() leaves by longjmp, so the buffers are freed first and
        the errno it reports on is saved across the free. */
     err = errno;
+    mrb_process_record_discard(mrb, record);
     bufs_free(mrb, &bufs);
     errno = err;
     mrb_sys_fail(mrb, "spawn");
   }
   bufs_free(mrb, &bufs);
-  return mrb_int_value(mrb, pid);
+
+  mrb_process_record_commit(record, child);
+  return mrb_int_value(mrb, record->pid);
 }
 
 void

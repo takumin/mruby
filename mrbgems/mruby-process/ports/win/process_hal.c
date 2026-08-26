@@ -8,8 +8,11 @@
 ** part of the interface Win32 can answer honestly and fails, rather than
 ** guesses, at the rest:
 **
-**   - a wait is not declared at all; include/process_hal_features.h says
-**     why.  No process is ever reported as stopped either;
+**   - a child is a HANDLE, and the context holds the live ones, because
+**     nothing else on this platform knows what this interpreter's children
+**     are.  This port creates none yet, and declares no wait at all;
+**     include/process_hal_features.h says why.  No process is ever reported
+**     as stopped either;
 **   - a raw status is the child's exit code, which is what mruby-io's
 **     `IO.popen` already gives the `Process::Status` it builds on this
 **     platform, so a decoded status always reads as exited;
@@ -82,6 +85,90 @@ open_process(mrb_int pid, DWORD access)
 }
 
 /*
+ * Context and children
+ *
+ * A Windows child is a HANDLE: it is what keeps the exit status readable
+ * after the process is gone, and it is the only thing a wait can wait on.
+ * The pid is a label kept beside it, for Process.kill and Process::Status.
+ * Nothing fills this list yet, since this port creates no children.
+ */
+
+struct mrb_hal_process_child {
+  HANDLE handle;
+  DWORD pid;
+  void *udata;
+  struct mrb_hal_process_child *next;
+};
+
+struct mrb_hal_process_context {
+  struct mrb_hal_process_child *children;
+};
+
+int
+mrb_hal_process_context_init(mrb_state *mrb, mrb_hal_process_context **out)
+{
+  mrb_hal_process_context *ctx =
+    (mrb_hal_process_context*)mrb_malloc_simple(mrb, sizeof(mrb_hal_process_context));
+
+  if (ctx == NULL) {
+    errno = ENOMEM;
+    return -1;
+  }
+  ctx->children = NULL;
+  *out = ctx;
+  return 0;
+}
+
+void
+mrb_hal_process_context_free(mrb_state *mrb, mrb_hal_process_context *ctx)
+{
+  struct mrb_hal_process_child *child, *next;
+
+  if (ctx == NULL) return;
+  for (child = ctx->children; child != NULL; child = next) {
+    next = child->next;
+    if (child->handle != NULL) CloseHandle(child->handle);
+    mrb_free(mrb, child);
+  }
+  mrb_free(mrb, ctx);
+}
+
+mrb_int
+mrb_hal_process_child_pid(const mrb_hal_process_child *child)
+{
+  return (mrb_int)child->pid;
+}
+
+void
+mrb_hal_process_child_set_udata(mrb_hal_process_child *child, void *udata)
+{
+  child->udata = udata;
+}
+
+void*
+mrb_hal_process_child_udata(const mrb_hal_process_child *child)
+{
+  return child->udata;
+}
+
+void
+mrb_hal_process_child_release(mrb_state *mrb, mrb_hal_process_context *ctx,
+                              mrb_hal_process_child *child)
+{
+  struct mrb_hal_process_child **link;
+
+  if (child == NULL) return;
+  for (link = &ctx->children; *link != NULL; link = &(*link)->next) {
+    if (*link == child) {
+      *link = child->next;
+      break;
+    }
+  }
+  if (child->handle != NULL) CloseHandle(child->handle);
+  mrb_free(mrb, child);
+}
+
+/*
  * Process Identity
  */
 
@@ -131,10 +218,11 @@ mrb_hal_process_ppid(mrb_state *mrb)
  */
 
 int
-mrb_hal_process_spawn(mrb_state *mrb, const mrb_process_spawn_params *params,
-                      mrb_int *pid)
+mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
+                      const mrb_process_spawn_params *params,
+                      mrb_hal_process_child **out)
 {
-  (void)mrb; (void)params; (void)pid;
+  (void)mrb; (void)ctx; (void)params; (void)out;
   errno = ENOSYS;
   return -1;
 }
@@ -196,20 +284,4 @@ mrb_hal_process_status_decode(mrb_state *mrb, mrb_int pid, mrb_int raw_status,
   status->termsig = 0;
   status->stopsig = 0;
   status->flags = MRB_PROCESS_STATUS_EXITED;
-}
-
-/*
- * HAL Initialization/Finalization
- */
-
-void
-mrb_hal_process_init(mrb_state *mrb)
-{
-  (void)mrb;
-}
-
-void
-mrb_hal_process_final(mrb_state *mrb)
-{
-  (void)mrb;
 }
