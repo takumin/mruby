@@ -4,7 +4,7 @@
 ** See Copyright Notice in mruby.h
 **
 ** Not part of the HAL and not for other gems: these are the handful of
-** things process.c and status.c say to each other.
+** things process.c, spawn.c and status.c say to each other.
 */
 
 #ifndef MRUBY_PROCESS_INTERNAL_H
@@ -18,6 +18,10 @@ MRB_BEGIN_DECL
 /* Refuse `v` with a RangeError naming `what` unless it fits the `int` a port
    has to narrow it to.  A no-op where mruby's own Integer is no wider. */
 mrb_int mrb_process_int_arg(mrb_state *mrb, mrb_int v, const char *what);
+
+/* Define Process.spawn under `process`, where this build can create a
+   process at all.  Called once from gem init. */
+void mrb_process_spawn_init(mrb_state *mrb, struct RClass *process);
 
 /* Define Process::Status under `process`.  Called once from gem init. */
 void mrb_process_status_init(mrb_state *mrb, struct RClass *process);

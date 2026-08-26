@@ -879,6 +879,7 @@ mrb_mruby_process_gem_init(mrb_state *mrb)
   }
 
   mrb_process_status_init(mrb, process);
+  mrb_process_spawn_init(mrb, process);
 
   pid = mrb_hal_process_pid(mrb);
   if (pid >= 0) {

@@ -32,6 +32,24 @@
 #include <mruby.h>
 #include <stdint.h>
 
+/* A platform that does not let a process create another has no process
+   creation whatever the configuration asks for, so it says so here rather
+   than leaving every build for it to be configured by hand.  iOS is one.
+   Windows is one until its port grows a spawn of its own. */
+#if defined(_WIN32) || defined(_WIN64)
+# ifndef MRB_NO_PROCESS_SPAWN
+#  define MRB_NO_PROCESS_SPAWN 1
+# endif
+#endif
+#if defined(__APPLE__)
+# include <TargetConditionals.h>
+# if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#  ifndef MRB_NO_PROCESS_SPAWN
+#   define MRB_NO_PROCESS_SPAWN 1
+#  endif
+# endif
+#endif
+
 MRB_BEGIN_DECL
 
 /*
@@ -188,6 +206,42 @@ int mrb_hal_process_waitpid(mrb_state *mrb, mrb_int pid, unsigned int flags,
  *         cannot deliver this signal at all)
  */
 int mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo);
+
+/*
+ * HAL Interface - creating a child
+ */
+
+/* How argv is to be read.  A single String is the shell's to take apart,
+   which is what makes `Process.spawn("a > b")` a redirection and
+   `Process.spawn("a", "> b")` an argument. */
+typedef enum mrb_process_spawn_kind {
+  MRB_PROCESS_SPAWN_ARGV  = 0,   /* execute argv directly */
+  MRB_PROCESS_SPAWN_SHELL = 1,   /* execute argv[0] through the system shell */
+} mrb_process_spawn_kind;
+
+typedef struct mrb_process_spawn_params {
+  mrb_process_spawn_kind kind;
+  const char *const *argv;   /* NULL-terminated; SHELL reads argv[0] only */
+} mrb_process_spawn_params;
+
+/*
+ * Create a child process.
+ *
+ * A failure to execute the command is reported here, through the return value
+ * and errno, rather than left for the caller to find in an exit status: a
+ * command that does not exist and a command that exited 127 are different
+ * things, and only the port can still tell them apart.
+ *
+ * The child is given the descriptors this process holds, close-on-exec ones
+ * aside: nothing here closes the rest, and `:close_others` is a later change.
+ * The pipe a failed exec is reported down is the one descriptor this call
+ * opens for itself, and that one is close-on-exec.
+ *
+ * @return 0 on success with *pid set, -1 on error (sets errno; ENOSYS where
+ *         the platform cannot create a process at all)
+ */
+int mrb_hal_process_spawn(mrb_state *mrb, const mrb_process_spawn_params *params,
+                          mrb_int *pid);
 
 /*
  * Read a platform wait status into its neutral form.

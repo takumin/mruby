@@ -155,6 +155,23 @@ mrb_hal_process_ppid(mrb_state *mrb)
 }
 
 /*
+ * Spawning
+ *
+ * This port cannot create a process yet, so process_hal.h defines
+ * MRB_NO_PROCESS_SPAWN for it and Process.spawn is not defined at all.  What
+ * is left here is the answer the HAL owes a caller that reached it anyway.
+ */
+
+int
+mrb_hal_process_spawn(mrb_state *mrb, const mrb_process_spawn_params *params,
+                      mrb_int *pid)
+{
+  (void)mrb; (void)params; (void)pid;
+  errno = ENOSYS;
+  return -1;
+}
+
+/*
  * Waiting
  */
 

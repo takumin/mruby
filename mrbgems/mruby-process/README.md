@@ -22,6 +22,7 @@ from, the second the `Struct` `Process::Tms` is one of.
 | Process.pid                       | o             | also `$$`                                |
 | Process.ppid                      | o             |                                          |
 | Process.kill                      | o             | no negative-signal form yet, see below   |
+| Process.spawn                     | o             | command forms only so far, see below     |
 | Process.wait, .wait2              | o             | `.waitpid2` too; not `.waitall`          |
 | Process.waitpid                   | o             | sets `$?`; POSIX only, see below         |
 | Process.clock_gettime             | o             | seven units; symbolic clock ids          |
@@ -50,11 +51,80 @@ from, the second the `Struct` `Process::Tms` is one of.
 | Process::Status#inspect           | o             |                                          |
 | Process::Status#==                | o             | the raw status decides, not the pid      |
 | Process.fork                      |               | inherently non-portable; separate change |
-| Process.spawn                     |               | separate change                          |
 | Process.exec                      |               | separate change                          |
+| Process.system                    |               | spawn plus wait; separate change         |
 | Process.exit, .exit!              |               | see mruby-exit                           |
 | Process.uid, .gid, ...            |               | separate change                          |
 | Process.getpgrp, ...              |               | separate change                          |
+
+## Creating a child
+
+```ruby
+pid = Process.spawn("sleep 1")   # no shell involved
+Process.waitpid(pid)             # -> pid, and $? says how it finished
+$?.success?                      # -> true
+
+Process.spawn("a > b")           # through the shell: a redirection
+Process.spawn("a", "> b")        # two or more arguments: an argument
+```
+
+A single String is a command line, and it reaches the system shell only when
+there is something in it for a shell to do. That is one of the characters
+
+```text
+* ? { } [ ] < > ( ) ~ & | \ $ ; ' " ` #    and a newline
+```
+
+anywhere in the line, an `=` in its first word, or a first word that is one of
+the POSIX shell's reserved words or special built-ins. A command line with
+none of those is split on spaces and tabs here and the command run directly,
+which is the rule CRuby follows and what makes
+`Process.spawn("no-such-command")` raise `Errno::ENOENT` rather than leave a
+shell to complain and exit 127.
+
+Two or more arguments name the image and its arguments, and no shell is
+involved whatever they hold. A bare name is looked up on `PATH`; a name that
+is a path is run as written, and handed to the shell if it turns out not to
+be an executable image, as `execvp(3)` hands one over. The lookup asks
+`stat(2)` which directories have something of that name before any child is
+made, so a command costs one exec wherever it sits on the `PATH`, where
+`execvp(3)` would try an exec in every directory before it; whether what is
+there can be run is still the exec's to say.
+
+A command that cannot be run raises the `Errno` the attempt failed with,
+rather than leaving a child that exited 127 to be told apart from a command
+that exited 127 of its own accord. Where the host has a `posix_spawn(3)` that
+answers with that `Errno`, the spawn is that one call, and there is no fork
+here to be caught holding a lock another thread of the embedding process left
+behind. Where it has not, a fork reports what went wrong down a close-on-exec
+pipe, which reaches EOF with nothing in it when the exec succeeds.
+
+Which of the two the POSIX port does is `MRB_PROCESS_HAVE_POSIX_SPAWN`, which
+the port settles from the host: 1 where its `posix_spawn(3)` is known to
+answer for a failed exec, 0 elsewhere, since POSIX lets the call create a
+child that exits 127 and say nothing. A build defines it to say otherwise.
+Defining it to 0 is also what a run wants where the host would answer but
+what stands between the process and the host does not: under valgrind 3.27 a
+`posix_spawn(3)` whose exec failed returns 0, and so does one under qemu's
+user-mode emulation, which carries the `vfork()` glibc reports through out as
+a `fork()`. The fork path reports through a pipe of its own and depends on
+neither.
+
+What a `Process.spawn` creates, the caller owes a wait for, through
+`Process.waitpid`. Nothing reaps it at `mrb_close`, as nothing reaps it at
+exit in CRuby.
+
+The options `Process.spawn` takes in CRuby are not here yet: redirections, an
+environment, `:chdir`, `:close_others` and `:unsetenv_others` are separate
+changes. An option this build does not act on is refused with `ArgumentError`
+rather than dropped. `[cmdname, argv0]`, `pgroup`, `umask` and `rlimit_*` are
+not supported.
+
+Windows has no `Process.spawn` at all: its port cannot create a process yet,
+so `process_hal.h` sets `MRB_NO_PROCESS_SPAWN` there and the method is left
+undefined rather than defined and always failing. `Process.respond_to?(:spawn)`
+is therefore an answer. iOS is the same, and stays that way: a process may not
+create another there.
 
 ## Architecture
 
