@@ -28,9 +28,11 @@
 #include <time.h>
 #include <unistd.h>
 
-/* The environment a child inherits, which posix_spawn() is handed rather than
-   left to work out for itself.  Apple keeps it behind a call in a library
-   whose image may be shared, where a variable could not be. */
+/* The environment this process runs in, which is what a child inherits: the
+   deltas a caller asks for are applied to a copy of it, and what comes out is
+   what the child is handed, since neither exec nor posix_spawn() leaves a
+   child to work one out.  Apple keeps it behind a call in a library whose
+   image may be shared, where a variable could not be. */
 #if defined(__APPLE__)
 # include <crt_externs.h>
 # define environ (*_NSGetEnviron())
@@ -202,15 +204,17 @@ mrb_hal_process_ppid(mrb_state *mrb)
  * mruby needs no threads of its own for that to matter: it is an embeddable
  * VM, so the process it runs in may already have others, and a fork made
  * while one of them holds a lock leaves the child holding a lock nobody will
- * ever release.  So the PATH is walked here rather than by execvp() over
- * there, which is a call that can allocate.  What is left for the child is
- * dup2(), close() and execv().
+ * ever release.  So the environment is assembled here rather than through
+ * setenv() and unsetenv() over there, and the PATH is walked here rather
+ * than by execvp().  What is left for the child is dup2(), close(), chdir()
+ * and execve().
  */
 struct exec_plan {
   const char **argv;     /* what the image is run with */
   const char **path;     /* images to try, in order; NULL-terminated */
   const char **sh_argv;  /* what ENOEXEC falls back to, or NULL; the child
                             writes the image it found into slot 1 */
+  char **envp;           /* the child's whole environment */
   char **owned;          /* every string allocated for the above */
 };
 
@@ -229,6 +233,13 @@ str_join(mrb_state *mrb, const char *a, size_t alen, char sep, const char *b, si
   return s;
 }
 
+/* Whether `entry`, which is "NAME=VALUE", is the one for `name`. */
+static int
+env_entry_is(const char *entry, const char *name, size_t namelen)
+{
+  return strncmp(entry, name, namelen) == 0 && entry[namelen] == '=';
+}
+
 static void
 plan_free(mrb_state *mrb, struct exec_plan *plan)
 {
@@ -238,10 +249,25 @@ plan_free(mrb_state *mrb, struct exec_plan *plan)
     for (i = 0; plan->owned[i] != NULL; i++) mrb_free(mrb, plan->owned[i]);
     mrb_free(mrb, plan->owned);
   }
+  if (plan->envp != environ) mrb_free(mrb, plan->envp);
   mrb_free(mrb, (void*)plan->argv);
   mrb_free(mrb, (void*)plan->path);
   mrb_free(mrb, (void*)plan->sh_argv);
   memset(plan, 0, sizeof(*plan));
+}
+
+/* The PATH a bare command name is looked up on is the child's, not this
+   process's, so the deltas are read before the parent's own is. */
+static const char*
+plan_path_env(const mrb_process_spawn_params *params)
+{
+  size_t i;
+
+  for (i = 0; i < params->nenv; i++) {
+    if (strcmp(params->env[i].name, "PATH") == 0) return params->env[i].value;
+  }
+  if (params->flags & MRB_PROCESS_SPAWN_UNSETENV_OTHERS) return NULL;
+  return getenv("PATH");
 }
 
 static size_t
@@ -259,13 +285,17 @@ count_elements(const char *s)
 static int
 plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_plan *plan)
 {
-  const char *path_env = getenv("PATH");
+  const char *path_env = plan_path_env(params);
   char *path_default = NULL;
   const char *name;
-  size_t argc = 0, nowned = 0, npath = 1, namelen, i;
+  size_t argc = 0, nparent = 0, nowned = 0, nenvp = 0, npath = 1, namelen, i, j;
+  int keep_parent = !(params->flags & MRB_PROCESS_SPAWN_UNSETENV_OTHERS);
 
   memset(plan, 0, sizeof(*plan));
   while (params->argv[argc] != NULL) argc++;
+  if (keep_parent) {
+    while (environ[nparent] != NULL) nparent++;
+  }
 
   name = params->argv[0];
   namelen = strlen(name);
@@ -291,13 +321,14 @@ plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_p
   }
 
   /* One allocation for each array the child reads, and one for the strings
-     inside them.  The strings are the candidate images, and the default PATH
-     where one had to be asked for, which is the extra slot.
+     inside them.  The strings are the environment entries the deltas add, the
+     candidate images, and the default PATH where one had to be asked for,
+     which is the extra slot.
 
      Taken one at a time and terminated as it goes: what plan_free() walks to
      find the strings is `owned` itself, so it has to be a list before
      anything that can fail comes after it. */
-  plan->owned = (char**)mrb_malloc_simple(mrb, sizeof(char*) * (npath + 2));
+  plan->owned = (char**)mrb_malloc_simple(mrb, sizeof(char*) * (params->nenv + npath + 2));
   if (plan->owned == NULL) goto nomem;
   plan->owned[0] = NULL;
   plan->path = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (npath + 1));
@@ -308,6 +339,38 @@ plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_p
     plan->owned[nowned++] = path_default;
     plan->owned[nowned] = NULL;
     path_default = NULL;   /* the plan frees it from here on */
+  }
+
+  if (keep_parent && params->nenv == 0) {
+    plan->envp = environ;
+  }
+  else {
+    plan->envp = (char**)mrb_malloc_simple(mrb, sizeof(char*) * (nparent + params->nenv + 1));
+    if (plan->envp == NULL) goto nomem;
+    for (i = 0; i < nparent; i++) {
+      /* An entry the deltas name is written below, or, where the delta unsets
+         it, not written at all. */
+      int overridden = 0;
+      for (j = 0; j < params->nenv; j++) {
+        if (env_entry_is(environ[i], params->env[j].name, strlen(params->env[j].name))) {
+          overridden = 1;
+          break;
+        }
+      }
+      if (!overridden) plan->envp[nenvp++] = environ[i];
+    }
+    for (i = 0; i < params->nenv; i++) {
+      const mrb_process_env_entry *e = &params->env[i];
+      char *entry;
+
+      if (e->value == NULL) continue;
+      entry = str_join(mrb, e->name, strlen(e->name), '=', e->value, strlen(e->value));
+      if (entry == NULL) goto nomem;
+      plan->owned[nowned++] = entry;
+      plan->owned[nowned] = NULL;
+      plan->envp[nenvp++] = entry;
+    }
+    plan->envp[nenvp] = NULL;
   }
 
   if (params->kind == MRB_PROCESS_SPAWN_SHELL) {
@@ -567,11 +630,13 @@ child_exec(const mrb_process_spawn_params *params, const struct exec_plan *plan,
     close_fds(low, -1, maxfd);
   }
 
+  if (params->chdir != NULL && chdir(params->chdir) == -1) goto fail;
+
   /* The command, tried at each name the parent worked out for it.  What
      execvp() does with the PATH is done there, before the fork, because none
      of it is safe to do here. */
   for (i = 0; plan->path[i] != NULL; i++) {
-    execv(plan->path[i], (char*const*)plan->argv);
+    execve(plan->path[i], (char*const*)plan->argv, (char*const*)plan->envp);
     switch (errno) {
     case ENOEXEC:
       /* A file that is not an executable image is handed to the shell, as
@@ -580,7 +645,7 @@ child_exec(const mrb_process_spawn_params *params, const struct exec_plan *plan,
          nothing to fall back to and reports what it was told. */
       if (plan->sh_argv == NULL) goto fail;
       plan->sh_argv[1] = plan->path[i];
-      execv("/bin/sh", (char*const*)plan->sh_argv);
+      execve("/bin/sh", (char*const*)plan->sh_argv, (char*const*)plan->envp);
       goto fail;
     case EACCES:
       /* Something of that name is there and cannot be run.  Later names may
@@ -734,6 +799,11 @@ spawn_is_expressible(const mrb_process_spawn_params *params)
 {
   size_t i;
 
+#ifndef HAVE_POSIX_SPAWN_ADDCHDIR
+  /* Where the child starts is a file action this host has not got. */
+  if (params->chdir != NULL) return 0;
+#endif
+
   /* :close_others is a sweep over the descriptors the caller did not name,
      and what is open is what only the child can be asked. */
   if (params->flags & MRB_PROCESS_SPAWN_CLOSE_OTHERS) return 0;
@@ -845,15 +915,25 @@ spawn_posix(mrb_state *mrb, const mrb_process_spawn_params *params,
     if (err != 0) goto done;
   }
 
+#ifdef HAVE_POSIX_SPAWN_ADDCHDIR
+  /* Last, as it is last in the child: what a redirection names is a
+     descriptor rather than a path, so none of the above is read against the
+     directory the child moves to. */
+  if (params->chdir != NULL) {
+    err = posix_spawn_file_actions_addchdir_np(&actions, params->chdir);
+    if (err != 0) goto done;
+  }
+#endif
+
   /* The command, tried at each name the plan worked out for it.  What the
-     child made of execv()'s errno is made here of posix_spawn()'s answer,
+     child made of execve()'s errno is made here of posix_spawn()'s answer,
      which is that same number arrived at the same way.  A plan always names
      at least one image, so the walk always reaches an answer; the value set
      here is what a host that handed one over empty would report. */
   err = ENOENT;
   for (i = 0; plan->path[i] != NULL; i++) {
     err = posix_spawn(&pid, plan->path[i], &actions, NULL,
-                      (char*const*)plan->argv, environ);
+                      (char*const*)plan->argv, plan->envp);
     if (err == 0) goto done;
     switch (err) {
     case ENOEXEC:
@@ -864,7 +944,7 @@ spawn_posix(mrb_state *mrb, const mrb_process_spawn_params *params,
       if (plan->sh_argv == NULL) goto done;
       plan->sh_argv[1] = plan->path[i];
       err = posix_spawn(&pid, "/bin/sh", &actions, NULL,
-                        (char*const*)plan->sh_argv, environ);
+                        (char*const*)plan->sh_argv, plan->envp);
       goto done;
     case EACCES:
       /* Something of that name is there and cannot be run.  Later names may

@@ -22,7 +22,7 @@ from, the second the `Struct` `Process::Tms` is one of.
 | Process.pid                       | o             | also `$$`                                |
 | Process.ppid                      | o             |                                          |
 | Process.kill                      | o             | no negative-signal form yet, see below   |
-| Process.spawn                     | o             | no environment or chdir yet, see below   |
+| Process.spawn                     | o             | see below for what it does not take      |
 | Process.wait, .wait2              | o             | `.waitpid2` too; not `.waitall`          |
 | Process.waitpid                   | o             | sets `$?`; POSIX only, see below         |
 | Process.clock_gettime             | o             | seven units; symbolic clock ids          |
@@ -66,6 +66,9 @@ $?.success?                      # -> true
 
 Process.spawn("a > b")           # through the shell: a redirection
 Process.spawn("a", "> b")        # two or more arguments: an argument
+
+Process.spawn({"LANG" => "C"}, "date")            # a leading Hash is env
+Process.spawn("make", chdir: "/tmp/build")
 ```
 
 A single String is a command line, and it reaches the system shell only when
@@ -133,10 +136,39 @@ rest, since what is open is what only the child can be asked, and so is a
 `1 => 1`, which asks for a descriptor to be left open rather than moved and is
 a file action not every host that has `posix_spawn(3)` defines.
 
-An environment for the child, `:chdir` and `:unsetenv_others` are separate
-changes. An option this build does not act on is refused with `ArgumentError`
-rather than dropped. `[cmdname, argv0]`, `pgroup`, `umask` and `rlimit_*` are
-not supported.
+An option this build does not act on is refused with `ArgumentError` rather
+than dropped. `[cmdname, argv0]`, `pgroup`, `umask` and `rlimit_*` are not
+supported.
+
+## The child's environment and directory
+
+A leading Hash is added to the child's environment, and a `nil` value removes
+a variable rather than setting it. `:unsetenv_others` starts the child's
+environment empty, and the deltas are still applied to it: they say what to
+put in it, not what to change about the parent's.
+
+```ruby
+Process.spawn({"LANG" => "C", "TZ" => nil}, "date")
+Process.spawn({"PATH" => "/usr/bin"}, "env", unsetenv_others: true)
+```
+
+What travels to the port is the deltas, not a whole environment, so nothing
+here reads the parent's own and this gem needs no `ENV`. The port assembles
+the child's environment before the fork and hands it to `execve()`: `setenv()`
+and `unsetenv()` are not calls a child between `fork()` and `exec()` may make.
+A `posix_spawn(3)` is handed the same assembled environment, which is the
+argument it takes anyway.
+
+A bare command name is looked up on the `PATH` the child is being given rather
+than this process's, since that is the one it would have walked itself. So an
+environment naming nowhere to look finds nothing, and a name that is a path is
+not looked up at all.
+
+`:chdir` runs the child in another directory. `chdir()` is one of the few
+calls the child may make, so it happens there, after the redirections and
+before the exec. Where the spawn is a `posix_spawn(3)`, it is a file action
+appended after the redirections for the same reason, and a host whose
+`posix_spawn(3)` has no such action takes the fork instead.
 
 Windows has no `Process.spawn` at all: its port cannot create a process yet,
 so `process_hal.h` sets `MRB_NO_PROCESS_SPAWN` there and the method is left

@@ -58,10 +58,12 @@ MRuby::Gem::Specification.new('mruby-process') do |spec|
   #
   # A host that has posix_spawn() need make neither the pipe nor the fork: it
   # creates the child and executes the image in the one call and answers with
-  # the errno a failed exec left.  Whether the call is there is HAVE_POSIX_SPAWN.
-  # Whether a host's posix_spawn() reports that failure at all is a question no
-  # compile can answer and is settled in the port; see
-  # MRB_PROCESS_HAVE_POSIX_SPAWN there.
+  # the errno a failed exec left.  Whether the call is there is HAVE_POSIX_SPAWN,
+  # and whether the child can be told to start somewhere else is
+  # HAVE_POSIX_SPAWN_ADDCHDIR, that one being an extension rather than POSIX and
+  # so absent on hosts that have all the rest.  Whether a host's posix_spawn()
+  # reports the failed exec at all is a question no compile can answer and is
+  # settled in the port; see MRB_PROCESS_HAVE_POSIX_SPAWN there.
   spec.build_settings do |spec|
     spec.cc.defines << 'HAVE_SYS_RESOURCE_H' if spec.cc.check_header('sys/resource.h')
 
@@ -74,5 +76,8 @@ MRuby::Gem::Specification.new('mruby-process') do |spec|
     PROBE
 
     spec.cc.defines << 'HAVE_POSIX_SPAWN' if spec.cc.check_func('posix_spawn', header: 'spawn.h')
+    if spec.cc.check_func('posix_spawn_file_actions_addchdir_np', header: 'spawn.h')
+      spec.cc.defines << 'HAVE_POSIX_SPAWN_ADDCHDIR'
+    end
   end
 end
