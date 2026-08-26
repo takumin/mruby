@@ -854,8 +854,22 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
  * Waiting
  */
 
+/* A Windows raw status is an exit code and nothing else: a process killed
+   with TerminateProcess() is indistinguishable from one that exited with the
+   same code, so every status reads as exited. */
+static void
+status_from_exit_code(mrb_int pid, DWORD code, mrb_process_status *status)
+{
+  status->pid = pid;
+  status->raw_status = exit_code_to_status(code);
+  status->exitstatus = status->raw_status;
+  status->termsig = 0;
+  status->stopsig = 0;
+  status->flags = MRB_PROCESS_STATUS_EXITED;
+}
+
 static int
-finish_wait(mrb_state *mrb, mrb_hal_process_child *child, mrb_process_event *event)
+finish_wait(mrb_hal_process_child *child, mrb_process_event *event)
 {
   DWORD code = 0;
 
@@ -863,8 +877,7 @@ finish_wait(mrb_state *mrb, mrb_hal_process_child *child, mrb_process_event *eve
     set_errno_from_win32(GetLastError());
     return -1;
   }
-  mrb_hal_process_status_decode(mrb, (mrb_int)child->pid, exit_code_to_status(code),
-                                &event->status);
+  status_from_exit_code((mrb_int)child->pid, code, &event->status);
   event->kind = MRB_PROCESS_EVENT_EXITED;
   event->child = child;
   return 0;
@@ -881,6 +894,7 @@ wait_any(mrb_state *mrb, mrb_hal_process_context *ctx, unsigned int flags,
   struct mrb_hal_process_child *child, *found = NULL;
   HANDLE handles[MAXIMUM_WAIT_OBJECTS];
   DWORD count = 0, result;
+  (void)mrb;
 
   if (ctx->children == NULL) {
     errno = ECHILD;
@@ -910,7 +924,7 @@ wait_any(mrb_state *mrb, mrb_hal_process_context *ctx, unsigned int flags,
       return 0;
     }
     memset(event, 0, sizeof(*event));
-    return finish_wait(mrb, found, event);
+    return finish_wait(found, event);
   }
 
   for (child = ctx->children; child != NULL; child = child->next) {
@@ -938,7 +952,7 @@ wait_any(mrb_state *mrb, mrb_hal_process_context *ctx, unsigned int flags,
     return -1;
   }
   memset(event, 0, sizeof(*event));
-  return finish_wait(mrb, found, event);
+  return finish_wait(found, event);
 }
 
 int
@@ -980,7 +994,7 @@ mrb_hal_process_wait(mrb_state *mrb, mrb_hal_process_context *ctx,
     set_errno_from_win32(GetLastError());
     return -1;
   }
-  return finish_wait(mrb, target->child, event);
+  return finish_wait(target->child, event);
 }
 
 /*
@@ -1014,29 +1028,6 @@ mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo)
   }
   CloseHandle(h);
   return 0;
-}
-
-/*
- * Status Decoding
- */
-
-void
-mrb_hal_process_status_decode(mrb_state *mrb, mrb_int pid, mrb_int raw_status,
-                              mrb_process_status *status)
-{
-  (void)mrb;
-
-  /* A Windows raw status is an exit code and nothing else: a process killed
-     with TerminateProcess() is indistinguishable from one that exited with
-     the same code, so every status reads as exited.  An exit code such as
-     0xC0000005 does not fit a 32-bit mrb_int unsigned and reads back
-     negative, which is what Process::Status#to_i then shows. */
-  status->pid = pid;
-  status->raw_status = raw_status;
-  status->exitstatus = raw_status;
-  status->termsig = 0;
-  status->stopsig = 0;
-  status->flags = MRB_PROCESS_STATUS_EXITED;
 }
 
 /*

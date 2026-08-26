@@ -1144,6 +1144,40 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
  * Waiting
  */
 
+/* Read a platform wait status into its neutral form.  Decoding stays here,
+   in the port that produced the status, at the moment it was produced: no
+   WIFEXITED and no raw layout is visible anywhere else. */
+static void
+status_decode(mrb_int pid, int raw, mrb_process_status *status)
+{
+  status->pid = pid;
+  status->raw_status = (mrb_int)raw;
+  status->exitstatus = 0;
+  status->termsig = 0;
+  status->stopsig = 0;
+  status->flags = 0;
+
+  /* WIFSTOPPED comes first: a stopped status can also satisfy WIFSIGNALED on
+     some platforms, and stopping is the more specific answer. */
+  if (WIFSTOPPED(raw)) {
+    status->flags |= MRB_PROCESS_STATUS_STOPPED;
+    status->stopsig = (mrb_int)WSTOPSIG(raw);
+  }
+  else if (WIFEXITED(raw)) {
+    status->flags |= MRB_PROCESS_STATUS_EXITED;
+    status->exitstatus = (mrb_int)WEXITSTATUS(raw);
+  }
+  else if (WIFSIGNALED(raw)) {
+    status->flags |= MRB_PROCESS_STATUS_SIGNALED;
+    status->termsig = (mrb_int)WTERMSIG(raw);
+#ifdef WCOREDUMP
+    if (WCOREDUMP(raw)) {
+      status->flags |= MRB_PROCESS_STATUS_COREDUMP;
+    }
+#endif
+  }
+}
+
 static mrb_process_event_kind
 event_kind(const mrb_process_status *status)
 {
@@ -1164,6 +1198,7 @@ mrb_hal_process_wait(mrb_state *mrb, mrb_hal_process_context *ctx,
   pid_t result;
   int status = 0;
   int options = 0;
+  (void)mrb;
 
   /* The scopes are the things waitpid(2) reads from its first argument, so
      they are the same call with a different number. */
@@ -1212,7 +1247,7 @@ mrb_hal_process_wait(mrb_state *mrb, mrb_hal_process_context *ctx,
     return 0;
   }
 
-  mrb_hal_process_status_decode(mrb, (mrb_int)result, (mrb_int)status, &event->status);
+  status_decode((mrb_int)result, status, &event->status);
   event->kind = event_kind(&event->status);
   /* Every scope but CHILD draws from this process's children, which is a
      wider set than the ones spawned through here: the host application may
@@ -1245,45 +1280,6 @@ mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo)
     return -1;
   }
   return kill((pid_t)pid, (int)signo);
-}
-
-/*
- * Status Decoding
- */
-
-void
-mrb_hal_process_status_decode(mrb_state *mrb, mrb_int pid, mrb_int raw_status,
-                              mrb_process_status *status)
-{
-  int raw = (int)raw_status;
-  (void)mrb;
-
-  status->pid = pid;
-  status->raw_status = raw_status;
-  status->exitstatus = 0;
-  status->termsig = 0;
-  status->stopsig = 0;
-  status->flags = 0;
-
-  /* WIFSTOPPED comes first: a stopped status can also satisfy WIFSIGNALED on
-     some platforms, and stopping is the more specific answer. */
-  if (WIFSTOPPED(raw)) {
-    status->flags |= MRB_PROCESS_STATUS_STOPPED;
-    status->stopsig = (mrb_int)WSTOPSIG(raw);
-  }
-  else if (WIFEXITED(raw)) {
-    status->flags |= MRB_PROCESS_STATUS_EXITED;
-    status->exitstatus = (mrb_int)WEXITSTATUS(raw);
-  }
-  else if (WIFSIGNALED(raw)) {
-    status->flags |= MRB_PROCESS_STATUS_SIGNALED;
-    status->termsig = (mrb_int)WTERMSIG(raw);
-#if MRB_PROCESS_HAVE_WCOREDUMP
-    if (WCOREDUMP(raw)) {
-      status->flags |= MRB_PROCESS_STATUS_COREDUMP;
-    }
-#endif
-  }
 }
 
 /*
