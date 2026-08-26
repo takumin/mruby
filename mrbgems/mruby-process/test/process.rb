@@ -609,12 +609,72 @@ assert('Process.spawn takes Strings without converting to one') do
   assert_raise(TypeError) { Process.spawn("sh", 0) }
 end
 
+assert('Process.spawn with a redirection it cannot read') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # What is wrong with the value is what it is, and that is what the caller is
+  # owed: the cleanup on the way out closes what it had opened and leaves the
+  # exception alone.
+  assert_raise(ArgumentError) { Process.spawn("exit 0", 1 => :nonsense) }
+end
+
+assert('Process.spawn with a redirection') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # What a redirection did is asked of the child: with its standard output
+  # closed there is nowhere for `echo` to write, and it says so by failing.
+  assert_true ProcessTestUtil.run("echo hello").success?
+  assert_false ProcessTestUtil.run("echo hello", out: :close).success?
+
+  # `err: [:child, :out]` is 2>&1: the child's own descriptor 1, as the table
+  # has left it by then, and not the parent's.  So the order of the table is
+  # the order it is written in: naming err first copies the descriptor 1
+  # still has, and closing 1 afterwards does not take that copy back.
+  assert_true ProcessTestUtil.run("echo oops 1>&2").success?
+  assert_true ProcessTestUtil.run("echo oops 1>&2", err: [:child, :out], out: :close).success?
+
+  # The other way round asks for a copy of a descriptor that is closed by the
+  # time it is asked for, and the child reports that rather than running.
+  assert_raise(StandardError) do
+    ProcessTestUtil.run("echo oops 1>&2", out: :close, err: [:child, :out])
+  end
+
+  # A descriptor of the parent's, named as a number rather than as an IO.
+  assert_true ProcessTestUtil.run("echo hello", out: 2).success?
+end
+
+assert('Process.spawn with close_others') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # What close_others closes is the descriptors nobody asked about; an
+  # explicit redirection is asking, so a sweep that took descriptor 2 with it
+  # would undo the redirection just performed.
+  assert_true ProcessTestUtil.run("echo hello", out: 2, close_others: true).success?
+end
+
+assert('Process.spawn with a descriptor number no descriptor can be') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # A negative descriptor names none, and a port numbers descriptors with an
+  # `int`, so a number wider than one would reach it as a different
+  # descriptor.  What is wrong with that one is its size, which is RangeError
+  # here as it is in Ruby.
+  assert_raise(ArgumentError) { Process.spawn("exit 0", -1 => 1) }
+  assert_raise(ArgumentError) { Process.spawn("exit 0", 1 => -1) }
+
+  big = (2**31 rescue nil)
+  skip "this build cannot name a number wider than an int" unless big
+  assert_raise(RangeError) { Process.spawn("exit 0", big => 1) }
+  assert_raise(RangeError) { Process.spawn("exit 0", 1 => big) }
+end
+
 assert('Process.spawn with an option it does not take') do
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
 
   # An option nothing acts on is refused rather than dropped: a caller that
-  # wrote one is expecting it to happen.
-  assert_raise(ArgumentError) { Process.spawn("sh", "-c", "exit 0", pgroup: true) }
+  # wrote one is expecting it to happen.  A redirection is an option too, so
+  # what is refused is only what neither list holds.
+  assert_raise(ArgumentError) { Process.spawn("sh", "-c", "exit 0", chdir: "/") }
 end
 
 assert('Process.waitpid') do

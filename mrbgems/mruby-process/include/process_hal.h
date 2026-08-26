@@ -32,6 +32,8 @@
 #include <mruby.h>
 #include <stdint.h>
 
+#include <stddef.h>
+
 /* A platform that does not let a process create another has no process
    creation whatever the configuration asks for, so it says so here rather
    than leaving every build for it to be configured by hand.  iOS is one.
@@ -211,6 +213,19 @@ int mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo);
  * HAL Interface - creating a child
  */
 
+/* What one entry of the redirection table asks for. */
+typedef enum mrb_process_redirect_kind {
+  MRB_PROCESS_REDIR_PARENT = 0,  /* duplicate a descriptor owned by the parent */
+  MRB_PROCESS_REDIR_CHILD  = 1,  /* duplicate a child descriptor as set so far by this table */
+  MRB_PROCESS_REDIR_CLOSE  = 2,  /* close in the child */
+} mrb_process_redirect_kind;
+
+typedef struct mrb_process_redirect {
+  mrb_int child_fd;
+  mrb_process_redirect_kind kind;
+  mrb_int source_fd;             /* -1 for CLOSE */
+} mrb_process_redirect;
+
 /* How argv is to be read.  A single String is the shell's to take apart,
    which is what makes `Process.spawn("a > b")` a redirection and
    `Process.spawn("a", "> b")` an argument. */
@@ -219,23 +234,39 @@ typedef enum mrb_process_spawn_kind {
   MRB_PROCESS_SPAWN_SHELL = 1,   /* execute argv[0] through the system shell */
 } mrb_process_spawn_kind;
 
+#define MRB_PROCESS_SPAWN_CLOSE_OTHERS (1u << 0)
+
+/*
+ * Spawn parameters
+ *
+ * Grouped in a struct so that later additions (an environment, a working
+ * directory, process groups) do not change every port's signature.
+ */
 typedef struct mrb_process_spawn_params {
   mrb_process_spawn_kind kind;
   const char *const *argv;   /* NULL-terminated; SHELL reads argv[0] only */
+  const mrb_process_redirect *redirects;
+  size_t nredirects;
+  unsigned int flags;
 } mrb_process_spawn_params;
 
 /*
  * Create a child process.
  *
- * A failure to execute the command is reported here, through the return value
- * and errno, rather than left for the caller to find in an exit status: a
- * command that does not exist and a command that exited 127 are different
- * things, and only the port can still tell them apart.
+ * The port applies `params->redirects` in order, so `{out: w, err: [:child,
+ * :out]}` means `2>&1` after 1 has been redirected, and a CHILD entry naming
+ * a descriptor the table has not touched names the inherited one.  A source
+ * that collides with a target is saved out of the way first, and a descriptor
+ * the table does not name is left alone: close-on-exec, not a
+ * close-everything loop, is what keeps the child's descriptor table clean,
+ * unless MRB_PROCESS_SPAWN_CLOSE_OTHERS says otherwise.
  *
- * The child is given the descriptors this process holds, close-on-exec ones
- * aside: nothing here closes the rest, and `:close_others` is a later change.
- * The pipe a failed exec is reported down is the one descriptor this call
- * opens for itself, and that one is close-on-exec.
+ * A redirection the platform cannot express fails with ENOTSUP, so capability
+ * differences stay inside the port.  A failure to execute the command is
+ * reported here, through the return value and errno, rather than left for the
+ * caller to find in an exit status: a command that does not exist and a
+ * command that exited 127 are different things, and only the port can still
+ * tell them apart.
  *
  * @return 0 on success with *pid set, -1 on error (sets errno; ENOSYS where
  *         the platform cannot create a process at all)
