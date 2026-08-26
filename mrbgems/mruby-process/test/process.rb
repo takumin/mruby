@@ -406,6 +406,15 @@ assert('Process.spawn with a command that does not exist') do
   assert_raise(StandardError) { Process.spawn("mruby-no-such-command", "arg") }
 end
 
+assert('Process.spawn with a redirection it cannot read') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # What is wrong with the value is what it is, and that is what the caller is
+  # owed: the cleanup on the way out closes what was opened and leaves the
+  # exception alone.
+  assert_raise(ArgumentError) { Process.spawn("exit 0", 1 => :nonsense) }
+end
+
 assert('Process.spawn with a redirection') do
   skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
 

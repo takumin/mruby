@@ -90,11 +90,15 @@ class IO
         spawn_opts[:out] = child_out if child_out
         spawn_opts[:err] = child_err if child_err
         pid = process.spawn(command, spawn_opts)
-      rescue StandardError
+      rescue StandardError => e
+        # Named rather than re-raised bare: mruby's `raise` with no argument
+        # does not re-raise what is being rescued, it raises an empty
+        # RuntimeError, which would lose the Errno the failed spawn owes the
+        # caller.
         [read_r, read_w, write_r, write_w].each do |io|
           io.close if io && !io.closed?
         end
-        raise
+        raise e
       end
 
       # The child has the ends it was given; holding them here as well would

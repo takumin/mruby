@@ -130,9 +130,13 @@ module Process
             kind, source = _spawn_source(fds[0], value, opened)
             fds.each { |fd| table << fd << kind << source }
           end
-        rescue StandardError
+        rescue StandardError => e
+          # Named rather than re-raised bare: mruby's `raise` with no argument
+          # does not re-raise what is being rescued, it raises an empty
+          # RuntimeError, which would lose the ArgumentError this owes the
+          # caller.
           opened.each { |io| io.close }
-          raise
+          raise e
         end
         [table, opened]
       end
