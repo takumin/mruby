@@ -29,14 +29,15 @@ module Process
     REDIR_CHILD  = 1
     REDIR_CLOSE  = 2
 
-    SPAWN_CLOSE_OTHERS = 1
+    SPAWN_CLOSE_OTHERS    = 1
+    SPAWN_UNSETENV_OTHERS = 2
 
-    SPAWN_OPTION_KEYS = [:close_others]
+    SPAWN_OPTION_KEYS = [:close_others, :unsetenv_others, :chdir]
 
     class << self
       #
       # call-seq:
-      #   Process.spawn(command... [, options]) -> pid
+      #   Process.spawn([env, ] command... [, options]) -> pid
       #
       # Runs +command+ in a child process and returns its process ID without
       # waiting for it.  The caller owes that child a wait, through
@@ -58,6 +59,11 @@ module Process
       # A command that cannot be run raises the Errno the attempt failed
       # with, rather than leaving a child that exited 127 to be guessed at.
       #
+      # A leading Hash is added to the child's environment, and a nil value
+      # removes a variable rather than setting it:
+      #
+      #   Process.spawn({"LANG" => "C", "TZ" => nil}, "date")
+      #
       # A trailing Hash is options.  <code>:in</code>, <code>:out</code>,
       # <code>:err</code> and plain descriptor numbers redirect the child's
       # descriptors; the table is applied in order, so a later entry sees
@@ -72,16 +78,21 @@ module Process
       # bare <code>:out</code> names the parent's descriptor 1, and merging
       # inside the child is written <code>err: [:child, :out]</code>.
       #
-      # <code>:close_others</code> closes the descriptors above 2 that the
-      # table does not name.  Descriptors this build opens are close-on-exec
-      # already, so it is rarely needed.
+      # The remaining options are <code>:chdir</code>, which runs the child
+      # in another directory, <code>:unsetenv_others</code>, which starts the
+      # child's environment empty, and <code>:close_others</code>, which
+      # closes descriptors above 2 that the table does not name.  Descriptors
+      # this build opens are close-on-exec already, so the last one is rarely
+      # needed.
       #
       def spawn(*args)
-        kind, argv, opts = _spawn_normalize(args)
+        env, kind, argv, opts = _spawn_normalize(args)
         table, opened = _spawn_redirects(opts)
-        flags = opts[:close_others] ? SPAWN_CLOSE_OTHERS : 0
+        flags = 0
+        flags |= SPAWN_CLOSE_OTHERS if opts[:close_others]
+        flags |= SPAWN_UNSETENV_OTHERS if opts[:unsetenv_others]
         begin
-          __spawn(kind, argv, table, flags)
+          __spawn(kind, argv, env, table, flags, opts[:chdir])
         ensure
           opened.each { |io| io.close }
         end
@@ -91,6 +102,7 @@ module Process
 
       def _spawn_normalize(args)
         args = args.dup
+        env = args[0].is_a?(Hash) ? _spawn_env(args.shift) : []
         if args.empty?
           raise ArgumentError, "wrong number of arguments (given 0, expected 1+)"
         end
@@ -101,9 +113,9 @@ module Process
         end
         if args.size == 1
           kind, argv = _spawn_command_line(_spawn_str(args[0]))
-          [kind, argv, opts]
+          [env, kind, argv, opts]
         else
-          [SPAWN_ARGV, args.map { |a| _spawn_str(a) }, opts]
+          [env, SPAWN_ARGV, args.map { |a| _spawn_str(a) }, opts]
         end
       end
 
@@ -167,6 +179,17 @@ module Process
           raise TypeError, "no implicit conversion of #{v.class} into String"
         end
         v
+      end
+
+      # [name, value, name, value, ...]; a nil value means "unset".  Deltas,
+      # not a whole environment, so nothing here has to read the parent's,
+      # which is what keeps this gem independent of mruby-env.
+      def _spawn_env(hash)
+        env = []
+        hash.each do |k, v|
+          env << _spawn_str(k) << (v.nil? ? nil : _spawn_str(v))
+        end
+        env
       end
 
       def _spawn_redirects(opts)
