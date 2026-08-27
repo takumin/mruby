@@ -270,6 +270,29 @@ clear_match_globals(mrb_state *mrb)
   set_match_globals(mrb, mrb_nil_value());
 }
 
+/* The virtual-global pair `$~` dispatches to, registered in gem init: the
+   value lives in the owning scope's special-variable slot
+   (mrb_vm_svar_get/set), not in the globals table, which is what keeps a
+   method's match out of its caller's `$~`. The slot is opaque to the core;
+   that it holds a MatchData is this gem's contract, so the setter, the one
+   explicit write path, is the home of CRuby's TypeError for
+   `$~ = <not a MatchData>`. */
+static mrb_value
+backref_gv_get(mrb_state *mrb)
+{
+  return mrb_vm_svar_get(mrb);
+}
+
+static void
+backref_gv_set(mrb_state *mrb, mrb_value v)
+{
+  if (!mrb_nil_p(v) && !(mrb_data_p(v) && DATA_TYPE(v) == &matchdata_type)) {
+    mrb_raisef(mrb, E_TYPE_ERROR, "wrong argument type %s (expected MatchData)",
+               mrb_obj_classname(mrb, v));
+  }
+  mrb_vm_svar_set(mrb, v);
+}
+
 /* Byte-based substring extraction. The regexp engine records all capture
    offsets in bytes, but mrb_str_substr indexes by character under
    MRB_UTF8_STRING, which corrupts non-empty multibyte matches. Extract by
@@ -2223,8 +2246,10 @@ str_aset(mrb_state *mrb, mrb_value str)
 
 /* --- The regexp-aware String methods --- */
 
-/* Each stands where CRuby implements the same method in C, a C frame in
-   place of the Ruby frame the mrblib override pushed.
+/* Each stands where CRuby implements the same method in C. Being C frames
+   they are transparent to `$~` owner resolution, so a match inside publishes
+   into the calling scope the way rb_str_sub_bang()'s does, with nothing
+   having to say so.
 
    Every entry point settles its pattern argument up front, so the argument
    cannot steer the decision: check_pattern() reads the real type, an accepted
@@ -3165,10 +3190,11 @@ sym_match_op_m(mrb_state *mrb, mrb_value self)
 /*
  * Regexp.last_match / Regexp.last_match(n)
  *
- * Reads `$~` and indexes it the way MatchData#[] does: CRuby's
- * rb_reg_s_last_match() reaches rb_reg_nth_match() directly rather than
- * dispatching `[]`, so a program redefining `MatchData#[]` moves `md[n]`
- * and leaves this reader alone.
+ * Reads the caller's `$~`, which this C frame is transparent to, and indexes
+ * it the way MatchData#[] does: CRuby's rb_reg_s_last_match() reaches
+ * rb_reg_nth_match() directly rather than dispatching `[]`, so a program
+ * redefining `MatchData#[]` moves `md[n]` and leaves this reader alone. The
+ * read goes through the virtual-global pair like every other read of `$~`.
  */
 static mrb_value
 regexp_s_last_match(mrb_state *mrb, mrb_value klass)
@@ -3189,6 +3215,10 @@ mrb_mruby_regexp_gem_init(mrb_state *mrb)
 {
   struct RClass *re = mrb_define_class(mrb, "Regexp", mrb->object_class);
   MRB_SET_INSTANCE_TT(re, MRB_TT_CDATA);
+
+  /* `$~` is a global name whose value is per method scope; every read and
+     write, `set_match_globals()`'s included, goes through the pair above. */
+  mrb_gv_define_virtual(mrb, ensure_match_sym(mrb), backref_gv_get, backref_gv_set);
 
   /* Constants */
   mrb_define_const(mrb, re, "IGNORECASE", mrb_fixnum_value(1));
