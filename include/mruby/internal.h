@@ -175,18 +175,43 @@ struct RSvar {
 };
 
 #ifdef MRUBY_PROC_H
-/* The heap stack of a closed env holds its locals and one slot past them:
- * the special-variable container of the scope the env escapes from, which
- * mrb_env_detach() moves there and svar_owner() reads back, or, for a scope
- * that holds no container of its own, the env of the scope below whose
- * special variables it shares, which the same walk follows one hop further
- * (CRuby's ep chain, and its own svar slot is polymorphic the same way).
- * Nothing in the type says so, and a stack sized without the slot lets the
- * GC mark one past the allocation, so every path that allocates, resizes or
- * reads such a stack goes through the two below rather than spelling the
- * offset itself. Both take the number of locals, which is MRB_ENV_LEN()
- * once the env carries it. */
-#define MRB_ENV_STACK_SIZE(len) (sizeof(mrb_value) * ((size_t)(len) + 1))
+/* A closed env may carry one slot past its locals: the special-variable
+ * container of the scope the env escapes from, which mrb_env_detach()
+ * moves there and svar_owner() reads back, or, for a scope that holds no
+ * container of its own, the env of the scope below whose special variables
+ * it shares, which the same walk follows one hop further (CRuby's ep
+ * chain, and its own svar slot is polymorphic the same way).
+ *
+ * Whether the slot is there is not implied by the env being closed. struct
+ * REnv, MRB_ENV_CLOSE() and MRB_ENV_SET_LEN() are public, and out-of-tree
+ * code builds closed envs over a stack of exactly MRB_ENV_LEN() values, so
+ * reading one past the locals of any closed env runs off such an
+ * allocation. The flag below says it for the env instead, leaving three
+ * states:
+ *
+ *   on-stack                 ONSTACK_P, never SVAR_P; the stack is the VM's
+ *   closed, no slot         !ONSTACK_P, !SVAR_P; len values, or none at all
+ *   closed, with the slot   !ONSTACK_P,  SVAR_P; len + 1 values
+ *
+ * The middle state is what out-of-tree code makes, and what the core's own
+ * envs fall back to when there is no stack left to size (mrb_env_unshare()
+ * out of memory, error.c's fault-time rewind). It reads as a scope holding
+ * no container, and svar_slot_ensure() in vm.c grows it into the third on
+ * the first write that needs one. So: every path that allocates or resizes
+ * a stack with the slot goes through MRB_ENV_SVAR_STACK_SIZE() and sets
+ * the flag, every path that reads or writes the slot goes through
+ * MRB_ENV_SVAR_SLOT() under MRB_ENV_SVAR_P(), and every path that drops
+ * the stack clears the flag. All three take the number of locals, which is
+ * MRB_ENV_LEN() once the env carries it.
+ *
+ * Invariant, asserted where the core reads the slot: MRB_ENV_SVAR_P(e)
+ * implies e is closed, e->stack is non-NULL, and its allocation holds
+ * MRB_ENV_LEN(e) + 1 values. */
+#define MRB_ENV_SVAR_BIT 15
+#define MRB_ENV_SVAR_P(e) MRB_FLAG_CHECK((e)->flags, MRB_ENV_SVAR_BIT)
+#define MRB_ENV_SET_SVAR(e) MRB_FLAG_ON((e)->flags, MRB_ENV_SVAR_BIT)
+#define MRB_ENV_CLEAR_SVAR(e) MRB_FLAG_OFF((e)->flags, MRB_ENV_SVAR_BIT)
+#define MRB_ENV_SVAR_STACK_SIZE(len) (sizeof(mrb_value) * ((size_t)(len) + 1))
 #define MRB_ENV_SVAR_SLOT(stack, len) ((stack)[(len)])
 
 struct RProc *mrb_closure_new(mrb_state*, const mrb_irep*);

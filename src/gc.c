@@ -1000,9 +1000,14 @@ gc_mark_children(mrb_state *mrb, mrb_gc *gc, struct RBasic *obj)
       for (mrb_int i=0; i<len; i++) {
         mrb_gc_mark_value(mrb, e->stack[i]);
       }
-      if (!MRB_ENV_ONSTACK_P(e) && e->stack) {
+      if (MRB_ENV_SVAR_P(e)) {
         /* the escaped scope's special-variable container, one slot past the
-           locals (see mrb_env_detach() in vm.c) */
+           locals (see mrb_env_detach() in vm.c). Only an env whose flag says
+           it carries the slot has one: a closed env sized without it, which
+           out-of-tree code builds by hand, ends its allocation at the
+           locals (see internal.h). */
+        mrb_assert(!MRB_ENV_ONSTACK_P(e));
+        mrb_assert(e->stack != NULL);
         mrb_gc_mark_value(mrb, MRB_ENV_SVAR_SLOT(e->stack, len));
       }
       else if (MRB_ENV_ONSTACK_P(e) && e->cxt && e->cxt != mrb->root_c && e->cxt->cibase) {
