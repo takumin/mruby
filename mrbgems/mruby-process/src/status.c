@@ -63,6 +63,11 @@ status_flag(mrb_state *mrb, mrb_value self, unsigned int flag)
  * Wraps a platform wait status for the process +pid+.  +raw_status+ is the
  * value the platform reported the process with, as Process.waitpid passes
  * on and as Process::Status#to_i gives back.
+ *
+ * The status is frozen once built, as CRuby freezes the one it leaves in
+ * <code>$?</code>.  What a process did is over by the time there is a status
+ * for it, and every question a status answers is read back from the two
+ * integers set here.
  */
 static mrb_value
 status_initialize(mrb_state *mrb, mrb_value self)
@@ -78,7 +83,10 @@ status_initialize(mrb_state *mrb, mrb_value self)
   mrb_process_int_arg(mrb, raw_status, "status");
   mrb_iv_set(mrb, self, MRB_IVSYM(pid), mrb_int_value(mrb, pid));
   mrb_iv_set(mrb, self, MRB_IVSYM(status), mrb_int_value(mrb, raw_status));
-  return self;
+  /* Last, since the two above are what there is to write.  A second
+     #initialize on the same object is refused from here on, which is what
+     freezing a value means and not a case this gem's own paths reach. */
+  return mrb_obj_freeze(mrb, self);
 }
 
 /*

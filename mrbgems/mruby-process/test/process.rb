@@ -259,6 +259,20 @@ assert('Process::Status.new with a status too large for the platform') do
   assert_equal(-big, Process::Status.new(1234, -big).to_i)
 end
 
+assert('Process::Status is frozen once built') do
+  # What a process did is over by the time there is a status for it, and the
+  # pid and the raw status set at construction are what every other question
+  # is read back from.  Freezing says so, and keeps the two from being
+  # rewritten under the answers; CRuby freezes the status it leaves in $?.
+  st = Process::Status.new(1234, 0)
+  assert_true st.frozen?
+  # Written through the one door there is: #initialize is where the two are
+  # set, and a frozen receiver turns a second pass through it away.
+  assert_raise(FrozenError) { st.__send__(:initialize, 1234, 1) }
+  assert_equal 1234, st.pid
+  assert_equal 0, st.to_i
+end
+
 assert('Process::Status#==') do
   st = Process::Status.new(1234, 0)
   assert_operator st, :==, Process::Status.new(1234, 0)
@@ -324,6 +338,7 @@ assert('Process.waitpid') do
 
   # waitpid publishes what it reaped through $?
   assert_kind_of Process::Status, $?
+  assert_true $?.frozen?
   assert_equal pid, $?.pid
   assert_true $?.exited?
   assert_equal 3, $?.exitstatus
