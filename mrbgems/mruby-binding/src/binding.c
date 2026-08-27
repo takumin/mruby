@@ -90,7 +90,8 @@ static struct REnv *
 binding_env_new_lvspace(mrb_state *mrb, const struct REnv *e)
 {
   struct REnv *env = MRB_OBJ_ALLOC(mrb, MRB_TT_ENV, NULL);
-  mrb_value *stacks = (mrb_value*)mrb_calloc(mrb, 1, sizeof(mrb_value));
+  /* born closed and off the stack, so its one local carries the slot too */
+  mrb_value *stacks = (mrb_value*)mrb_malloc(mrb, MRB_ENV_STACK_SIZE(1));
   env->mid = 0;
   env->stack = stacks;
   if (e && e->stack && MRB_ENV_LEN(e) > 0) {
@@ -99,6 +100,7 @@ binding_env_new_lvspace(mrb_state *mrb, const struct REnv *e)
   else {
     env->stack[0] = mrb_nil_value();
   }
+  SET_NIL_VALUE(MRB_ENV_SVAR_SLOT(env->stack, 1));
   MRB_ENV_SET_LEN(env, 1);
   return env;
 }

@@ -174,8 +174,9 @@ mrb_proc_new_cfunc_with_env(mrb_state *mrb, mrb_func_t func, mrb_int argc, const
   mrb_field_write_barrier(mrb, (struct RBasic*)p, (struct RBasic*)e);
   MRB_ENV_CLOSE(e);
 
-  e->stack = (mrb_value*)mrb_malloc(mrb, sizeof(mrb_value) * argc);
+  e->stack = (mrb_value*)mrb_malloc(mrb, MRB_ENV_STACK_SIZE(argc));
   MRB_ENV_SET_LEN(e, argc);
+  SET_NIL_VALUE(MRB_ENV_SVAR_SLOT(e->stack, argc));
 
   if (argv) {
     for (i = 0; i < argc; i++) {
@@ -548,7 +549,10 @@ mrb_proc_merge_lvar(mrb_state *mrb, mrb_irep *irep, struct REnv *env, int num, c
   }
 
   irep->lv = (mrb_sym*)mrb_realloc(mrb, (mrb_sym*)irep->lv, sizeof(mrb_sym) * (irep->nlocals - 1 /* self */ + num));
-  env->stack = (mrb_value*)mrb_realloc(mrb, env->stack, sizeof(mrb_value) * (irep->nlocals + num));
+  env->stack = (mrb_value*)mrb_realloc(mrb, env->stack, MRB_ENV_STACK_SIZE(irep->nlocals + num));
+  /* the new locals take the ground the slot stood on, so move it up first */
+  MRB_ENV_SVAR_SLOT(env->stack, irep->nlocals + num) =
+    MRB_ENV_SVAR_SLOT(env->stack, irep->nlocals);
 
   mrb_sym *destlv = (mrb_sym*)irep->lv + irep->nlocals - 1 /* self */;
   mrb_value *destst = env->stack + irep->nlocals;

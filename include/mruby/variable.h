@@ -111,6 +111,41 @@ MRB_API void mrb_gv_remove(mrb_state *mrb, mrb_sym sym);
  */
 MRB_API void mrb_gv_define_virtual(mrb_state *mrb, mrb_sym sym, mrb_value (*get)(mrb_state*), void (*set)(mrb_state*, mrb_value));
 
+/**
+ * The keys of a Ruby scope's special variables, CRuby's `enum
+ * vm_svar_index` with CRuby's numbering. Each scope holds one container of
+ * MRB_SVAR_MAX slots (allocated lazily, see mrb_vm_svar_set()), and each
+ * key names one slot in it. The namespace is owned by the core: a new
+ * special variable takes a new enumerator here, never a key minted at
+ * runtime, so a key means the same slot in every build and gem load order.
+ */
+enum mrb_svar_index {
+  MRB_SVAR_LASTLINE = 0,        /* $_ */
+  MRB_SVAR_BACKREF,             /* $~ */
+  MRB_SVAR_MAX
+};
+
+/**
+ * Reads one special-variable slot of the owning Ruby scope, resolved like
+ * CRuby's svar (a C frame reads through to the Ruby frame below it, a block
+ * shares its defining method's container, and a scope that returned keeps
+ * its container in its env, so a proc outliving it still reads the value).
+ * The core stores and marks the slots but gives them no meaning: a key's
+ * semantics belong to whoever pairs these accessors with a virtual global,
+ * the way mruby-regexp keeps `$~`'s MatchData under MRB_SVAR_BACKREF.
+ */
+MRB_API mrb_value mrb_vm_svar_get(mrb_state *mrb, enum mrb_svar_index key);
+
+/**
+ * Writes one special-variable slot of the owning Ruby scope. The slot holds
+ * any mrb_value, immediates included. Any richer contract, like
+ * mruby-regexp's TypeError for `$~ = <not a MatchData>`, belongs to the
+ * caller. The scope's container is allocated on the first non-nil write; a
+ * nil write into a scope that has none is dropped, nil being what a missing
+ * slot already reads as.
+ */
+MRB_API void mrb_vm_svar_set(mrb_state *mrb, enum mrb_svar_index key, mrb_value v);
+
 MRB_API mrb_value mrb_cv_get(mrb_state *mrb, mrb_value mod, mrb_sym sym);
 MRB_API void mrb_mod_cv_set(mrb_state *mrb, struct RClass * c, mrb_sym sym, mrb_value v);
 MRB_API void mrb_cv_set(mrb_state *mrb, mrb_value mod, mrb_sym sym, mrb_value v);

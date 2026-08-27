@@ -11,10 +11,10 @@
 #include <mruby/error.h>
 #include <mruby/gc.h>
 #include <mruby/hash.h>
-#include <mruby/internal.h>
 #include <mruby/proc.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
+#include <mruby/internal.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -39,7 +39,11 @@
  * An escaped closure keeps its REnv alive after the task is gone; if the
  * env still points into the freed stack, the next GC marks garbage and
  * crashes in mrb_gc_mark. mruby does the same for fibers in gc.c's
- * MRB_TT_FIBER free path.
+ * MRB_TT_FIBER free path; the shared walk and the carrying policy for
+ * each frame's special-variable container live in mrb_env_detach_all()
+ * (vm.c). TRUE because this teardown runs outside a collection, so a
+ * scopeless frame's owner is resolved here, on this side of the C
+ * boundary a preempted nested load stopped at.
  *
  * Only called while the VM is alive. A task stays GC-registered for its
  * whole life, so the GC frees one only while tearing the heap down, and
@@ -48,22 +52,7 @@
 static void
 task_unshare_envs(mrb_state *mrb, struct mrb_context *c)
 {
-  mrb_callinfo *ci;
-
-  if (!c->cibase || !c->ci) return;
-  /* Stop AT cibase rather than decrementing past it: forming a pointer
-   * one element before the start of an array is undefined behavior. */
-  for (ci = c->ci; ; ci--) {
-    struct REnv *e = ci->u.env;
-    /* mrb_env_unshare() allocates and can therefore run a GC cycle. In
-     * teardown paths the task may already be unlinked, so an env that no
-     * other object refers to may be swept mid-walk; check liveness first. */
-    if (e && !mrb_object_dead_p(mrb, (struct RBasic*)e) &&
-        e->tt == MRB_TT_ENV && MRB_ENV_ONSTACK_P(e)) {
-      mrb_env_unshare(mrb, e, TRUE);
-    }
-    if (ci == c->cibase) break;
-  }
+  mrb_env_detach_all(mrb, c, TRUE);
 }
 
 /*
@@ -174,6 +163,14 @@ mrb_task_mark_all(mrb_state *mrb)
         for (ci = c->cibase; ci <= c->ci; ci++) {
           if (ci->proc) {
             mrb_gc_mark(mrb, (struct RBasic*)ci->proc);
+          }
+          if (ci->svar) {
+            /* the frame's special-variable slot, which mark_context() in
+               gc.c marks for every context this walk does not reach. A task
+               context has no fiber to be marked through, and a write to the
+               slot takes no barrier, so this walk is also its atomic
+               re-scan, like the value stack's above. */
+            mrb_gc_mark(mrb, (struct RBasic*)ci->svar);
           }
           if (ci->u.target_class) {
             mrb_gc_mark(mrb, (struct RBasic*)ci->u.target_class);
@@ -1766,6 +1763,9 @@ mrb_task_reset_context(mrb_state *mrb, mrb_value task)
   c->status = MRB_TASK_CREATED;
   if (c->ci) {
     mrb_vm_ci_target_class_set(c->ci, mrb->object_class);
+    /* the special variables of the previous run die with it: the next
+       body starts with `$~` unset, as a fresh task's does */
+    c->ci->svar = NULL;
   }
 }
 

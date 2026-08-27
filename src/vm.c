@@ -380,7 +380,371 @@ mrb_vm_ci_env_clear(mrb_state *mrb, mrb_callinfo *ci)
   struct REnv *e = ci->u.env;
   if (e && e->tt == MRB_TT_ENV) {
     ci->u.target_class = e->c;
-    mrb_env_unshare(mrb, e, FALSE);
+    /* The escaping env carries the container, so a proc from the earlier
+       top-level chunk keeps reading the scope it was written in. */
+    mrb_env_detach(mrb, e, ci->svar, FALSE);
+  }
+  /* The frame itself starts the next chunk in a fresh scope, the way each
+     file `ruby -r` loads gets one of its own; a caller that wants a single
+     scope across its chunks (mirb's interactive lines) does not call this,
+     which is also how it keeps the top-level locals. */
+  ci->svar = NULL;
+}
+
+/* The local scope of a block or lambda: following p->upper toward the
+ * scope proc, MRB_PROC_ENV() of each step is the env of the frame the
+ * proc was defined in, instance by instance, so the env in hand when the
+ * next proc up turns out to be a scope (or is missing) belongs to the
+ * method scope, the way CRuby's lep walk crosses block eps into the
+ * method's. NULL for a proc that captured no env. Pointer identity only:
+ * the env may be closed, or live on another context's stack. */
+static struct REnv*
+svar_scope_env(const struct RProc *p)
+{
+  struct REnv *e = MRB_PROC_ENV(p);
+
+  if (!e) return NULL;
+  for (;;) {
+    const struct RProc *up = p->upper;
+    if (!up || MRB_PROC_CFUNC_P(up) || MRB_PROC_SCOPE_P(up)) return e;
+    struct REnv *upenv = MRB_PROC_ENV(up);
+    if (!upenv) return e;
+    p = up;
+    e = upenv;
+  }
+}
+
+/* A frame with no scope of its own: an irep proc that neither is a scope
+ * nor captured one. What reaches here is the top proc of a nested
+ * `mrb_top_run()`, which is `mrb_load_string()` called from a C function
+ * mid-execution, and an eval compiled against no Ruby scope, which is the
+ * same call with no Ruby frame under it. An ordinary `eval` is not one of
+ * these: its proc captures the calling frame's env, so it answers FALSE
+ * and resolves as a block does, onto the scope that called it. Holding no
+ * slot, a scopeless frame is as transparent to the special variables as
+ * the C function that pushed it, the way CRuby's `rb_eval_string()` shares
+ * the scope below; when its env escapes, the transparency outlives the
+ * frame by adoption (svar_env_adopt_owner()). Blocks and lambdas always
+ * capture, so they never answer TRUE. */
+static mrb_bool
+svar_scopeless_frame_p(const mrb_callinfo *ci)
+{
+  const struct RProc *p = ci->proc;
+
+  return p && !MRB_PROC_CFUNC_P(p) &&
+         !MRB_PROC_SCOPE_P(p) && svar_scope_env(p) == NULL;
+}
+
+/* An escaped scope's slot (MRB_ENV_SVAR_SLOT in internal.h):
+ * mrb_env_detach() fills it, mrb_env_unshare() sizes the stack for it.
+ * NULL where the env carries none: error.c's fault-time rewind and the
+ * out-of-memory arm of mrb_env_unshare() leave a closed env with no
+ * stack at all. */
+static mrb_value*
+env_svar_slot(struct REnv *e)
+{
+  if (MRB_ENV_ONSTACK_P(e) || !e->stack) return NULL;
+  return &MRB_ENV_SVAR_SLOT(e->stack, MRB_ENV_LEN(e));
+}
+
+/* The owner of the frame-scoped special variables, resolved the way CRuby
+ * resolves its svar: walking down from the top, a C frame has no slot of
+ * its own, a scope frame owns its own slot, a frame with no
+ * scope of its own is as transparent as a C frame (see
+ * `svar_scopeless_frame_p()`), and a block or lambda frame resolves to the
+ * scope it was defined in, wherever that scope now is: a live frame on
+ * this or on another context's stack, or the env the scope left behind. A
+ * block written inside a scopeless frame resolves to that frame, which
+ * owns no slot either, so the walk goes on below it.
+ * One exception, CRuby's root-lep redirect: a resolution landing on the
+ * very scope the running context's own root block was defined in is handed
+ * the context's root slot instead (`cibase`), which is how a fiber keeps
+ * its special variables to itself. Resolution ends in a live frame (*cip,
+ * its context in *ocp), in the env of a scope that escaped the stack
+ * (*envp, holding the container mrb_env_detach() moved off it, or the
+ * owner's a scopeless frame adopted), or in neither, when the scope left
+ * nothing behind: then a read answers nil and a write is dropped. A
+ * scopeless frame's escaped env may instead hold the env of the scope
+ * below it (what mrb_svar_frame_container() hands on where that scope
+ * holds no container to share): the walk follows it, one hop per nested
+ * load, the way CRuby's ep chain crosses an eval frame's ep into the scope
+ * below's.
+ * What resolution costs, and why it is linear: an env does not record
+ * which frame it belongs to, so a defining scope still on a stack is
+ * found by the downward scan below, one CI_ENV test per ci entry between
+ * the reader and the scope (eight instructions each, measured), and the
+ * lexical chase of svar_scope_env() adds a step per block-nesting level.
+ * CRuby resolves in constant time at any call depth, its svar living on
+ * the ep itself; the slot could live that way here only if the compiler
+ * reserved it in every method's locals, which no compiled irep has, so
+ * the scan is what keeps existing bytecode running. The term stretches
+ * past a handful of entries only when a proc is carried to the bottom of
+ * a deep call chain and reads its special variables there.
+ * The walk starts at `top`, which is c->ci for a read or write and a
+ * mid-stack frame for mrb_svar_frame_container() resolving a torn-down
+ * context. */
+static void
+svar_owner_from(struct mrb_context *c, mrb_callinfo *top, mrb_callinfo **cip, struct mrb_context **ocp, struct REnv **envp)
+{
+  struct mrb_context *wc = c;   /* the context being walked; the redirect
+                                   below stays the caller's */
+  mrb_callinfo *ci = top;
+
+  *cip = NULL;
+  *ocp = c;
+  *envp = NULL;
+  while (ci > wc->cibase) {
+    const struct RProc *p = ci->proc;
+
+    if (p && !MRB_PROC_CFUNC_P(p)) {
+      if (MRB_PROC_SCOPE_P(p)) {
+        *cip = ci;
+        *ocp = wc;
+        return;
+      }
+
+      struct REnv *e = svar_scope_env(p);
+      if (!e) {
+        /* A scopeless frame: reads and writes pass through to the scope
+           below, the way `rb_eval_string()`'s do. */
+        ci--;
+        continue;
+      }
+      for (;;) {
+        const struct RProc *rp = c->cibase->proc;
+        if (rp && !MRB_PROC_CFUNC_P(rp) && !MRB_PROC_SCOPE_P(rp) &&
+            svar_scope_env(rp) == e) {
+          *cip = c->cibase;
+          *ocp = c;
+          return;
+        }
+        if (MRB_ENV_ONSTACK_P(e)) break;
+        if (!e->stack) return;
+        mrb_value fwd = MRB_ENV_SVAR_SLOT(e->stack, MRB_ENV_LEN(e));
+        if (mrb_type(fwd) != MRB_TT_ENV) {
+          *envp = e;
+          return;
+        }
+        /* A scopeless frame's env, forwarded on teardown to the env of
+           the scope below the load: follow it there. */
+        e = (struct REnv*)mrb_obj_ptr(fwd);
+      }
+      struct mrb_context *oc = e->cxt;
+      mrb_callinfo *s = (oc == wc) ? ci - 1 : oc->ci;
+      /* Stop AT cibase rather than decrementing past it: forming a pointer
+         one element before the start of an array is undefined behavior. */
+      while (CI_ENV(s) != e) {
+        if (s == oc->cibase) return;
+        s--;
+      }
+      if (s > oc->cibase && svar_scopeless_frame_p(s)) {
+        /* The scope the block was defined in is itself scopeless: the block
+           was written inside a nested load, so its special variables belong
+           to the scope that load runs against, further down, on whichever
+           context that load's frame still stands. */
+        wc = oc;
+        ci = s - 1;
+        continue;
+      }
+      *cip = s;
+      *ocp = oc;
+      return;
+    }
+    ci--;
+  }
+  *cip = wc->cibase;
+  *ocp = wc;
+}
+
+static void
+svar_owner(struct mrb_context *c, mrb_callinfo **cip, struct mrb_context **ocp, struct REnv **envp)
+{
+  svar_owner_from(c, c->ci, cip, ocp, envp);
+}
+
+/* A scope's special-variable container (struct RSvar in internal.h), made
+ * on the first non-nil write into the scope. The object is allocated
+ * first and reaches the GC arena with slots == NULL, so the collector a
+ * slot allocation may run sees the window; gc_mark_children() guards on
+ * it. A raise out of the slot allocation leaves that empty shell to the
+ * GC and no owner ever holds it. */
+static struct RSvar*
+svar_new(mrb_state *mrb)
+{
+  struct RSvar *sv = MRB_OBJ_ALLOC(mrb, MRB_TT_SVAR, NULL);
+  mrb_value *slots = (mrb_value*)mrb_malloc(mrb, sizeof(mrb_value) * MRB_SVAR_MAX);
+
+  for (int i = 0; i < MRB_SVAR_MAX; i++) {
+    SET_NIL_VALUE(slots[i]);
+  }
+  sv->slots = slots;
+  return sv;
+}
+
+/* The container of the owner svar_owner() resolved to: on a live frame
+ * the frame's pointer, on an escaped scope the object its env slot holds,
+ * NULL where the scope has never written one (or left nothing behind).
+ * Both places may instead hold a forward to the env of the scope below
+ * (mrb_svar_frame_container()), but only on a frame with no scope of its
+ * own, and resolution walks past those rather than ending on one, so what
+ * a resolved frame holds is a container or nothing. */
+static struct RSvar*
+svar_owner_container(mrb_callinfo *ci, struct REnv *e)
+{
+  if (ci) {
+    mrb_assert(ci->svar == NULL || ci->svar->tt == MRB_TT_SVAR);
+    return (struct RSvar*)ci->svar;
+  }
+  if (e) {
+    mrb_value *slot = env_svar_slot(e);
+    if (slot && mrb_type(*slot) == MRB_TT_SVAR) return (struct RSvar*)mrb_obj_ptr(*slot);
+  }
+  return NULL;
+}
+
+/* Resolves the current owner and answers its container, making one on the
+ * spot when the scope holds none yet: the first non-nil write does this
+ * (mrb_vm_svar_set()), and so does a scopeless frame whose env escapes
+ * (svar_env_adopt_owner()), so the adopted slot and the scope share one
+ * object before either side has written. NULL when resolution found no
+ * scope that could hold one.
+ * Installing a fresh container into a frame needs no barrier of its own
+ * on the running or the root context, those two ci stacks being
+ * unbarriered roots that final_marking_phase() re-scans atomically like
+ * the value stack; a frame on any other context is marked through that
+ * context's fiber, so the fiber pays one; a task context has no fiber and
+ * needs none, its stack being re-scanned atomically by
+ * mrb_task_mark_all(), which final_marking_phase() calls for exactly
+ * that. An env slot is ordinary GC-owned storage and pays the env's own. */
+static struct RSvar*
+svar_owner_force(mrb_state *mrb)
+{
+  mrb_callinfo *ci;
+  struct mrb_context *oc;
+  struct REnv *e;
+
+  svar_owner(mrb->c, &ci, &oc, &e);
+  struct RSvar *sv = svar_owner_container(ci, e);
+  if (sv) return sv;
+  sv = svar_new(mrb);
+  /* The allocation may have run a collection, and the owner may have stood
+     on a stack nothing else kept alive, a suspended fiber whose last
+     reference was dropped: its sweep detached its envs and freed its
+     callinfo array, so the frame resolved above is gone. Whether one ran
+     cannot be read off mrb->gc.live, which counts objects rather than
+     cycles and comes back unchanged from a sweep that freed as many as
+     this allocation makes, so resolve again either way; the walk then ends
+     in the closed env the sweep left behind, holding whatever container
+     the detach carried. */
+  svar_owner(mrb->c, &ci, &oc, &e);
+  struct RSvar *moved = svar_owner_container(ci, e);
+  if (moved) return moved;
+  if (ci) {
+    ci->svar = (struct RBasic*)sv;
+    if (oc != mrb->c && oc != mrb->root_c && oc->fib) {
+      mrb_write_barrier(mrb, (struct RBasic*)oc->fib);
+    }
+    return sv;
+  }
+  if (e) {
+    mrb_value *slot = env_svar_slot(e);
+    if (!slot) return NULL;
+    *slot = mrb_obj_value(sv);
+    mrb_write_barrier(mrb, (struct RBasic*)e);
+    return sv;
+  }
+  return NULL;
+}
+
+/* What a frame's env carries into escape when its context is torn down
+ * around it or marked through it: the frame's own container, or for a
+ * scopeless frame the one the owner it resolved to while it ran already
+ * holds. Where that owner holds none, the answer is the owner's env
+ * itself, the forward svar_owner_from() follows one hop further, so that
+ * the transparency of a scopeless frame survives its context by the same
+ * representation an escaped scopeless env uses: neither caller may make a
+ * container here, gc_mark_children() (gc.c) running mid-collection and
+ * mrb_env_detach_all() mid-teardown, where cipop() materializes one
+ * instead (svar_env_adopt_owner()). NULL where there is nothing to carry,
+ * and for an owner that is the context's own root frame, whose container
+ * dies with the context the way the root frame's own does. */
+struct RBasic*
+mrb_svar_frame_container(struct mrb_context *c, mrb_callinfo *ci)
+{
+  if (ci->svar || !svar_scopeless_frame_p(ci)) return ci->svar;
+
+  mrb_callinfo *oci;
+  struct mrb_context *oc;
+  struct REnv *oe;
+  svar_owner_from(c, ci, &oci, &oc, &oe);
+  if (oc == c && oci == c->cibase) return NULL;
+  struct RSvar *sv = svar_owner_container(oci, oe);
+  if (sv) return (struct RBasic*)sv;
+  struct REnv *fwd = oci ? CI_ENV(oci) : oe;
+  /* Nothing to forward to when the owner scope left no env behind: no proc
+     can be holding it, so nothing can look. A frame forwarding to its own
+     env would close the walk into a loop rather than a hop. */
+  if (fwd == NULL || fwd == CI_ENV(ci)) return NULL;
+  return (struct RBasic*)fwd;
+}
+
+/*
+ * Reads one special-variable slot of the scope owning it, on a live frame
+ * or in the env of a scope that returned, nil where that scope holds no
+ * container.
+ */
+MRB_API mrb_value
+mrb_vm_svar_get(mrb_state *mrb, enum mrb_svar_index key)
+{
+  mrb_callinfo *ci;
+  struct mrb_context *oc;
+  struct REnv *e;
+
+  mrb_assert(key >= 0 && key < MRB_SVAR_MAX);
+  svar_owner(mrb->c, &ci, &oc, &e);
+  struct RSvar *sv = svar_owner_container(ci, e);
+  if (!sv) return mrb_nil_value();
+  return sv->slots[key];
+}
+
+/*
+ * Writes one special-variable slot of the owning scope. The slot holds any
+ * mrb_value; any richer contract, like the TypeError mruby-regexp's
+ * virtual-global setter raises for `$~ = <not a MatchData>`, belongs to
+ * the caller. The scope's container is made on the first non-nil write; a
+ * nil write into a scope that has none is dropped, nil being what a
+ * missing slot already reads as, so `def foo; 1 + 2; end` never allocates
+ * one, and an immediate write pays no barrier, making no edge a black
+ * container would have to re-scan for. A heap-value write pays the
+ * backward barrier: a black container is
+ * re-grayed so the final marking re-reads its slots, and until then the
+ * barrier is a no-op. The forward barrier (marking the value on the spot)
+ * would be wrong here, not just slower: a publish-heavy loop hands the
+ * slot a fresh object every pass, and marking each one resurrects garbage
+ * into the next cycle wholesale, where a re-grayed container marks only
+ * what it still holds when the cycle closes.
+ */
+MRB_API void
+mrb_vm_svar_set(mrb_state *mrb, enum mrb_svar_index key, mrb_value v)
+{
+  struct RSvar *sv;
+
+  mrb_assert(key >= 0 && key < MRB_SVAR_MAX);
+  if (mrb_nil_p(v)) {
+    mrb_callinfo *ci;
+    struct mrb_context *oc;
+    struct REnv *e;
+    svar_owner(mrb->c, &ci, &oc, &e);
+    sv = svar_owner_container(ci, e);
+    if (!sv) return;
+  }
+  else {
+    sv = svar_owner_force(mrb);
+    if (!sv) return;
+  }
+  sv->slots[key] = v;
+  if (!mrb_immediate_p(v)) {
+    mrb_write_barrier(mrb, (struct RBasic*)sv);
   }
 }
 
@@ -419,6 +783,7 @@ cipush(mrb_state *mrb, mrb_int push_stacks, uint8_t cci, struct RClass *target_c
   ci->nk = (argc>>4) & 0xf;
   ci->cci = cci;
   ci->vis = MRB_METHOD_PUBLIC_FL;
+  ci->svar = NULL;
   ci->u.target_class = target_class;
 
   return ci;
@@ -456,11 +821,14 @@ fiber_terminate(mrb_state *mrb, struct mrb_context *c, mrb_callinfo *ci)
       // the reason is that env->stack may be freed by mrb_realloc() if MRB_DEBUG + MRB_GC_STRESS are enabled.
       // realloc() on a freed heap will cause double-free.
 
-      stack = (mrb_value*)mrb_realloc(mrb, stack, len * sizeof(mrb_value));
+      stack = (mrb_value*)mrb_realloc(mrb, stack, MRB_ENV_STACK_SIZE(len));
       if (mrb_object_dead_p(mrb, (struct RBasic*)env)) {
         mrb_free(mrb, stack);
       }
       else {
+        /* nil, not the root frame's container: that one is the fiber's own
+           (CRuby's ec->root_svar) and dies with the fiber */
+        SET_NIL_VALUE(MRB_ENV_SVAR_SLOT(stack, len));
         env->stack = stack;
         MRB_ENV_CLOSE(env);
       }
@@ -488,7 +856,7 @@ mrb_env_unshare(mrb_state *mrb, struct REnv *e, mrb_bool noraise)
   }
 
   size_t live = mrb->gc.live;
-  mrb_value *p = (mrb_value*)mrb_malloc_simple(mrb, sizeof(mrb_value)*len);
+  mrb_value *p = (mrb_value*)mrb_malloc_simple(mrb, MRB_ENV_STACK_SIZE(len));
   if (live != mrb->gc.live && mrb_object_dead_p(mrb, (struct RBasic*)e)) {
     // The e object is now subject to GC inside mrb_malloc_simple().
     // Moreover, if NULL is returned due to mrb_malloc_simple() failure, simply ignore it.
@@ -497,6 +865,7 @@ mrb_env_unshare(mrb_state *mrb, struct REnv *e, mrb_bool noraise)
   }
   else if (p) {
     stack_copy(p, e->stack, len);
+    SET_NIL_VALUE(MRB_ENV_SVAR_SLOT(p, len));
     e->stack = p;
     MRB_ENV_CLOSE(e);
     mrb_write_barrier(mrb, (struct RBasic*)e);
@@ -511,6 +880,122 @@ mrb_env_unshare(mrb_state *mrb, struct REnv *e, mrb_bool noraise)
       mrb_exc_raise(mrb, mrb_obj_value(mrb->nomem_err));
     }
     return FALSE;
+  }
+}
+
+/* Detaches a live env from the frame that owns it: mrb_env_unshare() moves
+ * the locals into a heap copy, and the frame's special-variable container
+ * follows them into the slot past the locals, so a proc that outlives the
+ * scope still reads what the scope could see (CRuby's svar lives on the
+ * lep and survives its escape the same way). This is the one invariant of
+ * every path that closes an env over a live frame: cipop() on an ordinary
+ * return, the GC freeing a suspended fiber (gc.c), mruby-task tearing a
+ * context down, and mrb_vm_ci_env_clear() below. Callers on a frame whose
+ * container must die with its context, a fiber or task root, pass sv as
+ * NULL; a scopeless frame owns none to pass, and its callers hand the
+ * slot what the scope below has instead (svar_env_adopt_owner() on a
+ * return, mrb_svar_frame_container() on a teardown), which is that
+ * scope's container or, where it holds none, its env as a forward. */
+mrb_bool
+mrb_env_detach(mrb_state *mrb, struct REnv *e, struct RBasic *sv, mrb_bool noraise)
+{
+  if (!mrb_env_unshare(mrb, e, noraise)) return FALSE;
+  if (sv && !MRB_ENV_ONSTACK_P(e) && e->stack) {
+    MRB_ENV_SVAR_SLOT(e->stack, MRB_ENV_LEN(e)) = mrb_obj_value(sv);
+    mrb_write_barrier(mrb, (struct RBasic*)e);
+  }
+  return TRUE;
+}
+
+/* A scopeless frame is transparent while it runs: svar_owner() walks past
+ * it to the scope below. When its env escapes, that relation would die
+ * with the frame, the frame's own container being the NULL it never
+ * needed, so the freshly closed env adopts the owner's container instead,
+ * made on the spot when the owner holds none yet: a proc the load left
+ * behind keeps reading and writing the scope below, and a match made on
+ * either side after the return is seen on the other, the way CRuby's ep
+ * chain crosses an eval frame after its escape. Runs after cipop()
+ * decrements: resolution then starts at the scope below, and an
+ * allocation failure raises out of a consistent stack, leaving the slot
+ * empty. The env may already be garbage, nothing but an unreachable proc
+ * holding it, and the allocation the owner may need can collect it, so
+ * liveness is re-checked before the write. */
+static void
+svar_env_adopt_owner(mrb_state *mrb, struct REnv *e)
+{
+  if (env_svar_slot(e) == NULL) return;
+  struct RSvar *sv = svar_owner_force(mrb);
+  if (!sv) return;
+  /* Whether the container allocation ran a collection cannot be read off
+     mrb->gc.live (see svar_owner_force()), so re-check either way. The
+     collection may even have recycled the garbage env's own slot as the
+     new container: mrb_object_dead_p() would then inspect the live RSvar
+     and answer alive, so test the type tag first. Nothing else is
+     allocated in the window, so a reused slot can hold nothing but it. */
+  struct RBasic *b = (struct RBasic*)e;
+  if (b->tt != MRB_TT_ENV || mrb_object_dead_p(mrb, b)) return;
+  *env_svar_slot(e) = mrb_obj_value(sv);
+  mrb_write_barrier(mrb, (struct RBasic*)e);
+}
+
+/* Detaches every live on-stack env of a context being torn down around it:
+ * the GC freeing a suspended fiber (gc.c) and mruby-task ending a task both
+ * come through here, so the carrying policy is stated once: each frame's
+ * env escapes with the frame's own container, the root frame's dies with
+ * the context (CRuby's ec->root_svar), and a scopeless frame hands on the
+ * scope below's: its container where the owner holds one, else the owner's
+ * own env, forwarded into the slot for the walk in svar_owner_from() to
+ * follow, so two procs that shared one scope on the stack still share it
+ * escaped, and the first write through either makes the one container both
+ * see. `resolve` distinguishes the callers: mruby-task tears down outside a
+ * collection and resolves the owner here, with the GC held off across the
+ * loop because the resolution chases procs and envs of a stack nothing
+ * marks any more, which a detach allocation could otherwise sweep or
+ * recycle mid-loop, and because a container whose only holder is this
+ * dying stack must survive to the detach that roots it in the escaping
+ * env. The gc.c caller runs inside the sweep, where the walk could chase
+ * objects already swept and recycled and the GC cannot be held off, so it
+ * passes FALSE and relies on the frame's ci->svar alone, where
+ * gc_mark_children() stashed the same answer at mark time, on memory the
+ * sweep had not yet touched. */
+void
+mrb_env_detach_all(mrb_state *mrb, struct mrb_context *c, mrb_bool resolve)
+{
+  if (!c->cibase || !c->ci) return;
+
+  mrb_bool gc_was = FALSE;
+  if (resolve) {
+    gc_was = mrb->gc.disabled;
+    mrb->gc.disabled = TRUE;
+  }
+  /* Stop AT cibase rather than decrementing past it: forming a pointer
+   * one element before the start of an array is undefined behavior. */
+  for (mrb_callinfo *ci = c->ci; ; ci--) {
+    struct REnv *e = ci->u.env;
+    /* mrb_env_detach() allocates and can therefore run a GC cycle (with
+     * `resolve` the GC is off and the sweep is merely deferred). In
+     * teardown paths the context may already be unlinked, so an env that
+     * no other object refers to may be swept before the walk reaches it;
+     * check liveness first. */
+    if (e && !mrb_object_dead_p(mrb, (struct RBasic*)e) &&
+        e->tt == MRB_TT_ENV && MRB_ENV_ONSTACK_P(e)) {
+      struct RBasic *sv = NULL;
+      if (ci != c->cibase) {
+        sv = ci->svar;
+        if (resolve && !sv) {
+          sv = mrb_svar_frame_container(c, ci);
+          /* A forward is only worth carrying to an env that survives the
+             teardown; the GC is off across the loop, so this answer still
+             holds at the detach below. */
+          if (sv && sv->tt == MRB_TT_ENV && mrb_object_dead_p(mrb, sv)) sv = NULL;
+        }
+      }
+      mrb_env_detach(mrb, e, sv, TRUE);
+    }
+    if (ci == c->cibase) break;
+  }
+  if (resolve) {
+    mrb->gc.disabled = gc_was;
   }
 }
 
@@ -532,9 +1017,19 @@ cipop(mrb_state *mrb)
   if (b && !MRB_PROC_STRICT_P(b) && MRB_PROC_ENV(b) == CI_ENV(&ci[-1])) {
     b->flags |= MRB_PROC_ORPHAN;
   }
-  if (env && !mrb_env_unshare(mrb, env, TRUE)) {
-    c->ci--; // exceptions are handled at the method caller; see #3087
-    mrb_exc_raise(mrb, mrb_obj_value(mrb->nomem_err));
+  if (env) {
+    /* The container escapes with the locals (see mrb_env_detach()); a
+       frame without an env leaves no proc behind that could look. */
+    mrb_bool transparent = (ci->svar == NULL && svar_scopeless_frame_p(ci));
+    if (!mrb_env_detach(mrb, env, ci->svar, TRUE)) {
+      c->ci--; // exceptions are handled at the method caller; see #3087
+      mrb_exc_raise(mrb, mrb_obj_value(mrb->nomem_err));
+    }
+    if (transparent) {
+      c->ci--;
+      svar_env_adopt_owner(mrb, env);
+      return c->ci;
+    }
   }
   c->ci--;
   return c->ci;
@@ -1768,7 +2263,7 @@ mrb_vm_run(mrb_state *mrb, const struct RProc *proc, mrb_value self, mrb_int sta
     struct REnv *e = CI_ENV(mrb->c->ci);
     if (e && (stack_keep == 0 || irep->nlocals < MRB_ENV_LEN(e))) {
       ci_env_set(mrb->c->ci, NULL);
-      mrb_env_unshare(mrb, e, FALSE);
+      mrb_env_detach(mrb, e, mrb->c->ci->svar, FALSE);
     }
   }
   stack_extend(mrb, nregs);

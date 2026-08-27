@@ -160,11 +160,42 @@ void mrb_gc_free_set(mrb_state *mrb, struct RBasic *set);
 size_t mrb_set_memsize(mrb_value);
 #endif
 
+/* One Ruby scope's special variables (CRuby's `struct vm_svar`): a plain
+ * container of MRB_SVAR_MAX slots, one per key of `enum mrb_svar_index`
+ * (variable.h), each holding any mrb_value. The container is an internal
+ * GC object so a frame and the env the scope escapes into can hold the
+ * same one, and it is allocated lazily, on the first non-nil write into a
+ * scope (svar_new() in vm.c), so a scope that never touches a special
+ * variable never carries one. The slots live outside the object because
+ * sizeof(mrb_value) varies with the boxing and RVALUE is sized tightly;
+ * gc.c marks them through the object and frees them with it. */
+struct RSvar {
+  MRB_OBJECT_HEADER;
+  mrb_value *slots;
+};
+
 #ifdef MRUBY_PROC_H
+/* The heap stack of a closed env holds its locals and one slot past them:
+ * the special-variable container of the scope the env escapes from, which
+ * mrb_env_detach() moves there and svar_owner() reads back, or, for a scope
+ * that holds no container of its own, the env of the scope below whose
+ * special variables it shares, which the same walk follows one hop further
+ * (CRuby's ep chain, and its own svar slot is polymorphic the same way).
+ * Nothing in the type says so, and a stack sized without the slot lets the
+ * GC mark one past the allocation, so every path that allocates, resizes or
+ * reads such a stack goes through the two below rather than spelling the
+ * offset itself. Both take the number of locals, which is MRB_ENV_LEN()
+ * once the env carries it. */
+#define MRB_ENV_STACK_SIZE(len) (sizeof(mrb_value) * ((size_t)(len) + 1))
+#define MRB_ENV_SVAR_SLOT(stack, len) ((stack)[(len)])
+
 struct RProc *mrb_closure_new(mrb_state*, const mrb_irep*);
 void mrb_proc_copy(mrb_state *mrb, struct RProc *a, const struct RProc *b);
 mrb_int mrb_proc_arity(const struct RProc *p);
 struct REnv *mrb_env_new(mrb_state *mrb, struct mrb_context *c, mrb_callinfo *ci, int nstacks, mrb_value *stack, struct RClass *tc);
+mrb_bool mrb_env_detach(mrb_state *mrb, struct REnv *e, struct RBasic *sv, mrb_bool noraise);
+void mrb_env_detach_all(mrb_state *mrb, struct mrb_context *c, mrb_bool resolve);
+struct RBasic *mrb_svar_frame_container(struct mrb_context *c, mrb_callinfo *ci);
 void mrb_proc_merge_lvar(mrb_state *mrb, mrb_irep *irep, struct REnv *env, int num, const mrb_sym *lv, const mrb_value *stack);
 mrb_value mrb_proc_local_variables(mrb_state *mrb, const struct RProc *proc);
 const struct RProc *mrb_proc_get_caller(mrb_state *mrb, struct REnv **env);

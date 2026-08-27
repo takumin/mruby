@@ -771,11 +771,14 @@ mrb_protect_atexit(mrb_state *mrb)
       if (c->ci == c->cibase) {
         // Since there is no problem with the ci, the env object is detached normally.
         struct REnv *e = mrb_vm_ci_env(c->ci);
+        struct RBasic *sv = c->ci->svar;
         *c->ci = zero;
         c->ci->stack = c->stbase;
         if (e) {
           c->ci->u.env = NULL;
-          mrb_env_unshare(mrb, e, TRUE);
+          /* carrying the top-level scope's special-variable container, so a
+             proc an atexit callback runs still reads the last match */
+          mrb_env_detach(mrb, e, sv, TRUE);
         }
       }
       else {
