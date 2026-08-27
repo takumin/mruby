@@ -75,8 +75,10 @@ $ rake "size:diff[/tmp/base.json,build/host/size.json]"
 
 `size:diff` writes Markdown: what the change did to `libmruby`, then the
 binaries, then the objects that moved. A third argument is a file to write it
-to rather than standard output. `SIZE` names the `size` command for a build
-whose objects the host's own cannot read.
+to rather than standard output. `.github/workflows/size.yml` runs exactly this,
+against the last `master` that measured itself, and keeps the result as the one
+comment on the pull request; `SIZE` names the `size` command for a build whose
+objects the host's own cannot read.
 
 You can specify your own configuration file by the `MRUBY_CONFIG` environment
 variable (you can use `CONFIG` for shorthand for `MRUBY_CONFIG`). If the path

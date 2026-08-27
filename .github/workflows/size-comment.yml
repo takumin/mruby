@@ -1,0 +1,96 @@
+# The size report of a pull request, posted as the one comment that says so.
+#
+# `size.yml` runs on the pull request's own code and holds a read-only token
+# where the pull request came from a fork, so it writes the report into an
+# artifact and this workflow, which runs from `master` with a token of its own,
+# posts it. Nothing from the artifact is executed here: it is read as the text
+# of a comment and the number of the pull request to put it on.
+name: Size Comment
+
+on:
+  workflow_run:
+    workflows: [Size]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  comment:
+    name: Comment
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    steps:
+      - name: Download the size report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: size-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: size-report
+      - name: Post the size report
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const fs = require('fs')
+            const marker = '<!-- mruby-size-report -->'
+            const run = context.payload.workflow_run
+
+            const number = Number(fs.readFileSync('size-report/pr-number', 'utf8').trim())
+            if (!Number.isInteger(number) || number <= 0) {
+              core.warning('the report names no pull request')
+              return
+            }
+
+            // The number was written by the measured code, which on a fork is
+            // the pull request author's. A pull request whose head is not what
+            // was measured is either not the one that wrote the number, or one
+            // that has been pushed to since: neither is a pull request this
+            // report has anything to say about.
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: number,
+            })
+            if (pr.data.head.sha !== run.head_sha) {
+              core.warning(`#${number} is at ${pr.data.head.sha}, and ${run.head_sha} was measured`)
+              return
+            }
+
+            const body = fs.readFileSync('size-report/report.md', 'utf8')
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              per_page: 100,
+            })
+
+            // One comment, edited by every push: a comment that is edited
+            // notifies nobody, and a pull request of twenty pushes reads as
+            // what it weighs now rather than as twenty reports of what it
+            // weighed on the way there.
+            const existing = comments.find(
+              (c) => c.user?.type === 'Bot' && c.body?.includes(marker)
+            )
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              })
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: number,
+                body,
+              })
+            }

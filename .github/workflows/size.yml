@@ -1,0 +1,113 @@
+# What a build weighs, measured by `rake size` and compared against what
+# `master` last weighed. The comparison is posted on a pull request by
+# `size-comment.yml`, which is a workflow of its own because a run triggered by
+# a pull request from a fork holds a read-only token and cannot comment.
+name: Size
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Measure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Reading the baseline is reading the artifact of another run.
+      actions: read
+    env:
+      # One configuration, one runner image, one compiler: what a build weighs
+      # moves with all three, and a comparison against a baseline measured by
+      # another of them reports that difference as though the change had made
+      # it. `size:diff` says so when the two reports disagree about the
+      # compiler, which is what a runner image update looks like from here.
+      MRUBY_CONFIG: default
+      CC: gcc
+      CXX: g++
+      LD: gcc
+    steps:
+      - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Ruby version
+        run: ruby -v
+      - name: Compiler version
+        run: ${{ env.CC }} --version
+      - name: Build and measure
+        run: rake -m size
+      # The baseline is the last `master` run that measured itself and still
+      # has the artifact to show for it. A run that has not finished is not
+      # `success`, so a push to `master` compares against the push before it
+      # rather than against itself.
+      - name: Find the baseline on master
+        id: baseline
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            let runs
+            try {
+              runs = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'size.yml',
+                branch: 'master',
+                event: 'push',
+                status: 'success',
+                per_page: 10,
+              })
+            } catch (error) {
+              // A pull request that is itself what puts this workflow on
+              // `master` is asking after a workflow that is not there yet.
+              core.warning(`master has no size workflow to compare against: ${error.message}`)
+              return
+            }
+            for (const run of runs.data.workflow_runs) {
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+              })
+              if (artifacts.data.artifacts.some((a) => a.name === 'size-report' && !a.expired)) {
+                core.info(`baseline: run ${run.id} at ${run.head_sha}`)
+                core.setOutput('run-id', String(run.id))
+                return
+              }
+            }
+            core.warning('master has no size report to compare against')
+      - name: Download the baseline
+        if: steps.baseline.outputs.run-id
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: size-report
+          run-id: ${{ steps.baseline.outputs.run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: baseline
+      # `size:diff` reads a baseline that is not there as no baseline, so the
+      # report is written whether the step above ran or not.
+      - name: Compare
+        run: |
+          mkdir -p size-report
+          cp build/host/size.json size-report/size.json
+          rake "size:diff[baseline/size.json,size-report/size.json,size-report/report.md]"
+          cat size-report/report.md >> "$GITHUB_STEP_SUMMARY"
+      # Which pull request the report belongs to is something only this run
+      # knows: the run that posts the comment is told about this one, and a
+      # pull request from a fork is not named in what it is told.
+      - name: Name the pull request
+        if: github.event_name == 'pull_request'
+        run: echo "${{ github.event.pull_request.number }}" > size-report/pr-number
+      - name: Upload the size report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: size-report
+          path: size-report/
+          # A pull request opened against a `master` older than this is left
+          # without a baseline, so the retention is the longest one there is.
+          retention-days: 90
