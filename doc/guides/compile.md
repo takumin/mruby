@@ -56,6 +56,28 @@ A source no build in the tree compiled, one of a gem the configuration leaves
 out for instance, has no entry; `compile_flags.txt` and `.clangd` at the
 source root are what answer for those.
 
+### Size
+
+`rake size` builds, then says what the build weighs: the `text`, `data` and
+`bss` of every binary it linked, and of `libmruby.a` as the sum of the objects
+the archive holds. What a file weighs on disk is not it -- the default build
+compiles with `-g`, and most of an unstripped file is debug information that
+no run ever loads.
+
+Beside the table it writes the same numbers, object by object, to
+`build/${TARGET}/size.json`. Two of those files are a comparison:
+
+```sh
+$ git switch master && rake size && cp build/host/size.json /tmp/base.json
+$ git switch -                 && rake size
+$ rake "size:diff[/tmp/base.json,build/host/size.json]"
+```
+
+`size:diff` writes Markdown: what the change did to `libmruby`, then the
+binaries, then the objects that moved. A third argument is a file to write it
+to rather than standard output. `SIZE` names the `size` command for a build
+whose objects the host's own cannot read.
+
 You can specify your own configuration file by the `MRUBY_CONFIG` environment
 variable (you can use `CONFIG` for shorthand for `MRUBY_CONFIG`). If the path
 doesn't exist, `build_config/${MRUBY_CONFIG}.rb` is used. The default
