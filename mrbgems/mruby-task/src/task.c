@@ -175,6 +175,14 @@ mrb_task_mark_all(mrb_state *mrb)
           if (ci->proc) {
             mrb_gc_mark(mrb, (struct RBasic*)ci->proc);
           }
+          if (ci->backref) {
+            /* the frame's `$~` slot, marked as mark_context() in gc.c
+               marks it. A task context has no fiber to be marked through,
+               and the running task writes the slot with no barrier, so
+               this walk is also its atomic re-scan, like the value
+               stack's above. */
+            mrb_gc_mark(mrb, (struct RBasic*)ci->backref);
+          }
           if (ci->u.target_class) {
             mrb_gc_mark(mrb, (struct RBasic*)ci->u.target_class);
           }
