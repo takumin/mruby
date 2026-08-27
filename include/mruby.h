@@ -182,6 +182,8 @@ typedef struct {
   struct RProc *blk;
   mrb_value *stack;
   const mrb_code *pc;           /* current address on iseq of this proc */
+  struct RObject *svar;         /* special variables of this frame's scope (CRuby's svar); NULL = nil.
+                                   The core stores and marks it, a gem gives it meaning (see mrb_vm_svar_get()) */
   union {
     struct REnv *env;
     struct RClass *target_class;

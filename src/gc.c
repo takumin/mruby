@@ -931,6 +931,7 @@ mark_context(mrb_state *mrb, struct mrb_context *c)
   if (c->cibase) {
     for (ci = c->cibase; ci <= c->ci; ci++) {
       mrb_gc_mark(mrb, (struct RBasic*)ci->proc);
+      mrb_gc_mark(mrb, (struct RBasic*)ci->svar);
       mrb_gc_mark(mrb, (struct RBasic*)ci->u.target_class);
     }
   }
@@ -998,6 +999,11 @@ gc_mark_children(mrb_state *mrb, mrb_gc *gc, struct RBasic *obj)
       mrb_int len = MRB_ENV_LEN(e);
       for (mrb_int i=0; i<len; i++) {
         mrb_gc_mark_value(mrb, e->stack[i]);
+      }
+      if (!MRB_ENV_ONSTACK_P(e) && e->stack) {
+        /* the escaped scope's special variables, one slot past the locals
+           (see cipop()) */
+        mrb_gc_mark_value(mrb, MRB_ENV_SVAR_SLOT(e->stack, len));
       }
       children += len;
     }

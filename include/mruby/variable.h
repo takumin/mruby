@@ -111,6 +111,25 @@ MRB_API void mrb_gv_remove(mrb_state *mrb, mrb_sym sym);
  */
 MRB_API void mrb_gv_define_virtual(mrb_state *mrb, mrb_sym sym, mrb_value (*get)(mrb_state*), void (*set)(mrb_state*, mrb_value));
 
+/**
+ * Reads the special-variable slot of the owning Ruby scope, resolved like
+ * CRuby's svar (a C frame reads through to the Ruby frame below it, a block
+ * shares its defining method's slot, and a scope that returned keeps its
+ * slot in its env, so a proc outliving it still reads the value). The core
+ * stores and marks the slot but gives it no meaning: that belongs to
+ * whoever pairs these accessors with a virtual global, the way mruby-regexp
+ * keeps `$~`'s MatchData here.
+ */
+MRB_API mrb_value mrb_vm_svar_get(mrb_state *mrb);
+
+/**
+ * Writes the owning Ruby scope's special-variable slot. `v` must be nil or
+ * an object reference (the slot is an object pointer, so an immediate
+ * cannot live in it). Any richer contract, like mruby-regexp's TypeError
+ * for `$~ = <not a MatchData>`, belongs to the caller.
+ */
+MRB_API void mrb_vm_svar_set(mrb_state *mrb, mrb_value v);
+
 MRB_API mrb_value mrb_cv_get(mrb_state *mrb, mrb_value mod, mrb_sym sym);
 MRB_API void mrb_mod_cv_set(mrb_state *mrb, struct RClass * c, mrb_sym sym, mrb_value v);
 MRB_API void mrb_cv_set(mrb_state *mrb, mrb_value mod, mrb_sym sym, mrb_value v);

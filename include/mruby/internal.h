@@ -161,6 +161,16 @@ size_t mrb_set_memsize(mrb_value);
 #endif
 
 #ifdef MRUBY_PROC_H
+/* The heap stack of a closed env holds its locals and one slot past them:
+ * the special variables of the scope the env escapes from, which cipop()
+ * moves there and svar_owner() reads back. Nothing in the type says so, and
+ * a stack sized without the slot lets the GC mark one past the allocation,
+ * so every path that allocates, resizes or reads such a stack goes through
+ * the two below rather than spelling the offset itself. Both take the
+ * number of locals, which is MRB_ENV_LEN() once the env carries it. */
+#define MRB_ENV_STACK_SIZE(len) (sizeof(mrb_value) * ((size_t)(len) + 1))
+#define MRB_ENV_SVAR_SLOT(stack, len) ((stack)[(len)])
+
 struct RProc *mrb_closure_new(mrb_state*, const mrb_irep*);
 void mrb_proc_copy(mrb_state *mrb, struct RProc *a, const struct RProc *b);
 mrb_int mrb_proc_arity(const struct RProc *p);
