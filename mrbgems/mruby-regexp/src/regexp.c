@@ -2809,8 +2809,17 @@ str_split_m(mrb_state *mrb, mrb_value self)
   }
 
   if (limit == 0) {
-    while (RARRAY_LEN(result) > 0 &&
-           RSTRING_LEN(RARRAY_PTR(result)[RARRAY_LEN(result) - 1]) == 0) {
+    /* The length and the element take a statement each: fused into one
+       expression, g++ under MRB_USE_CXX_ABI compiles the subscript wrong (a
+       `?:` between the embedded array member and the heap pointer, indexed
+       by an expression that itself branches, reads a temporary no path has
+       written) and the read dies. Plain C, clang++ and MSVC agree on either
+       spelling. */
+    for (;;) {
+      mrb_int n = RARRAY_LEN(result);
+      if (n == 0) break;
+      mrb_value last = RARRAY_PTR(result)[n - 1];
+      if (RSTRING_LEN(last) != 0) break;
       mrb_ary_pop(mrb, result);
     }
   }
