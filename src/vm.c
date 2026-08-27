@@ -410,9 +410,13 @@ backref_scope_env(const struct RProc *p)
 /* The owner of `$~`, resolved the way CRuby resolves its svar: walking down
  * from the top, a C frame has no slot of its own, a frame carrying
  * MRB_PROC_BACKREF_SKIP stands in for a C function and is as transparent,
- * a scope frame owns its own slot, and a block or lambda frame resolves to
- * the scope it was defined in, wherever that scope now is: a live frame on
- * this or on another context's stack, or the env the scope left behind.
+ * a scope frame owns its own slot, a frame whose proc captured no scope at
+ * all is as transparent as a C frame (the top proc of a nested
+ * mrb_top_run(), an eval handed no Ruby scope; rb_eval_string() shares
+ * the scope below the same way), and a block or lambda frame resolves to
+ * the scope it was defined in, wherever that scope now is: a live frame
+ * on this or on another context's stack, or the env the scope left
+ * behind.
  * One exception, CRuby's root-lep redirect: a resolution landing on the
  * very scope the running context's own root block was defined in is handed
  * the context's root slot instead (`cibase`), which is how a fiber keeps
@@ -438,7 +442,17 @@ backref_owner(struct mrb_context *c, mrb_callinfo **cip, struct mrb_context **oc
       }
 
       struct REnv *e = backref_scope_env(p);
-      if (!e) return;
+      if (!e) {
+        /* A proc that captured no env has no scope of its own to hold a
+           slot: the top proc of a nested mrb_top_run() (mrb_load_string()
+           from a C function mid-execution), or an eval given no Ruby
+           scope. CRuby's rb_eval_string() runs such code against the
+           scope below it, reads and writes alike, so the frame is as
+           transparent as the C function that pushed it. Blocks and
+           lambdas always capture, so they never land here. */
+        ci--;
+        continue;
+      }
       const struct RProc *rp = c->cibase->proc;
       if (rp && !MRB_PROC_CFUNC_P(rp) && !MRB_PROC_SCOPE_P(rp) &&
           backref_scope_env(rp) == e) {

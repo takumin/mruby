@@ -344,3 +344,25 @@ assert("$~ - a proc reaches a scope suspended on another fiber") do
   assert_equal "rf", f4.resume
   f3.resume
 end
+
+def backref_scope_nested_load
+  "before" =~ /before/
+  inner = __backref_nested_load("'ab' =~ /a(b)/; [$~ && $~[0], $1]")
+  [inner, $~ && $~[0], $1]
+end
+
+assert("$~ - a nested load is transparent to the scope below") do
+  # A C function calling mrb_load_string() mid-execution (the helper in
+  # test/backref_scope.c) runs the loaded top proc on a frame with no
+  # scope of its own: reads and writes pass through to the Ruby scope
+  # below, the way rb_eval_string()'s do.
+  assert_equal [["ab", "b"], "ab", "b"], backref_scope_nested_load
+end
+
+assert("$~ - consecutive nested loads share the scope below") do
+  "keep" =~ /keep/
+  assert_equal "keep", __backref_nested_load("$~ && $~[0]")
+  __backref_nested_load("'x1' =~ /x(1)/")
+  assert_equal "x1", __backref_nested_load("$~ && $~[0]")
+  assert_equal ["x1", "1"], [$~ && $~[0], $1]
+end

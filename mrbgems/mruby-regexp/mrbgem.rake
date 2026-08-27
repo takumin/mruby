@@ -48,6 +48,12 @@ MRuby::Gem::Specification.new('mruby-regexp') do |spec|
     spec.add_test_dependency 'mruby-fiber', :core => 'mruby-fiber'
   end
 
+  # The nested-load tests drive `$~` the way an embedding host does: a C
+  # function calling mrb_load_string() mid-execution. The helper is C
+  # (test/backref_scope.c) and needs the compiler in the test state, the
+  # way mruby-proc-binding's proc_in_c helper does.
+  spec.add_test_dependency 'mruby-compiler', :core => 'mruby-compiler'
+
   # Same deal for taking a method back off a class. The test that pins `$&`
   # and `$1` reading the match rather than `MatchData#[]` redefines `[]` and
   # parks the original under another name, and dropping that name afterwards
