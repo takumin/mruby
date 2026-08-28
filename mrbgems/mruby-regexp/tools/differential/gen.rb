@@ -104,6 +104,21 @@
 #                       body alone. A toggle says at least one letter, since
 #                       CRuby refuses `(?)`, and no quantifier lands on one,
 #                       since CRuby reads `(?i)*` as a repeat of nothing.
+#   extended            what `x` drops before the parse: a space, a tab, a
+#                       newline and a `#` comment closed by one, drawn at the
+#                       joins between atoms and between an atom and the
+#                       quantifier behind it. Without the option each is a
+#                       character of its own and the same pattern says
+#                       something else, which the toggles `inline-option`
+#                       draws decide from place to place. A comment is always
+#                       closed: an unclosed one swallows the `)` of every
+#                       group it stands in, and the pattern would not compile
+#                       under `x`. The comment group `(?#...)` is drawn here
+#                       as well, though no option reaches it, being dropped
+#                       before the parse either way. A class holds a space as
+#                       a member even under `x`, and one is drawn there when
+#                       `class-syntax` is on. The cases are written escaped,
+#                       as `newline` writes them.
 #   call                subexpression calls. `\g<n>`, `\g'n'` and the relative
 #                       `\g<-n>` run a closed group's body again where the
 #                       call stands (a name in a named pattern), a capture
@@ -135,7 +150,7 @@ require 'optparse'
 FEATURES = %w[lazy interval class class-syntax escape anchor newline empty
               lookahead lookbehind
               lookaround-capture backref backref-name backref-forward
-              named-group atomic possessive inline-option call
+              named-group atomic possessive inline-option extended call
               alternation].freeze
 
 opts = {
@@ -253,6 +268,9 @@ end
 # is written last, and the `-` that may follow it is at an end as any other.
 def bracket_class(groups)
   members = Array.new(rand(1..3)) { class_member(groups) }
+  # A space is a member of a class even under `x`, which drops one written
+  # outside a bracket expression: the option reaches no class.
+  members.push(" ") if on?("extended") && rand < 0.15
   members.unshift("-") if rand < 0.1
   members.push("^") if rand < 0.15
   members.push("-") if rand < 0.1
@@ -509,17 +527,47 @@ def lookaround(depth, groups, in_lookahead: false)
   Atom.new("#{kind}#{body})", true)
 end
 
+# What a pattern may hold where nothing is asked for. Under `x` a space, a
+# tab, a newline and a `#` comment are all dropped before the parse; without
+# it each is a character of its own, and the same pattern says something else.
+# A comment is always closed by a newline, since an unclosed one swallows the
+# `)` of every group it stands in and the pattern would then not compile under
+# `x`. The comment group is dropped whatever the options say, and its body is
+# written as a run of one character: what stands in a comment is never read,
+# and a `)` there would close it early.
+def filler
+  case rand(4)
+  when 0 then "(?##{"c" * rand(0..2)})"
+  when 1 then [" ", "\t", "\n"].sample
+  when 2 then " " * rand(1..2)
+  else "##{$alphabet.sample(rand(0..2)).map { |c| Regexp.escape(c) }.join}\n"
+  end
+end
+
 def seq(depth, groups, in_lookahead: false)
   atoms = Array.new(rand(1..3)) do
     a = atom(depth, groups, in_lookahead: in_lookahead)
     if rand < $quantify && !a.unrepeatable && (on?("empty") || !a.empty)
       q, qempty = quantifier
-      Atom.new(a.src + q, a.empty || qempty)
+      # A filler between an atom and its quantifier is dropped under `x`, and
+      # without it is a character the quantifier repeats in the atom's place.
+      # The atom is then one the sequence must match, so what is recorded here
+      # is what `x` makes of the pair: an atom said to match empty where it
+      # does not is only ever read as a reason to draw no recursive call.
+      pad = (on?("extended") && rand < 0.15) ? filler : ""
+      Atom.new(a.src + pad + q, a.empty || qempty)
     else
       a
     end
   end
-  Atom.new(atoms.map(&:src).join, atoms.all?(&:empty))
+  pieces = atoms.map(&:src)
+  if on?("extended")
+    # Fillers go at the joins between atoms and at either end, never inside
+    # one: those are the points the parser reads an atom at.
+    pieces = pieces.flat_map { |src| rand < 0.15 ? [filler, src] : [src] }
+    pieces << filler if rand < 0.15
+  end
+  Atom.new(pieces.join, atoms.all?(&:empty))
 end
 
 # The subjects are drawn over the alphabet, and over the newline as well when
@@ -543,7 +591,7 @@ subjects.uniq!
 # that would break a line. run.rb reads that header and unescapes the two
 # fields before it runs them.
 ESCAPES = { "\\" => "\\\\", "\n" => "\\n", "\t" => "\\t", "\r" => "\\r" }.freeze
-escaped = on?("newline")
+escaped = on?("newline") || on?("extended")
 puts "#escaped" if escaped
 
 def spell_field(s, escaped)
