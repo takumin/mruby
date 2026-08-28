@@ -67,9 +67,12 @@ jobs:
       - name: Build and measure
         run: rake -m size
       # The baseline is the last `master` run that measured itself and still
-      # has the artifact to show for it. A run that has not finished is not
-      # `success`, so a push to `master` compares against the push before it
-      # rather than against itself.
+      # has the artifact to show for it. Whether that run went on to succeed is
+      # not asked: the artifact is uploaded by the step after the comparison, so
+      # a report that is there is one that was made, and a run failed by another
+      # configuration in the matrix still measured this one. A run that has not
+      # finished is not `completed`, so a push to `master` compares against the
+      # push before it rather than against itself.
       - name: Find the baseline on master
         id: baseline
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
@@ -83,7 +86,7 @@ jobs:
                 workflow_id: 'size.yml',
                 branch: 'master',
                 event: 'push',
-                status: 'success',
+                status: 'completed',
                 per_page: 10,
               })
             } catch (error) {
