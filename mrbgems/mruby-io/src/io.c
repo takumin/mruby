@@ -119,7 +119,14 @@ io_set_process_status(mrb_state *mrb, pid_t pid, int status)
     }
   }
   if (c_status != NULL) {
-    v = mrb_funcall_argv2(mrb, mrb_obj_value(c_status), MRB_SYM(new), mrb_fixnum_value(pid), mrb_fixnum_value(status));
+    /* Process::Status has no `new`, there as in CRuby: a status is built by
+       allocating one and handing #initialize the pid and the raw status,
+       which is what mrb_obj_new() does. */
+    mrb_value argv[2];
+
+    argv[0] = mrb_fixnum_value(pid);
+    argv[1] = mrb_fixnum_value(status);
+    v = mrb_obj_new(mrb, c_status, 2, argv);
   }
   else {
     v = mrb_fixnum_value(WEXITSTATUS(status));
