@@ -505,19 +505,32 @@ The alphabet a generated case draws from is two characters, which says
 nothing about what the classes match. `classes.sh` covers that from the other
 side: it walks every codepoint under CRuby and under each mruby and reports
 the classes whose membership parts, the POSIX brackets with their negations
-and the shorthands, each on its own and inside a class.
+and the shorthands, each on its own and inside a class, and the character
+properties.
 
 ```console
 $ bash mrbgems/mruby-regexp/tools/differential/classes.sh -- \
     master=build-master/host/bin/mruby branch=build/host/bin/mruby
 ```
 
+A property is one column per name rather than one per spelling, since a name
+is a table lookup and asking after each of the four hundred the database
+gives would walk Unicode four hundred times to learn what one walk of a name
+of each kind already says. The names are every general category, a spread of
+scripts, the ones a POSIX bracket also carries, `Any` and `Assigned`, and a
+name written long, short and in a case the database does not use. Four of
+them are then asked in every shape the escape takes, `\P{X}`, `\p{^X}`, the
+member inside a class and each of those under `/i`, since those are read by
+different code and the two negations part company there.
+
 This one wants an mruby whose strings index by character: mruby-encoding is
 what defines `MRB_UTF8_STRING`, the default gembox does not carry it, and a
 build reading its strings as bytes answers every class within ASCII, which
 parts from CRuby everywhere and says nothing about the tables. The `full-core`
 gembox carries both that gem and mruby-io. A walk is one process per run over
-the whole of Unicode; `-m` narrows it while a difference is being chased.
+the whole of Unicode, a few minutes each with the properties in; `-m` narrows
+the codepoints and `-p` the property names while a difference is being
+chased, and `-p ''` leaves them out.
 
 ## License
 

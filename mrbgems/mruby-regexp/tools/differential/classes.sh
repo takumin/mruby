@@ -4,15 +4,18 @@
 #
 #   bash mrbgems/mruby-regexp/tools/differential/classes.sh [classes options --] [name=]mruby...
 #
-# Everything before `--` goes to classes.rb (`-m` narrows the walk, `-s` the
-# ranges printed per class); what follows names the mruby binaries, as
-# differential.sh takes them. The files go under $OUT (classes.out in the
-# current directory unless set): cruby.out and one <name>.out per mruby, then
-# the report on stdout. RUBY names the CRuby (ruby), MEM_MB caps each run's
-# address space in MB (1024).
+# Everything before `--` goes to classes.rb (`-m` narrows the codepoints, `-p`
+# the property names, `-s` the ranges printed per class); what follows names
+# the mruby binaries, as differential.sh takes them. The files go under $OUT
+# (classes.out in the current directory unless set): cruby.out and one
+# <name>.out per mruby, then the report on stdout. RUBY names the CRuby
+# (ruby), MEM_MB caps each run's address space in MB (1024).
 #
-# A walk is one process per run over the whole of Unicode, so it takes a
-# minute or so; -m narrows it while a difference is being chased.
+# A walk is one process per run over the whole of Unicode, a few minutes each
+# with the properties in; -m and -p narrow it while a difference is being
+# chased, and -p '' leaves the properties out. MEM_MB caps the walks and not
+# the report, which holds every run's membership at once and reaches some
+# gigabytes at the full walk.
 
 set -u
 here=$(dirname "$0")

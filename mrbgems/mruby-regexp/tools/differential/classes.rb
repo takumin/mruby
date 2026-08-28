@@ -16,6 +16,16 @@
 # and a shorthand are read by different code. Every one is matched anchored
 # against the single character, so what is compared is membership alone.
 #
+# The character properties are here as well, one column per name: a name is a
+# table lookup, so asking after each of the four hundred the database gives
+# would walk Unicode four hundred times to learn what one walk of a name of
+# each kind already says. What the names cover instead is every general
+# category, a spread of scripts, the names a POSIX bracket also carries, and
+# the spellings one name may be written in. A few of them are then asked in
+# every shape the escape takes, since `\p` outside a class, `\P`, `\p{^...}`
+# and a member inside one are read by different code and part company under
+# `/i`.
+#
 # The mruby has to index its strings by character: mruby-encoding defines
 # MRB_UTF8_STRING and the default gembox does not carry it, so a default build
 # reads the bytes one at a time and answers every class within ASCII. The
@@ -24,12 +34,47 @@
 # Options
 #   -m, --max N        the highest codepoint to walk, in hex (10FFFF)
 #   -s, --show N       ranges to print per class in the report (12)
+#   -p, --props LIST   the property names to walk, comma separated; empty for
+#                      none, which is the walk this tool had before them
 #       --compare      read the files named as runs and report where they part
 
 POSIX = %w[alpha alnum blank cntrl digit graph lower print punct space upper xdigit word]
 SHORTHAND = %w[\\w \\W \\d \\D \\s \\S]
 
-def classes
+# Every general category, the groups above them and `LC`; a spread of scripts,
+# `Common` and `Inherited` and `Unknown` among them, since those three are
+# where a script table is likeliest to disagree; the names a POSIX bracket
+# also carries, which an engine may answer off the bracket rather than off the
+# tables; `Any` and `Assigned`; and one name in each of the spellings a name
+# may take, the long one, the short script alias, and a case and separator the
+# database does not use.
+PROPERTY = %w[
+  L Lu Ll Lt Lm Lo LC M Mn Mc Me N Nd Nl No P Pc Pd Ps Pe Pi Pf Po
+  S Sm Sc Sk So Z Zs Zl Zp C Cc Cf Co Cs Cn
+  Han Latin Greek Cyrillic Hiragana Katakana Arabic Hebrew Thai Hangul
+  Common Inherited Unknown
+  Alpha Alnum Blank Cntrl Digit Graph Lower Print Punct Space Upper Word XDigit ASCII
+  Any Assigned
+  Letter Uppercase_Letter uppercase-letter Latn
+]
+
+# The names asked in every shape rather than as one column: a category group,
+# a concrete category that has a case, a script, and a bracket name.
+PROPERTY_SHAPES = %w[L Lu Han Alpha]
+
+# The shapes. `\p{X}` is the column the name already has, so it is not here.
+# `\P{X}` and `[\P{X}]` are the pair that parts under `/i`, since a class is
+# closed under folding and then negated where a member is negated as it
+# stands, and `[x\p{X}]` puts the property beside a literal the way
+# `[x[:alpha:]]` puts a bracket there.
+def property_shapes(name)
+  ["\\P{#{name}}", "\\p{^#{name}}",
+   "[\\p{#{name}}]", "[\\P{#{name}}]", "[x\\p{#{name}}]",
+   "(?i:\\p{#{name}})", "(?i:\\P{#{name}})",
+   "(?i:[\\p{#{name}}])", "(?i:[\\P{#{name}}])"]
+end
+
+def classes(properties)
   list = []
   POSIX.each do |name|
     list << ["[[:#{name}:]]", "[[:#{name}:]]"]
@@ -39,6 +84,13 @@ def classes
   SHORTHAND.each do |atom|
     list << [atom, atom]
     list << ["[#{atom}]", "[#{atom}]"]
+  end
+  properties.each do |name|
+    list << ["\\p{#{name}}", "\\p{#{name}}"]
+  end
+  PROPERTY_SHAPES.each do |name|
+    next unless properties.include?(name)
+    property_shapes(name).each { |source| list << [source, source] }
   end
   list
 end
@@ -82,8 +134,8 @@ def to_ranges(codepoints)
   ranges
 end
 
-def walk(max)
-  compiled = classes.map do |name, source|
+def walk(max, properties)
+  compiled = classes(properties).map do |name, source|
     begin
       [name, Regexp.new("\\A(?:#{source})\\z"), nil]
     rescue RegexpError => e
@@ -151,6 +203,7 @@ end
 
 max = 0x10FFFF
 show = 12
+properties = PROPERTY
 files = []
 mode = :walk
 args = ARGV.dup
@@ -158,6 +211,7 @@ while (arg = args.shift)
   case arg
   when "-m", "--max" then max = args.shift.to_i(16)
   when "-s", "--show" then show = args.shift.to_i
+  when "-p", "--props" then properties = args.shift.to_s.split(",").reject { |n| n.empty? }
   when "--compare" then mode = :compare
   else files << arg
   end
@@ -167,5 +221,5 @@ if mode == :compare
   abort "usage: ruby #{$0} --compare reference.out run.out..." if files.size < 2
   compare(files, show)
 else
-  walk(max)
+  walk(max, properties)
 end
