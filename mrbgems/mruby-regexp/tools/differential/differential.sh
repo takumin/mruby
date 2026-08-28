@@ -20,7 +20,9 @@
 # CASES names a cases file to run in place of a generated one, so that a hand
 # written list, the corpus refusals.rb draws, or the candidates minimize.rb
 # draws from a case, goes through the same runs; gen.rb is not called then and
-# the gen options are refused.
+# the gen options are refused. A cases file holding a character no line can
+# carry opens with a `#escaped` line, which run.rb reads and this counts as
+# no case.
 # NO_COMPARE=1 stops before compare.rb and leaves the outputs to be read.
 #
 # A run that dies (the timeout, a crash) is resumed after the case it died on,
@@ -53,7 +55,12 @@ if [ -n "${CASES:-}" ]; then
 else
   "$RUBY" "$here/gen.rb" ${gen_opts[@]+"${gen_opts[@]}"} > "$OUT/cases.txt" || exit 1
 fi
-total=$(grep -c . "$OUT/cases.txt")
+# A case file whose fields are escaped opens with a header line of its own,
+# which is no case: it is not counted, and the line a case stands on is one
+# past its index.
+head_lines=0
+[ "$(head -n 1 "$OUT/cases.txt")" = "#escaped" ] && head_lines=1
+total=$(( $(grep -c . "$OUT/cases.txt") - head_lines ))
 
 bound=()
 if command -v timeout >/dev/null 2>&1; then bound=(timeout "$TIMEOUT"); fi
@@ -70,7 +77,7 @@ run() {
     [ $rc -eq 0 ] && break
     now=$(grep -c . "$out")
     if [ "$now" -lt "$total" ]; then
-      printf '%s\tLIMIT killed rc=%s\n' "$(sed -n "$((now + 1))p" "$OUT/cases.txt")" "$rc" >> "$out"
+      printf '%s\tLIMIT killed rc=%s\n' "$(sed -n "$((now + 1 + head_lines))p" "$OUT/cases.txt")" "$rc" >> "$out"
     fi
   done
 }

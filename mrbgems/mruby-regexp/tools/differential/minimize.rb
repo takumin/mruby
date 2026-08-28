@@ -26,6 +26,14 @@
 # compile drop out on their own, since CRuby then answers ERR where it
 # answered a match.
 #
+# The case is written and cut in the spelling a case file carries, which is
+# the one compare.rb prints: a backslash is `\\` there and a newline, a tab
+# and a carriage return are `\n`, `\t` and `\r`, so that a case holding one
+# of them is still one line. run.rb unescapes what it runs, and the candidate
+# file this writes says so in the `#escaped` header it opens with. A cut may
+# fall inside such a spelling, and the candidate it makes then reads
+# differently and is dropped like any other.
+#
 # Options
 #   -q, --quiet   do not report each round on stderr
 
@@ -57,7 +65,7 @@ FileUtils.mkdir_p(OUT)
 # Run every case through differential.sh and answer one line per case per run.
 def run(cases, bins)
   path = File.join(OUT, "candidates.txt")
-  File.write(path, cases.map { |p, s| "#{p}\t#{s}" }.join("\n") + "\n")
+  File.write(path, (["#escaped"] + cases.map { |p, s| "#{p}\t#{s}" }).join("\n") + "\n")
   env = { "CASES" => path, "OUT" => OUT, "NO_COMPARE" => "1", "TIMEOUT" => ENV["TIMEOUT"] || "15" }
   ok = system(env, "bash", File.join(HERE, "differential.sh"), *bins, out: File::NULL, err: File::NULL)
   abort "differential.sh failed" unless ok

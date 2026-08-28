@@ -61,6 +61,16 @@
 #                       sequence of atoms rather than one, so a quantifier
 #                       behind it repeats the last of them alone.
 #   anchor              `^` `$` `\A` `\z` `\Z` `\b` `\B`
+#   newline             the subjects hold newlines. A subject of one line
+#                       answers `^` where it answers `\A` and `$` where it
+#                       answers `\z`, so what a line anchor says apart from a
+#                       subject anchor, what `\Z` says apart from both, and
+#                       what `.` does not match until `m` says it does, are
+#                       all outside a corpus drawn without this. The newline
+#                       joins the subjects alone, the patterns being written
+#                       over the alphabet as before. A case file whose fields
+#                       hold one is written escaped and says so in a
+#                       `#escaped` line at its top, which run.rb reads.
 #   empty               atoms that match empty on their own (`(?:)`, `(a|)`,
 #                       `(|b)`, `(?:a|)`), and quantifiers on atoms that can
 #                       already match empty, so repetitions of empty-matching
@@ -122,7 +132,7 @@
 
 require 'optparse'
 
-FEATURES = %w[lazy interval class class-syntax escape anchor empty
+FEATURES = %w[lazy interval class class-syntax escape anchor newline empty
               lookahead lookbehind
               lookaround-capture backref backref-name backref-forward
               named-group atomic possessive inline-option call
@@ -512,14 +522,33 @@ def seq(depth, groups, in_lookahead: false)
   Atom.new(atoms.map(&:src).join, atoms.all?(&:empty))
 end
 
-subjects = (0..opts[:subject_length]).flat_map { |len| $alphabet.repeated_permutation(len).map(&:join) }
+# The subjects are drawn over the alphabet, and over the newline as well when
+# the feature asks for it: a subject of one line answers `^` where it answers
+# `\A` and `$` where it answers `\z`, so the anchors that tell a line from the
+# whole subject part company only here. The newline joins the subjects alone;
+# the patterns are written over the alphabet as before.
+subject_alphabet = $alphabet + (on?("newline") ? ["\n"] : [])
+subjects = (0..opts[:subject_length]).flat_map { |len| subject_alphabet.repeated_permutation(len).map(&:join) }
 # A long subject is a run rather than another string of the alphabet: one
 # character repeated is what a repetition crosses an iteration at a time, and
 # the alphabet cycled is what an alternation does the same over.
 subjects += opts[:long].flat_map do |len|
-  $alphabet.map { |c| c * len } + [($alphabet.join * (len / $alphabet.size + 1))[0, len]]
+  subject_alphabet.map { |c| c * len } +
+    [(subject_alphabet.join * (len / subject_alphabet.size + 1))[0, len]]
 end
 subjects.uniq!
+
+# A case file holding a character no line can carry says so in a line of its
+# own at the top, and spells the backslash along with the three characters
+# that would break a line. run.rb reads that header and unescapes the two
+# fields before it runs them.
+ESCAPES = { "\\" => "\\\\", "\n" => "\\n", "\t" => "\\t", "\r" => "\\r" }.freeze
+escaped = on?("newline")
+puts "#escaped" if escaped
+
+def spell_field(s, escaped)
+  escaped ? s.gsub(/[\\\n\t\r]/) { |ch| ESCAPES[ch] } : s
+end
 
 opts[:count].times do
   # Half the patterns declare their groups with names when named-group is on:
@@ -541,9 +570,10 @@ opts[:count].times do
   # a quantifier that admits zero.
   src += "\\g<0>?" if on?("call") && !top.empty && rand < 0.1
   pat = resolve_forward(src, groups.opened)
+  field = spell_field(pat, escaped)
   if opts[:all_subjects]
-    subjects.each { |s| puts "#{pat}\t#{s}" }
+    subjects.each { |s| puts "#{field}\t#{spell_field(s, escaped)}" }
   else
-    puts "#{pat}\t#{subjects.sample}"
+    puts "#{field}\t#{spell_field(subjects.sample, escaped)}"
   end
 end
