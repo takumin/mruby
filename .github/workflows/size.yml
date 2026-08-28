@@ -1,7 +1,11 @@
 # What a build weighs, measured by `rake size` and compared against what
-# `master` last weighed. The comparison is posted on a pull request by
-# `size-comment.yml`, which is a workflow of its own because a run triggered by
-# a pull request from a fork holds a read-only token and cannot comment.
+# `master` last weighed, as the one comment on the pull request.
+#
+# A pull request from a fork gets the report in the run summary and no comment:
+# its run holds a read-only token, and reaching a write one from here would mean
+# a second workflow posting on behalf of code this repository has not taken in.
+# Work opened as a pull request here rather than from a fork is what the comment
+# is for, which is the branch a change is read on before it goes upstream.
 name: Size
 
 on:
@@ -21,6 +25,7 @@ jobs:
       contents: read
       # Reading the baseline is reading the artifact of another run.
       actions: read
+      pull-requests: write
     env:
       # One configuration, one runner image, one compiler: what a build weighs
       # moves with all three, and a comparison against a baseline measured by
@@ -93,21 +98,52 @@ jobs:
       # report is written whether the step above ran or not.
       - name: Compare
         run: |
-          mkdir -p size-report
-          cp build/host/size.json size-report/size.json
-          rake "size:diff[baseline/size.json,size-report/size.json,size-report/report.md]"
-          cat size-report/report.md >> "$GITHUB_STEP_SUMMARY"
-      # Which pull request the report belongs to is something only this run
-      # knows: the run that posts the comment is told about this one, and a
-      # pull request from a fork is not named in what it is told.
-      - name: Name the pull request
-        if: github.event_name == 'pull_request'
-        run: echo "${{ github.event.pull_request.number }}" > size-report/pr-number
+          rake "size:diff[baseline/size.json,build/host/size.json,size-report.md]"
+          cat size-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Post the report
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const fs = require('fs')
+            const marker = '<!-- mruby-size-report -->'
+            const body = fs.readFileSync('size-report.md', 'utf8')
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            })
+
+            // One comment, edited by every push: a comment that is edited
+            // notifies nobody, and a pull request of twenty pushes reads as
+            // what it weighs now rather than as twenty reports of what it
+            // weighed on the way there.
+            const existing = comments.find(
+              (c) => c.user?.type === 'Bot' && c.body?.includes(marker)
+            )
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              })
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              })
+            }
       - name: Upload the size report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: size-report
-          path: size-report/
+          path: build/host/size.json
           # A pull request opened against a `master` older than this is left
           # without a baseline, so the retention is the longest one there is.
           retention-days: 90
