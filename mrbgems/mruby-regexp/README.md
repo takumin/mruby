@@ -460,12 +460,26 @@ matches only once that group has captured. Some of the patterns declare their
 groups with `(?<gN>...)`, where a plain `(...)` captures nothing and a
 numbered reference is refused whatever its spelling, so the references in
 them name a group instead.
+A character of the alphabet is written as itself and as each escape that
+spells one: `\x61` and the octal name a byte where `a` and `\u{61}` name
+a codepoint, which is the line a member of a class is read by. A class holds
+a range, a POSIX bracket, a shorthand and a `-` or `^` written as itself
+beside the list of characters it always held. What the `x` option drops is
+drawn as well, a space, a tab, a newline and a `#` comment closed by one,
+along with the comment group `(?#...)`, so a toggle turning the option on
+reaches something it changes.
 Its subjects are every string over the alphabet up to a length (`-l`, four),
-and a repetition crosses one iteration per character, so a case built from
+and the newline besides, which is what tells `^` from `\A` and `$` from `\z`;
+a repetition crosses one iteration per character, so a case built from
 them reaches no limit either engine sets; `-L` adds subjects that are runs of
 the lengths it names, each character of the alphabet repeated to one and the
 alphabet cycled to it, which is what a search long enough to reach a limit is
 drawn from.
+A case file holding a character no line can carry opens with a `#escaped`
+line of its own, and spells a backslash `\\` and a newline, a tab and a
+carriage return `\n`, `\t` and `\r`. `run.rb` unescapes the pattern and the
+subject before it runs them and writes both fields back as they were read, so
+a case is one line wherever it goes.
 `run.rb` is the same file under CRuby and under mruby, and prints each case's
 `MatchData#to_a` or why there is none. `compare.rb` sorts the cases by which
 runs disagree with CRuby: with a master and a branch, the cases only the
