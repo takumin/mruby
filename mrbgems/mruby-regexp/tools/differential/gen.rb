@@ -39,6 +39,14 @@
 #   interval            interval quantifiers `{n}` `{n,}` `{n,m}` (lazy forms
 #                       when lazy is on)
 #   class               `.` `\w` `\W` and classes over the alphabet, negated too
+#   class-syntax        what a bracket expression may hold beside a list of
+#                       characters: a range `a-b`, a POSIX bracket
+#                       `[[:alpha:]]` and its negation `[[:^alpha:]]`, a
+#                       shorthand as a member `[\d]`, a `-` at either end and
+#                       a `^` past the first byte, each of them a member the
+#                       class parser reads on its own; and every shorthand
+#                       rather than `\w` and `\W` alone. It widens `class`
+#                       and draws nothing while that one is off.
 #   anchor              `^` `$` `\A` `\z` `\Z` `\b` `\B`
 #   empty               atoms that match empty on their own (`(?:)`, `(a|)`,
 #                       `(|b)`, `(?:a|)`), and quantifiers on atoms that can
@@ -101,7 +109,7 @@
 
 require 'optparse'
 
-FEATURES = %w[lazy interval class anchor empty lookahead lookbehind
+FEATURES = %w[lazy interval class class-syntax anchor empty lookahead lookbehind
               lookaround-capture backref backref-name backref-forward
               named-group atomic possessive inline-option call
               alternation].freeze
@@ -155,15 +163,64 @@ def literal
   Atom.new(Regexp.escape($alphabet.sample), false)
 end
 
+# Each shorthand class, which stands for a set both on its own and as a member
+# of a bracket expression.
+SHORTHANDS = %w[\w \W \d \D \s \S \h \H].freeze
+
+# The names a POSIX bracket may carry, which CRuby and this engine read alike.
+POSIX_NAMES = %w[alpha alnum blank cntrl digit graph lower print punct space
+                 upper xdigit word ascii].freeze
+
+# One member of a bracket expression: a literal, a range over the alphabet, a
+# shorthand, or a POSIX bracket, negated as it may be written. The two
+# characters a range is drawn over are sorted before they are written, since
+# CRuby refuses a range whose ends stand the other way round.
+def class_member
+  case rand(4)
+  when 0 then Regexp.escape($alphabet.sample)
+  when 1
+    a, b = $alphabet.sample(2).sort
+    "#{Regexp.escape(a)}-#{Regexp.escape(b)}"
+  when 2 then SHORTHANDS.sample
+  else "[:#{rand < 0.3 ? "^" : ""}#{POSIX_NAMES.sample}:]"
+  end
+end
+
+# A bracket expression over those members. A `-` of its own goes only at an
+# end of the list: after a set such as `\w` or a bracket, CRuby reads it as
+# the start of a range that no set can be an end of and refuses it, and
+# between two members it is a range rather than the character. A `^` is the
+# negation at the first byte and the character itself anywhere else, so it
+# is written last, and the `-` that may follow it is at an end as any other.
+def bracket_class
+  members = Array.new(rand(1..3)) { class_member }
+  members.unshift("-") if rand < 0.1
+  members.push("^") if rand < 0.15
+  members.push("-") if rand < 0.1
+  Atom.new("[#{rand < 0.3 ? "^" : ""}#{members.join}]", false)
+end
+
 def char_class
   c = $alphabet.sample
-  case rand(5)
-  when 0 then Atom.new(".", false)
-  when 1 then Atom.new(rand < 0.5 ? "\\w" : "\\W", false)
-  when 2 then Atom.new("[^#{Regexp.escape(c)}]", false)
+  if on?("class-syntax")
+    case rand(6)
+    when 0 then Atom.new(".", false)
+    when 1 then Atom.new(SHORTHANDS.sample, false)
+    when 2 then Atom.new("[^#{Regexp.escape(c)}]", false)
+    when 3
+      n = rand(1..$alphabet.size)
+      Atom.new("[#{$alphabet.sample(n).map { |x| Regexp.escape(x) }.join}]", false)
+    else bracket_class
+    end
   else
-    n = rand(1..$alphabet.size)
-    Atom.new("[#{$alphabet.sample(n).map { |x| Regexp.escape(x) }.join}]", false)
+    case rand(5)
+    when 0 then Atom.new(".", false)
+    when 1 then Atom.new(rand < 0.5 ? "\\w" : "\\W", false)
+    when 2 then Atom.new("[^#{Regexp.escape(c)}]", false)
+    else
+      n = rand(1..$alphabet.size)
+      Atom.new("[#{$alphabet.sample(n).map { |x| Regexp.escape(x) }.join}]", false)
+    end
   end
 end
 
