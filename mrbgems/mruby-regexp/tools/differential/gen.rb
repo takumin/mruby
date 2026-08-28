@@ -87,6 +87,14 @@
 #                       that admits zero. Calls to closed groups make no cycle
 #                       at all, every body holding calls only to groups closed
 #                       before it.
+#   alternation         a choice at the outermost level of the pattern, `a|b`,
+#                       where every other one stands inside a group. That
+#                       level is what a bare option toggle reaches: `a(?i)b|c`
+#                       is `a(?i:b|c)`, so a toggle written outside every
+#                       group has a scope only a choice there can show. A
+#                       branch is drawn as the sequence beside it is, groups
+#                       and all, so a reference in one branch may name a group
+#                       the other opens and go unmatched for it.
 #
 # All features are on unless -f or -w says otherwise. Every pattern compiles
 # under CRuby; what this gem refuses is reported by compare.rb.
@@ -95,7 +103,8 @@ require 'optparse'
 
 FEATURES = %w[lazy interval class anchor empty lookahead lookbehind
               lookaround-capture backref backref-name backref-forward
-              named-group atomic possessive inline-option call].freeze
+              named-group atomic possessive inline-option call
+              alternation].freeze
 
 opts = {
   seed: 1, count: 1000, depth: 2, quantify: 0.5, alphabet: "ab",
@@ -408,6 +417,14 @@ opts[:count].times do
   # nothing in one, so it is decided here rather than group by group.
   groups = Groups.new(on?("named-group") && rand < 0.5)
   top = seq(opts[:depth], groups)
+  # A choice at the top level, the one place a `|` is not inside a group. The
+  # branches are drawn from the same depth as the sequence they join, and what
+  # either can match empty the whole can, which is what the `\g<0>?` guard
+  # below reads.
+  if on?("alternation") && rand < 0.3
+    other = seq(opts[:depth], groups)
+    top = Atom.new("#{top.src}|#{other.src}", top.empty || other.empty)
+  end
   src = top.src
   # `\g<0>` runs the whole pattern again, and may end one under the guards
   # the self-call in group() states: a pattern that consumes on every path,
