@@ -240,12 +240,15 @@ module MRuby
                   rows(before ? before["binaries"] : {}, after["binaries"])
                     .map {|name, b, a| ["`#{name}`", b, a]}
 
+        # The configuration names the report rather than the table, so that a
+        # run summary carrying one report per configuration is read by its
+        # headings.
         [
           MARKER,
-          "### Size report",
+          "### Size report (#{after["config"]})",
           headline(before && before["libmruby"], after["libmruby"]),
           provenance(before, after),
-          table_md("#{after["target"]} (#{after["config"]})", summary, !before.nil?),
+          table_md(after["target"], summary, !before.nil?),
           objects_md(before, after),
         ].compact.join("\n\n") << "\n"
       end
