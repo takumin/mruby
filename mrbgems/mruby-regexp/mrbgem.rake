@@ -60,16 +60,18 @@ MRuby::Gem::Specification.new('mruby-regexp') do |spec|
   # gem has had its say, which is what `build_settings` waits for; this gem
   # sets no build command in the block above, so the reset that comes with it
   # drops nothing.
-  # The pair below is what `RE_UNICODE_CASE` and `RE_UNICODE_CTYPE` are
-  # defined from in re_internal.h: the tables are carried only by a build
-  # reading its strings as characters, and only where it classifies them by
-  # Unicode.
+  # The condition below is what `RE_UNICODE_CASE`, `RE_UNICODE_CTYPE` and
+  # `RE_UNICODE_PROP` are defined from in re_internal.h: the tables are
+  # carried only by a build reading its strings as characters, and only where
+  # it classifies them by Unicode.
   spec.build_settings do
     if build.has_define?('MRB_UTF8_STRING') &&
        !build.has_define?('MRB_USE_ASCII_CTYPE')
-      spec.test_rbfiles -= ["#{spec.dir}/test/ascii_case.rb", "#{spec.dir}/test/ascii_ctype.rb"]
+      spec.test_rbfiles -= ["#{spec.dir}/test/ascii_case.rb", "#{spec.dir}/test/ascii_ctype.rb",
+                            "#{spec.dir}/test/ascii_prop.rb"]
     else
-      spec.test_rbfiles -= ["#{spec.dir}/test/unicode_case.rb", "#{spec.dir}/test/unicode_ctype.rb"]
+      spec.test_rbfiles -= ["#{spec.dir}/test/unicode_case.rb", "#{spec.dir}/test/unicode_ctype.rb",
+                            "#{spec.dir}/test/unicode_prop.rb"]
     end
   end
 end

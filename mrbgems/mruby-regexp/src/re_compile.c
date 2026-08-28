@@ -532,15 +532,18 @@ class_add_shorthand(re_charclass *cc, int ch)
 }
 
 /* TRUE when every character the class can match is ASCII, so it always
-   consumes exactly one byte. Non-ASCII codepoint ranges, a type read off the
-   table and the utf8_any catch-all (set by \D, \W, \S, \H and [[:^ascii:]])
-   all admit multibyte characters, whose width is not known until match
-   time. */
+   consumes exactly one byte. Non-ASCII codepoint ranges, a type or a property
+   read off a table and the utf8_any catch-all (set by \D, \W, \S, \H and
+   [[:^ascii:]]) all admit multibyte characters, whose width is not known until
+   match time. */
 static mrb_bool
 class_is_ascii_only(const re_charclass *cc)
 {
 #ifdef RE_UNICODE_CTYPE
   if (cc->ctype_yes || cc->ctype_no) return FALSE;
+#endif
+#ifdef RE_UNICODE_PROP
+  if (cc->num_props) return FALSE;
 #endif
   return cc->num_ranges == 0 && !cc->utf8_any;
 }
@@ -597,6 +600,42 @@ posix_class_bits(uint8_t *bits, const char *name, size_t len, mrb_bool *ascii_se
 #undef BSET
 #undef BRANGE
 #undef TYPE
+}
+
+/* The ASCII a `\p{...}` escape holds, for a name a POSIX bracket holds a type
+   for. Returns FALSE for anything else, which is a general category, a script
+   or no property at all, and is answered off the tables instead.
+   Answers as posix_class_bits() does, and is what lets the names the two
+   spellings share be read on a build carrying neither table.
+
+   The two spellings agree on every name but `punct`. `[[:punct:]]` holds the
+   nine ASCII symbols Onigmo gives the bracket ($ + < = > ^ ` | ~) and
+   `\p{Punct}` is the punctuation categories alone, which above ASCII is the
+   same set; so the type bit is the bracket's and only the ASCII is spelled
+   out here. The four names below it are what the database calls the property
+   the bracket names, and hold what the bracket does. */
+static mrb_bool
+prop_class_bits(uint8_t *bits, const char *name, size_t len, mrb_bool *ascii_set,
+                uint16_t *ctype)
+{
+#define NAME_IS(s) (len == sizeof(s) - 1 && memcmp(name, s, len) == 0)
+  if (NAME_IS("punct")) {
+    static const char cats[] = "!\"#%&'()*,-./:;?@[\\]_{}";
+    for (const char *p = cats; *p; p++) {
+      bits[(uint8_t)*p >> 3] |= (uint8_t)(1u << (*p & 7));
+    }
+    *ascii_set = FALSE;
+#ifdef RE_UNICODE_CTYPE
+    *ctype = RE_CTYPE_PUNCT;
+#endif
+    return TRUE;
+  }
+  if (NAME_IS("alphabetic")) { name = "alpha"; len = 5; }
+  else if (NAME_IS("uppercase")) { name = "upper"; len = 5; }
+  else if (NAME_IS("lowercase")) { name = "lower"; len = 5; }
+  else if (NAME_IS("whitespace")) { name = "space"; len = 5; }
+  return posix_class_bits(bits, name, len, ascii_set, ctype);
+#undef NAME_IS
 }
 
 /* Value of one hex digit, or -1 for anything else (including the -1 that
@@ -916,6 +955,10 @@ at_shorthand_class(const char *src, const char *end)
   case 'd': case 'D': case 'w': case 'W':
   case 's': case 'S': case 'h': case 'H':
     return TRUE;
+  case 'p': case 'P':
+    /* It is the braces that name a property: a bare `\p` is the letter, and
+       the letter is an end of a range like any other. */
+    return src + 2 < end && src[2] == '{';
   default:
     return FALSE;
   }
@@ -932,6 +975,166 @@ reject_set_as_range_start(re_compiler *c)
     compile_error(c, "unmatched range specifier in char-class");
   }
 }
+
+/* Fold a POSIX bracket, or a property escape that names the same type, into
+   the class: the ASCII off `bits` and what stands above it off `ctype`.
+
+   `dst` is where the ASCII goes, which for a set ASCII defines ([:word:],
+   [:ascii:]) is the class held apart from the folding; see compile_charclass().
+   Above ASCII a type is read off the table at match time, in either polarity.
+   A set ASCII defines holds nothing there, so its negation holds everything
+   there: [:^ascii:] is every character above ASCII and every byte that is no
+   character. Without the table, every bracket is such a set. */
+static void
+class_add_bracket(re_charclass *cc, re_charclass *ascii_set, const uint8_t *bits,
+                  mrb_bool by_ascii, uint16_t ctype, mrb_bool neg)
+{
+  re_charclass *dst = by_ascii ? ascii_set : cc;
+  for (int i = 0; i < 128; i++) {
+    mrb_bool in = (bits[i >> 3] >> (i & 7)) & 1;
+    if (in != neg) class_set_bit(dst, (uint8_t)i);
+  }
+#ifdef RE_UNICODE_CTYPE
+  if (ctype) {
+    if (neg) cc->ctype_no |= ctype;
+    else cc->ctype_yes |= ctype;
+  }
+  else if (neg) dst->utf8_any = TRUE;
+#else
+  (void)ctype;
+  if (neg) dst->utf8_any = TRUE;
+#endif
+}
+
+#ifdef RE_UNICODE_PROP
+/* Add a property the class is to read off the tables at match time. Writing
+   one twice is asking one question twice, so the list holds each once: it is
+   what bounds the list, there being as many properties as the tables have
+   names for, and it keeps a class written `[\p{L}\p{L}...]` from growing. */
+static void
+class_add_prop(re_compiler *c, re_charclass *cc, uint16_t prop)
+{
+  for (uint16_t i = 0; i < cc->num_props; i++) {
+    if (cc->props[i] == prop) return;
+  }
+  if (cc->num_props >= cc->prop_capa) {
+    uint16_t capa = cc->prop_capa ? (uint16_t)(cc->prop_capa * 2) : 4;
+    cc->props = (uint16_t*)mrb_realloc(c->mrb, cc->props, sizeof(uint16_t) * capa);
+    cc->prop_capa = capa;
+  }
+  cc->props[cc->num_props++] = prop;
+}
+#endif
+
+/* Longest property name that can name anything, folded. The longest the
+   tables hold is 22 characters (`Nyiakeng_Puachue_Hmong`), and the names the
+   compiler answers itself are shorter still, so a longer one names nothing:
+   it is refused as an invalid name rather than cut down to one that matches. */
+#define RE_MAX_PROP_NAME 32
+
+/* Read the `{...}` of a property escape, the cursor standing on the `{`.
+
+   The name is folded into `buf` the way the tables hold it, in lower case
+   and without the underscores, hyphens and spaces that are not part of a
+   name, and the length it comes to is returned, which can be past the buffer for a
+   name nothing can hold. A `^` written inside the braces negates the escape,
+   so it flips *neg rather than joining the name. What is left in `raw` is the
+   name as written, for the message that quotes it. */
+static size_t
+parse_property_name(re_compiler *c, char *buf, mrb_bool *neg,
+                    const char **raw, size_t *raw_len)
+{
+  next_char(c);  /* '{' */
+  if (peek(c) == '^') {
+    next_char(c);
+    *neg = !*neg;
+  }
+  *raw = c->p;
+  size_t len = 0;
+  for (;;) {
+    int ch = peek(c);
+    /* CRuby reports a `\p{` the pattern never closes as an invalid name, and
+       the name it quotes is the empty one rather than the letters written, so
+       the complaint here is the one that says what happened instead. */
+    if (ch < 0) compile_error(c, "unterminated character property");
+    if (ch == '}') break;
+    next_char(c);
+    if (ch == '_' || ch == '-' || ch == ' ' || ch == '\t') continue;
+    if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+    if (len < RE_MAX_PROP_NAME) buf[len] = (char)ch;
+    len++;
+  }
+  *raw_len = (size_t)(c->p - *raw);
+  next_char(c);  /* '}' */
+  return len;
+}
+
+/* Fold one `\p{name}` into the class, `neg` for the spellings that negate it.
+
+   A name a POSIX bracket also names is answered off the bracket types, which
+   every build carries; a general category or a script is answered off the
+   tables, which only a build reading its strings as characters and
+   classifying them by Unicode has. The ASCII of one of those is read off the
+   table here, once, so that the matcher reads it only for what stands above
+   ASCII, and so that the class closes under folding at compile time the way
+   a written member does. */
+static void
+class_add_property(re_compiler *c, re_charclass *cc, re_charclass *ascii_set,
+                   const char *name, size_t len, mrb_bool neg,
+                   const char *raw, size_t raw_len)
+{
+  if (len <= RE_MAX_PROP_NAME) {
+    /* `Any` is every character there is, so it needs no table to answer and
+       no bit above ASCII to read: the catch-all is the whole of it. Negated
+       it holds nothing, which is a class that never matches rather than an
+       error, as it is to CRuby. */
+    if (len == 3 && memcmp(name, "any", 3) == 0) {
+      if (!neg) {
+        class_set_range(cc, 0, 127);
+        cc->utf8_any = TRUE;
+      }
+      return;
+    }
+
+    uint8_t bits[16] = {0};
+    mrb_bool by_ascii;
+    uint16_t ctype = 0;
+    if (prop_class_bits(bits, name, len, &by_ascii, &ctype)) {
+      class_add_bracket(cc, ascii_set, bits, by_ascii, ctype, neg);
+      return;
+    }
+
+#ifdef RE_UNICODE_PROP
+    uint16_t prop;
+    if (mrb_re_prop_lookup(name, len, &prop)) {
+      uint8_t ascii[16] = {0};
+      mrb_re_prop_ascii(prop, ascii);
+      for (uint32_t cp = 0; cp < 128; cp++) {
+        mrb_bool in = (ascii[cp >> 3] >> (cp & 7)) & 1;
+        if (in != neg) class_set_bit(cc, (uint8_t)cp);
+      }
+      class_add_prop(c, cc, neg ? (uint16_t)(prop | RE_PROP_NEG) : prop);
+      return;
+    }
+#endif
+  }
+
+#ifdef RE_UNICODE_PROP
+  compile_error_str(c, mrb_format(c->mrb, "invalid character property name {%l}",
+                                  raw, raw_len));
+#else
+  /* Without the tables the general categories and the scripts have no answer
+     here, and a name that is neither has none either: which of the two a name
+     is takes the tables to say. The build is the thing to name, since the
+     pattern is one CRuby compiles and one this gem compiles where it carries
+     the data; see README.md. */
+  compile_error_str(c, mrb_format(c->mrb,
+                                  "character property {%l} needs Unicode character data",
+                                  raw, raw_len));
+#endif
+}
+
+static void class_close(re_compiler *c, re_charclass *cc, const re_charclass *ascii_set);
 
 static void
 compile_charclass(re_compiler *c)
@@ -992,31 +1195,13 @@ compile_charclass(re_compiler *c)
       if (peek(c) == ':' && c->p + 1 < c->src_end && c->p[1] == ']') {
         uint8_t bits[16] = {0};
         mrb_bool by_ascii;
-        uint16_t ctype;
+        uint16_t ctype = 0;
         if (!posix_class_bits(bits, name, (size_t)(c->p - name), &by_ascii, &ctype)) {
           compile_error(c, "invalid POSIX bracket type");
         }
         next_char(c);  /* ':' */
         next_char(c);  /* ']' */
-        re_charclass *dst = by_ascii ? &ascii_set : cc;
-        for (int i = 0; i < 128; i++) {
-          mrb_bool in = (bits[i >> 3] >> (i & 7)) & 1;
-          if (in != neg) class_set_bit(dst, (uint8_t)i);
-        }
-        /* Above ASCII a type is read off the table at match time, in either
-           polarity. A set ASCII defines holds nothing there, so its negation
-           holds everything there: [:^ascii:] is every character above ASCII
-           and every byte that is no character. Without the table, every
-           bracket is such a set. */
-#ifdef RE_UNICODE_CTYPE
-        if (ctype) {
-          if (neg) cc->ctype_no |= ctype;
-          else cc->ctype_yes |= ctype;
-        }
-        else if (neg) dst->utf8_any = TRUE;
-#else
-        if (neg) dst->utf8_any = TRUE;
-#endif
+        class_add_bracket(cc, &ascii_set, bits, by_ascii, ctype, neg);
         reject_set_as_range_start(c);
         continue;
       }
@@ -1034,11 +1219,24 @@ compile_charclass(re_compiler *c)
        stay intact. */
     if (peek(c) == '\\') {
       int esc = (c->p + 1 < c->src_end) ? (uint8_t)c->p[1] : -1;
-      /* The engine reads no character property, and the members below would
-         make one of every letter of the name: [\p{Han}] would hold H, a and
-         n. Refused rather than answered with the text of the request. */
+      /* A property escape names a set, so it joins the class whole, the way a
+         POSIX bracket does. `\P{X}` is the member the class holds for every
+         character that is not an X, which is not the same as negating the
+         class: under /i `[\P{X}]` holds what some case of the character is
+         not an X for, where `\P{X}` on its own holds what no case of it is an
+         X for. CRuby reads the two apart that way as well; see
+         compile_property_atom(). */
       if ((esc == 'p' || esc == 'P') && c->p + 2 < c->src_end && c->p[2] == '{') {
-        compile_error(c, "character property is not supported");
+        char name[RE_MAX_PROP_NAME];
+        const char *raw;
+        size_t raw_len;
+        mrb_bool neg = (esc == 'P');
+        next_char(c);  /* '\\' */
+        next_char(c);  /* 'p' or 'P' */
+        size_t len = parse_property_name(c, name, &neg, &raw, &raw_len);
+        class_add_property(c, cc, &ascii_set, name, len, neg, raw, raw_len);
+        reject_set_as_range_start(c);
+        continue;
       }
       if (esc == 'd' || esc == 'D' || esc == 'w' || esc == 'W' ||
           esc == 's' || esc == 'S' || esc == 'h' || esc == 'H') {
@@ -1094,30 +1292,43 @@ compile_charclass(re_compiler *c)
   }
   next_char(c);  /* skip ']' */
 
-  /* Close the class under case folding for /i. This runs once the class is
-     complete, so it covers every form the loop above merges in: POSIX
-     brackets, ranges and single literals. Negation is applied at match time
-     against the same class (RE_NCLASS), so closing the positive set is also
-     what keeps [^a-c] and [^Ā] from accepting what they were written to
-     reject.
+  class_close(c, cc, &ascii_set);
+  cc->negated = negated;
+  emit(c, negated ? RE_NCLASS : RE_CLASS, (uint8_t)id, 0);
+}
 
-     Closing means: x belongs to the class whenever some written member folds
-     the same way x does. A byte member has no case: it stands for no character,
-     so nothing folds to it and it folds to nothing. Every walk below steps over
-     the tagged ranges, which is also what keeps /i from refusing a class of
-     continuation bytes on a build without the folding tables.
+/* Finish a class that is complete: close it under case folding for /i, join
+   what was held apart from that closure, and say whether what it reads off a
+   table is to be folded at match time. Called by the `[...]` parser and by
+   the property escape that stands outside one, which is a class of a single
+   member and closes the same way.
 
-     The word class and [:ascii:] are still held apart here, so the closure
-     never sees them. Each is a set ASCII defines: \w is [a-zA-Z0-9_] and no
-     more, so a fold that leaves ASCII leaves the set, and [\w] under /i is
-     the ASCII word characters where [k] under /i reaches U+212A. CRuby reads
-     them the same way, keeping the two out of the class it folds across the
-     boundary from, and it is what makes [^\w] under /i accept U+017F. Both
-     hold both cases of every letter they hold, so the ASCII part of the
-     closure has nothing to add to them, and joining them after it costs
-     nothing. The other POSIX brackets are ASCII here only for want of a
-     table, and stay in: CRuby folds them too, and there their members above
-     ASCII hold what the fold adds anyway. */
+   The closure runs once the class is complete, so it covers every form the
+   parser merges in: POSIX brackets, ranges and single literals. Negation is
+   applied at match time against the same class (RE_NCLASS), so closing the
+   positive set is also what keeps [^a-c] and [^Ā] from accepting what they
+   were written to reject.
+
+   Closing means: x belongs to the class whenever some written member folds
+   the same way x does. A byte member has no case: it stands for no character,
+   so nothing folds to it and it folds to nothing. Every walk below steps over
+   the tagged ranges, which is also what keeps /i from refusing a class of
+   continuation bytes on a build without the folding tables.
+
+   The word class and [:ascii:] are still held apart here, so the closure
+   never sees them. Each is a set ASCII defines: \w is [a-zA-Z0-9_] and no
+   more, so a fold that leaves ASCII leaves the set, and [\w] under /i is
+   the ASCII word characters where [k] under /i reaches U+212A. CRuby reads
+   them the same way, keeping the two out of the class it folds across the
+   boundary from, and it is what makes [^\w] under /i accept U+017F. Both
+   hold both cases of every letter they hold, so the ASCII part of the
+   closure has nothing to add to them, and joining them after it costs
+   nothing. The other POSIX brackets are ASCII here only for want of a
+   table, and stay in: CRuby folds them too, and there their members above
+   ASCII hold what the fold adds anyway. */
+static void
+class_close(re_compiler *c, re_charclass *cc, const re_charclass *ascii_set)
+{
   if (c->flags & RE_FLAG_IGNORECASE) {
 #ifdef RE_UNICODE_CASE
     /* That takes two rounds rather than one walk in each direction, because a
@@ -1204,21 +1415,53 @@ compile_charclass(re_compiler *c)
 #endif
   }
 
-  for (int i = 0; i < RE_CLASS_BITMAP_SIZE; i++) cc->bitmap[i] |= ascii_set.bitmap[i];
-  if (ascii_set.utf8_any) cc->utf8_any = TRUE;
+  for (int i = 0; i < RE_CLASS_BITMAP_SIZE; i++) cc->bitmap[i] |= ascii_set->bitmap[i];
+  if (ascii_set->utf8_any) cc->utf8_any = TRUE;
 
 #ifdef RE_UNICODE_CTYPE
-  /* A type is not spelled out as members, so the closure above never saw it;
-     it is closed at match time instead, by reading the type of every
-     character sharing the folding of the one in hand. The bitmap holds the
-     ASCII of every bracket, and the closure has already reached across the
-     boundary from there: U+017F is in the class once 's' is, so a type
-     found only through an ASCII counterpart is found through the ranges. */
-  cc->ctype_fold = (c->flags & RE_FLAG_IGNORECASE) && (cc->ctype_yes || cc->ctype_no);
+  /* A type and a property are not spelled out as members, so the closure
+     above never saw either; each is closed at match time instead, by reading
+     what every character sharing the folding of the one in hand belongs to.
+     The bitmap holds the ASCII of both, and the closure has already reached
+     across the boundary from there: U+017F is in the class once 's' is, so a
+     type found only through an ASCII counterpart is found through the
+     ranges. */
+  cc->table_fold = (c->flags & RE_FLAG_IGNORECASE) &&
+                   (cc->ctype_yes || cc->ctype_no
+#ifdef RE_UNICODE_PROP
+                    || cc->num_props
 #endif
+                   );
+#endif
+}
 
-  cc->negated = negated;
-  emit(c, negated ? RE_NCLASS : RE_CLASS, (uint8_t)id, 0);
+/* A `\p{...}` escape outside a character class, the cursor standing on the
+   `p` or `P`: the class of the one member it names, and the negation on the
+   class rather than on the member.
+
+   Which of the two carries it is what tells `\P{X}` from `[\P{X}]`, and CRuby
+   tells them apart the same way. Without /i they are one set. Under /i they
+   are not: a class is closed under folding and then negated, so `\P{X}` holds
+   what no case of the character is an X for, where the member in
+   `[\P{X}]` holds what some case of it is not an X for. `\p{^X}` is `\P{X}`,
+   negated inside the braces instead of by the letter. */
+static void
+compile_property_atom(re_compiler *c, mrb_bool neg)
+{
+  char name[RE_MAX_PROP_NAME];
+  const char *raw;
+  size_t raw_len;
+  next_char(c);  /* 'p' or 'P' */
+  size_t len = parse_property_name(c, name, &neg, &raw, &raw_len);
+
+  uint16_t id = add_class(c);
+  re_charclass ascii_set;
+  memset(&ascii_set, 0, sizeof(ascii_set));
+  class_add_property(c, &c->pat->classes[id], &ascii_set, name, len, FALSE,
+                     raw, raw_len);
+  class_close(c, &c->pat->classes[id], &ascii_set);
+  c->pat->classes[id].negated = neg;
+  emit(c, neg ? RE_NCLASS : RE_CLASS, (uint8_t)id, 0);
 }
 
 /* Maximum value for {n}/{n,m} quantifiers. Each unit becomes (min-1) +
@@ -2368,13 +2611,9 @@ compile_atom(re_compiler *c)
       compile_error_str(c, mrb_format(c->mrb, "\\\\%c is not supported", (char)ch));
     }
     else if ((ch == 'p' || ch == 'P') && c->p + 1 < c->src_end && c->p[1] == '{') {
-      /* The engine reads no character property. Without this the escape is
-         the letter it names and the braces are literal too, so /\p{Alpha}/
-         would answer a pattern that asked for a letter with the text of the
-         request. `[[:alpha:]]` is how to ask for one; see README.md.
-         Only the braced spelling is a property: CRuby reads a bare `\p`, and
+      /* Only the braced spelling is a property: CRuby reads a bare `\p`, and
          `\pL` as well, as the letter, and so does the fall-through below. */
-      compile_error(c, "character property is not supported");
+      compile_property_atom(c, ch == 'P');
     }
     else if (ch == 'u') {
       next_char(c);  /* skip u */
@@ -3890,6 +4129,9 @@ mrb_re_free(mrb_state *mrb, mrb_regexp_pattern *pat)
     if (pat->classes) {
       for (uint16_t i = 0; i < pat->num_classes; i++) {
         mrb_free(mrb, pat->classes[i].ranges);
+#ifdef RE_UNICODE_PROP
+        mrb_free(mrb, pat->classes[i].props);
+#endif
       }
       mrb_free(mrb, pat->classes);
     }

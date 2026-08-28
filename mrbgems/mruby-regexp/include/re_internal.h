@@ -20,10 +20,13 @@ MRB_BEGIN_DECL
    place. The types a POSIX bracket reads above ASCII are this gem's table,
    carried on the same condition: a build that asked to leave the case table
    behind is counting its bytes, and the type table is nothing it wants
-   instead. The two names say which of the tables a site reads. */
+   instead. The general category and the script a `\p{...}` escape asks about
+   are a third table, carried on that same condition and for the same reason.
+   The three names say which of the tables a site reads. */
 #if defined(MRB_UTF8_STRING) && !defined(MRB_USE_ASCII_CTYPE)
 # define RE_UNICODE_CASE
 # define RE_UNICODE_CTYPE
+# define RE_UNICODE_PROP
 #endif
 
 /* Bytecode instructions for the NFA engine */
@@ -142,14 +145,25 @@ typedef struct {
      every character. A byte that is no character has no type: it belongs
      under ctype_no and not under ctype_yes.
 
-     ctype_fold is set under /i when either is: the type read is then that of
+     table_fold is set under /i when either is: the type read is then that of
      the character and of every character sharing its folding, so that
      [[:upper:]] under /i holds "ā" through "Ā". A member the class holds by
      bit or by range is closed under folding at compile time instead; see
      compile_charclass(). */
   uint16_t ctype_yes;
   uint16_t ctype_no;
-  mrb_bool ctype_fold;
+  mrb_bool table_fold;
+#endif
+#ifdef RE_UNICODE_PROP
+  /* What the `\p{...}` escapes in the class hold above ASCII, one entry per
+     escape: an opaque property token, RE_PROP_NEG set on the ones written
+     `\P{...}` or `\p{^...}`. Read the same way the types above are, and for
+     the same reason (\p{L} spelled out as ranges is seven hundred of them),
+     and folded under /i the same way, which is what table_fold covers. NULL
+     until the first escape, which most classes never hold. */
+  uint16_t *props;
+  uint16_t num_props;
+  uint16_t prop_capa;
 #endif
 } re_charclass;
 
@@ -436,10 +450,33 @@ enum re_ctype {
 uint16_t mrb_re_ctype(uint32_t cp);
 
 /* Whether a class holds a codepoint above ASCII, or a byte tagged
-   RE_CLASS_BYTE, through the brackets in it and the utf8_any catch-all. The
-   class matcher calls this for a class holding any bracket, once the ranges
-   have said nothing. */
-mrb_bool mrb_re_class_ctype_match(const re_charclass *cc, uint32_t cp);
+   RE_CLASS_BYTE, through the brackets and the property escapes in it and the
+   utf8_any catch-all. The class matcher calls this for a class holding any of
+   them, once the ranges have said nothing. */
+mrb_bool mrb_re_class_table_match(const re_charclass *cc, uint32_t cp);
+#endif
+
+#ifdef RE_UNICODE_PROP
+/* The property a `\p{...}` escape names, as a token to hand back to
+   mrb_re_prop_has(). FALSE where no property goes by that name; the name is
+   as the compiler folded it, lower case and without the separators that are
+   not part of a name. What a token holds is re_utf8.c's business, but for the
+   one bit the compiler sets in it: the escape's negation, which the class
+   carries beside the property rather than in a second list. */
+#define RE_PROP_NEG 0x8000u
+
+mrb_bool mrb_re_prop_lookup(const char *name, size_t len, uint16_t *prop);
+
+/* Whether a codepoint has the property, RE_PROP_NEG cleared. */
+mrb_bool mrb_re_prop_has(uint16_t prop, uint32_t cp);
+
+/* The property's ASCII, as the 128-bit map a class carries, which is what the
+   compiler wants of it: one bit per codepoint below 128, the rest of `bits`
+   left alone. Answered by walking the runs ASCII falls in rather than by
+   asking mrb_re_prop_has() 128 times: the runs below 128 are a few dozen and
+   each question is a search of several thousand, so the walk is the whole
+   answer for a fraction of one question. */
+void mrb_re_prop_ascii(uint16_t prop, uint8_t *bits);
 #endif
 
 /* Simple case folding: the folded codepoint, or cp itself when it folds to

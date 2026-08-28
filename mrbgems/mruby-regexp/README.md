@@ -21,6 +21,14 @@ simulation) with backtracking fallback.
   `cntrl`, `print`, `graph`, `ascii` and `punct`. Above ASCII each holds
   what CRuby's does where the build classifies characters by Unicode, and
   nothing where it does not; see Configuration
+- `\p{Name}`, `\P{Name}`, `\p{^Name}` character properties, inside a class
+  and outside one. What a name may be is a general category (`L`, `Lu`,
+  `Letter`, `Uppercase_Letter`), a script (`Han`, `Latin`, `Latn`), one of
+  the names a POSIX bracket carries (`Alpha`, `Word`, `XDigit`), `Any` or
+  `Assigned`. The case, the underscores, the hyphens and the spaces in a
+  name are not part of it. The categories and the scripts are read off a
+  table only a build classifying characters by Unicode carries; see
+  Configuration
 - `\d`, `\w`, `\s` digit, word, whitespace shortcuts, ASCII as in CRuby
 - `\D`, `\W`, `\S` negated shortcuts
 - `(...)` capture group
@@ -216,16 +224,28 @@ pattern analysis.
 - **Fixed-length lookbehind only**: `(?<=...)` and `(?<!...)`
   require a fixed-length pattern (no `*`, `+`, `?`, or alternation).
   Maximum 255 bytes.
-- **No Unicode properties**: `\p{Alpha}`, `\p{L}`, etc. are not
-  supported and raise `RegexpError`, inside a character class as much as
-  outside one. It is the braces that name a property: a bare `\p`, and `\pL`
-  as well, is the letter, which is how CRuby reads them too. The POSIX
-  brackets read the same data where the build carries it, so `[[:alpha:]]` is
-  the way to ask for a letter of any script.
-- **A set is not an end of a range**: a shorthand (`\d`, `\w`, ...) and a
-  POSIX bracket each name a set rather than a character, so `[a-\d]` and
-  `[\d-z]` raise `RegexpError` as they do in CRuby. A `-` at either edge of
-  the class is still a member: `[\d-]` holds the digits and the dash.
+- **Character properties are the categories, the scripts and the bracket
+  names**: `\p{L}`, `\p{Han}` and `\p{Alpha}` are read; the binary properties
+  beyond the ones a POSIX bracket carries (`\p{Math}`, `\p{Dash}`,
+  `\p{Emoji}`, and some ninety more) are not, each being a range list of its
+  own, and raise `RegexpError` naming the property. A general category or a
+  script takes the table only a build classifying characters by Unicode
+  carries; without it those names raise too, and the bracket names hold their
+  ASCII as `[[:alpha:]]` does. It is the braces that name a property: a bare
+  `\p`, and `\pL` as well, is the letter, which is how CRuby reads them too.
+- **`\P{X}` and `[\P{X}]` part company under `i`**: a class is closed under
+  folding and then negated, so `\P{Lu}` holds what no case of the character
+  is an uppercase letter for, and neither `Ā` nor `ā` is in it, where the
+  member in `[\P{Lu}]` holds what some case of it is not one for, which is
+  both. CRuby reads the two apart the same way. Without `i` they are one set.
+- **`\p{Punct}` is not `[[:punct:]]`**: the bracket takes the nine ASCII
+  symbols Onigmo gives it (``$+<=>^`|~``) and the property is the punctuation
+  categories alone, as in CRuby. Above ASCII the two are one set.
+- **A set is not an end of a range**: a shorthand (`\d`, `\w`, ...), a POSIX
+  bracket and a property escape each name a set rather than a character, so
+  `[a-\d]`, `[\d-z]` and `[a-\p{L}]` raise `RegexpError` as they do in CRuby.
+  A `-` at either edge of the class is still a member: `[\d-]` holds the
+  digits and the dash.
 - **No `\M-X` meta escape**: it sets the high bit, making a byte that starts
   no character, and there is no encoding here to read one against. It raises
   `RegexpError`, as it does in CRuby for a pattern that is not binary.
@@ -506,6 +526,34 @@ same, having no character to classify. `[[:xdigit:]]` and `[[:ascii:]]` are
 sets ASCII defines and hold nothing above it on any build. The table is 13.9KB
 of read-only data; `MRB_USE_ASCII_CTYPE` is what leaves it out.
 
+What `\p{...}` asks about is a third table, `re_prop.h`, carried on that same
+condition: the general category of every codepoint and the script of every
+codepoint, which is what a name that is not one of the bracket types names.
+There `\p{L}` holds `"漢"`, `\p{Han}` holds it and `\p{Hiragana}` does not, and
+a name may be written short or long (`Lu`, `Uppercase_Letter`; `Latn`,
+`Latin`) with its case and its separators as it likes. Under `/i` a property
+is asked of the character and of every character sharing its folding, the way
+a bracket is, so `\p{Lu}` under `/i` holds `"ā"`. The bracket names go on
+being answered off the bracket types, so `\p{Alpha}` holds its ASCII on every
+build; without this table a general category or a script raises
+`RegexpError` instead, naming the build rather than the property.
+
+What it costs, measured as the growth of `ci/gcc-clang`'s `bintest` `mruby`
+on x86-64 rather than counted off the table's own bytes: read-only data grows
+28.1KB and code 4.3KB, of which the table is 28.0KB, the compiler that reads
+a name 2.7KB and the code that reads the table 1.6KB. A build that classifies
+by ASCII carries neither table and grows 2.2KB, which is the parser reading
+the escape and refusing the names it has no data for.
+
+What it costs to match is a table lookup a character, which is what a POSIX
+bracket costs: over a 256KB subject none of them holds, a failing search on
+`\p{L}` runs within a few percent of the same search on `[[:alpha:]]`, and
+`\p{Han}` within a few percent of both. Under `/i` the two are level as well,
+each reading its table once for every case of the character. Compiling a
+property reads its ASCII off the table, which a bracket has as a literal
+list, and that is the one place the property costs more: some 0.16µs a
+pattern.
+
 ## Checking against CRuby
 
 Everything under Limitations is a place this engine answers a pattern
@@ -515,7 +563,7 @@ they disagree:
 
 ```console
 $ rake regexp:difftest
-5175 patterns, 101 known differences, no new ones
+5175 patterns, 81 known differences, no new ones
 ```
 
 The task asks the build the loaded config declares, so a working tree holding
@@ -539,18 +587,30 @@ the backreferences and the POSIX brackets. Each is asked under `//`, `/i`,
 `/m` and `/x`, one flag at a time rather than once per combination of them:
 asked once under all eight, no pattern differed under a combination that did
 not already differ under a single flag. The Unicode properties are four
-patterns rather than an axis, since this engine refuses `\p{...}` outright and
-asking it about every property would write the same refusal down once per
-property; what the four are for is the day it stops refusing, when the
-difference stops being one and the line goes GONE.
+patterns rather than an axis, since what the two engines can differ over is
+how the escape is read rather than which characters a name comes to, and the
+names are held against CRuby by the gem's own property tests. The four are the
+shapes the escape takes: both spellings, negated and inside a class.
 
 The **character axis** turns that around: a line per character, a column per
 way of classifying one — the POSIX brackets and their complements, the
-shorthands, the boundaries, `.`, and a few of them under `i`. The characters
-come out of the Unicode Character Database, by the rule
-`tools/unicode/corpus_data.rb` states and written out as `corpus.rb` by `rake
-unicode:generate` with the tables, so a version bump moves the questions with
-the answers.
+shorthands, the boundaries, `.`, a few of them under `i`, and the character
+properties. The characters come out of the Unicode Character Database, by the
+rule `tools/unicode/corpus_data.rb` states and written out as `corpus.rb` by
+`rake unicode:generate` with the tables, so a version bump moves the questions
+with the answers.
+
+A property is one column per name rather than one per spelling. A name is a
+table lookup, and the rule below picks a character out of every general
+category and every script, so one column is the whole of what its name has to
+answer for; asking after each of the four hundred names the database gives
+would write the same agreement down four hundred times. The names are every
+category and the groups above them, a spread of scripts, the ones a POSIX
+bracket also carries, `Any` and `Assigned`, and one name written long, short
+and in a case the database does not use. Four of them are asked in every
+shape the escape takes besides, `\P{X}`, `\p{^X}`, the member inside a class
+and the two negations under `/i`, since those are read by different code and
+part company there.
 
 What that rule takes is one character out of every class the engine's tables
 tell apart, where a class is a whole signature and not one property at a time:
