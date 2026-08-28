@@ -47,6 +47,19 @@
 #                       class parser reads on its own; and every shorthand
 #                       rather than `\w` and `\W` alone. It widens `class`
 #                       and draws nothing while that one is off.
+#   escape              a character of the alphabet written as an escape
+#                       rather than as itself, wherever one character stands:
+#                       an atom, a member of a class, an end of a range, a
+#                       character of a lookbehind body. `\x61` and the octal
+#                       `\141` name a byte where `a` and `\u{61}` name a
+#                       codepoint, which is the line a class member is read
+#                       by, and a lookbehind is measured in both. The octal
+#                       form is drawn only where its digits spell a number
+#                       past 9 and past the groups opened so far, which is
+#                       where CRuby stops reading them as a backreference. A
+#                       `\u{...}` may list codepoints, and the list is a
+#                       sequence of atoms rather than one, so a quantifier
+#                       behind it repeats the last of them alone.
 #   anchor              `^` `$` `\A` `\z` `\Z` `\b` `\B`
 #   empty               atoms that match empty on their own (`(?:)`, `(a|)`,
 #                       `(|b)`, `(?:a|)`), and quantifiers on atoms that can
@@ -109,7 +122,8 @@
 
 require 'optparse'
 
-FEATURES = %w[lazy interval class class-syntax anchor empty lookahead lookbehind
+FEATURES = %w[lazy interval class class-syntax escape anchor empty
+              lookahead lookbehind
               lookaround-capture backref backref-name backref-forward
               named-group atomic possessive inline-option call
               alternation].freeze
@@ -159,8 +173,43 @@ end
 # features say: a bare option toggle is not a target a repeat can take.
 Atom = Struct.new(:src, :empty, :unrepeatable)
 
-def literal
-  Atom.new(Regexp.escape($alphabet.sample), false)
+# The spellings a character has beside itself. `\xNN` and the octal `\NNN`
+# name a byte where `\uXXXX` and `\u{X}` name a codepoint, which is the line a
+# class member is read by, and each of them is an arm of its own in the escape
+# parser. A character past ASCII is left to the codepoint spellings, the byte
+# ones naming one byte of it.
+def escape_spelling(ch, groups)
+  cp = ch.ord
+  forms = []
+  if cp < 0x80
+    forms << format("\\x%02X", cp)
+    # A digit run behind a backslash is a backreference where the number it
+    # spells is at most 9 or at most the count of groups opened so far, and an
+    # octal escape only past both, so the octal spelling is drawn only there.
+    octal = format("%03o", cp)
+    forms << "\\#{octal}" if octal.to_i > 9 && octal.to_i > groups.opened
+  end
+  forms << format("\\u{%X}", cp)
+  forms << format("\\u%04X", cp) if cp <= 0xFFFF
+  forms.sample
+end
+
+# A character as it stands where one character is wanted: itself, or one of
+# the spellings above.
+def spelled(ch, groups)
+  (on?("escape") && rand < 0.4) ? escape_spelling(ch, groups) : Regexp.escape(ch)
+end
+
+def literal(groups)
+  ch = $alphabet.sample
+  # `\u{...}` may list codepoints, and the list is a sequence of atoms rather
+  # than one: a quantifier behind it repeats the last codepoint alone.
+  if on?("escape") && rand < 0.06
+    list = $alphabet.sample(rand(1..2)).map { |x| format("%X", x.ord) }.join(" ")
+    Atom.new("\\u{#{list}}", false)
+  else
+    Atom.new(spelled(ch, groups), false)
+  end
 end
 
 # Each shorthand class, which stands for a set both on its own and as a member
@@ -175,12 +224,12 @@ POSIX_NAMES = %w[alpha alnum blank cntrl digit graph lower print punct space
 # shorthand, or a POSIX bracket, negated as it may be written. The two
 # characters a range is drawn over are sorted before they are written, since
 # CRuby refuses a range whose ends stand the other way round.
-def class_member
+def class_member(groups)
   case rand(4)
-  when 0 then Regexp.escape($alphabet.sample)
+  when 0 then spelled($alphabet.sample, groups)
   when 1
     a, b = $alphabet.sample(2).sort
-    "#{Regexp.escape(a)}-#{Regexp.escape(b)}"
+    "#{spelled(a, groups)}-#{spelled(b, groups)}"
   when 2 then SHORTHANDS.sample
   else "[:#{rand < 0.3 ? "^" : ""}#{POSIX_NAMES.sample}:]"
   end
@@ -192,25 +241,25 @@ end
 # between two members it is a range rather than the character. A `^` is the
 # negation at the first byte and the character itself anywhere else, so it
 # is written last, and the `-` that may follow it is at an end as any other.
-def bracket_class
-  members = Array.new(rand(1..3)) { class_member }
+def bracket_class(groups)
+  members = Array.new(rand(1..3)) { class_member(groups) }
   members.unshift("-") if rand < 0.1
   members.push("^") if rand < 0.15
   members.push("-") if rand < 0.1
   Atom.new("[#{rand < 0.3 ? "^" : ""}#{members.join}]", false)
 end
 
-def char_class
+def char_class(groups)
   c = $alphabet.sample
   if on?("class-syntax")
     case rand(6)
     when 0 then Atom.new(".", false)
     when 1 then Atom.new(SHORTHANDS.sample, false)
-    when 2 then Atom.new("[^#{Regexp.escape(c)}]", false)
+    when 2 then Atom.new("[^#{spelled(c, groups)}]", false)
     when 3
       n = rand(1..$alphabet.size)
-      Atom.new("[#{$alphabet.sample(n).map { |x| Regexp.escape(x) }.join}]", false)
-    else bracket_class
+      Atom.new("[#{$alphabet.sample(n).map { |x| spelled(x, groups) }.join}]", false)
+    else bracket_class(groups)
     end
   else
     case rand(5)
@@ -371,9 +420,9 @@ def atom(depth, groups, in_lookahead: false)
   elsif r < 0.85 && on?("inline-option")
     Atom.new("(?#{inline_option})", true, true)
   elsif r < 0.9 && on?("class")
-    char_class
+    char_class(groups)
   else
-    literal
+    literal(groups)
   end
 end
 
@@ -439,7 +488,11 @@ def lookaround(depth, groups, in_lookahead: false)
   kinds += ["(?<=", "(?<!"] if on?("lookbehind")
   kind = kinds.sample
   if kind.start_with?("(?<")
-    body = Array.new(rand(1..2)) { Regexp.escape($alphabet.sample) }.join
+    # A body written as escapes is the same fixed width as one written as
+    # characters, which is what a lookbehind is measured by, and the byte
+    # spellings say that width in bytes where the codepoint ones say it in
+    # characters.
+    body = Array.new(rand(1..2)) { spelled($alphabet.sample, groups) }.join
   else
     body = seq(depth - 1, groups, in_lookahead: true).src
   end
