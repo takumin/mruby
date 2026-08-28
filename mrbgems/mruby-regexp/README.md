@@ -540,10 +540,19 @@ build; without this table a general category or a script raises
 
 What it costs, measured as the growth of `ci/gcc-clang`'s `bintest` `mruby`
 on x86-64 rather than counted off the table's own bytes: read-only data grows
-28.1KB and code 3.8KB, of which the table is 28.0KB, the compiler that reads
-a name 2.6KB and the code that reads the table 1.2KB. A build that classifies
+28.1KB and code 4.3KB, of which the table is 28.0KB, the compiler that reads
+a name 2.7KB and the code that reads the table 1.6KB. A build that classifies
 by ASCII carries neither table and grows 2.2KB, which is the parser reading
 the escape and refusing the names it has no data for.
+
+What it costs to match is a table lookup a character, which is what a POSIX
+bracket costs: over a 256KB subject none of them holds, a failing search on
+`\p{L}` runs within a few percent of the same search on `[[:alpha:]]`, and
+`\p{Han}` within a few percent of both. Under `/i` the two are level as well,
+each reading its table once for every case of the character. Compiling a
+property reads its ASCII off the table, which a bracket has as a literal
+list, and that is the one place the property costs more: some 0.16µs a
+pattern.
 
 ## Checking against CRuby
 

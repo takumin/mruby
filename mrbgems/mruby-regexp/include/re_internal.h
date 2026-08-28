@@ -467,10 +467,16 @@ mrb_bool mrb_re_class_table_match(const re_charclass *cc, uint32_t cp);
 
 mrb_bool mrb_re_prop_lookup(const char *name, size_t len, uint16_t *prop);
 
-/* Whether a codepoint has the property, RE_PROP_NEG cleared. Every codepoint
-   is in the tables, so this answers for ASCII too, which is where the compiler
-   reads a property's bitmap off. */
+/* Whether a codepoint has the property, RE_PROP_NEG cleared. */
 mrb_bool mrb_re_prop_has(uint16_t prop, uint32_t cp);
+
+/* The property's ASCII, as the 128-bit map a class carries, which is what the
+   compiler wants of it: one bit per codepoint below 128, the rest of `bits`
+   left alone. Answered by walking the runs ASCII falls in rather than by
+   asking mrb_re_prop_has() 128 times: the runs below 128 are a few dozen and
+   each question is a search of several thousand, so the walk is the whole
+   answer for a fraction of one question. */
+void mrb_re_prop_ascii(uint16_t prop, uint8_t *bits);
 #endif
 
 /* Simple case folding: the folded codepoint, or cp itself when it folds to

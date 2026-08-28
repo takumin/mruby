@@ -1107,8 +1107,11 @@ class_add_property(re_compiler *c, re_charclass *cc, re_charclass *ascii_set,
 #ifdef RE_UNICODE_PROP
     uint16_t prop;
     if (mrb_re_prop_lookup(name, len, &prop)) {
+      uint8_t ascii[16] = {0};
+      mrb_re_prop_ascii(prop, ascii);
       for (uint32_t cp = 0; cp < 128; cp++) {
-        if (mrb_re_prop_has(prop, cp) != neg) class_set_bit(cc, (uint8_t)cp);
+        mrb_bool in = (ascii[cp >> 3] >> (cp & 7)) & 1;
+        if (in != neg) class_set_bit(cc, (uint8_t)cp);
       }
       class_add_prop(c, cc, neg ? (uint16_t)(prop | RE_PROP_NEG) : prop);
       return;

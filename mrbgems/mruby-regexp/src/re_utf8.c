@@ -68,17 +68,58 @@ prop_run(const uint32_t *runs, size_t count, uint32_t cp, int bits)
   return runs[lo] & ((1u << bits) - 1);
 }
 
+/* Which table a property is answered off, and how wide its answer is. */
+static const uint32_t*
+prop_table(uint16_t prop, size_t *count, int *bits)
+{
+  if ((prop >> 8) == RE_PROP_KIND_SCRIPT) {
+    *count = RE_PROP_SCRIPT_RUN_COUNT;
+    *bits = RE_PROP_SCRIPT_BITS;
+    return re_prop_script_runs;
+  }
+  *count = RE_PROP_GC_RUN_COUNT;
+  *bits = RE_PROP_GC_BITS;
+  return re_prop_gc_runs;
+}
+
+/* Whether the value a run holds is the property's. */
+static mrb_bool
+prop_holds(uint16_t prop, uint32_t value)
+{
+  uint8_t id = (uint8_t)(prop & 0xff);
+  if ((prop >> 8) == RE_PROP_KIND_SCRIPT) return value == id;
+  return (re_prop_gc_masks[id] >> value) & 1;
+}
+
 mrb_bool
 mrb_re_prop_has(uint16_t prop, uint32_t cp)
 {
-  uint8_t id = (uint8_t)(prop & 0xff);
-  if ((prop >> 8) == RE_PROP_KIND_SCRIPT) {
-    return prop_run(re_prop_script_runs, RE_PROP_SCRIPT_RUN_COUNT, cp,
-                    RE_PROP_SCRIPT_BITS) == id;
+  size_t count;
+  int bits;
+  const uint32_t *runs = prop_table(prop, &count, &bits);
+  return prop_holds(prop, prop_run(runs, count, cp, bits));
+}
+
+void
+mrb_re_prop_ascii(uint16_t prop, uint8_t *bits)
+{
+  size_t count;
+  int shift;
+  const uint32_t *runs = prop_table(prop, &count, &shift);
+  uint32_t mask = (1u << shift) - 1;
+
+  /* The first run starts at U+0000, so ASCII is the runs from the front until
+     one starts above it. */
+  for (size_t i = 0; i < count; i++) {
+    uint32_t start = runs[i] >> shift;
+    if (start > 127) break;
+    uint32_t end = (i + 1 < count) ? (runs[i + 1] >> shift) - 1 : 127;
+    if (end > 127) end = 127;
+    if (!prop_holds(prop, runs[i] & mask)) continue;
+    for (uint32_t cp = start; cp <= end; cp++) {
+      bits[cp >> 3] |= (uint8_t)(1u << (cp & 7));
+    }
   }
-  uint32_t cat = prop_run(re_prop_gc_runs, RE_PROP_GC_RUN_COUNT, cp,
-                          RE_PROP_GC_BITS);
-  return (re_prop_gc_masks[id] >> cat) & 1;
 }
 
 mrb_bool
@@ -159,6 +200,12 @@ mrb_re_class_table_match(const re_charclass *cc, uint32_t cp)
   if (class_prop_match(cc, cp & ~RE_CLASS_BYTE, byte)) return TRUE;
 #endif
   if (byte) return cc->ctype_no != 0 || cc->utf8_any;
+  /* A class that holds no bracket has no type to read, and the walk below
+     would read one anyway: under /i it asks the table for every case of the
+     character before anding the answer with nothing. This function used to be
+     called only for a class holding a bracket, which made the question moot;
+     a class holding a property alone reaches it now. */
+  if (!(cc->ctype_yes | cc->ctype_no)) return cc->utf8_any;
   uint16_t any = mrb_re_ctype(cp), all = any;
   if (cc->table_fold) {
     uint32_t alt[MRB_UNI_MAX_UNFOLD];
