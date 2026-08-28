@@ -111,13 +111,14 @@ blocks or `Process::Status`.
 
 ### Process::Status and mruby-io
 
-`mruby-io` sets `$?` after an `IO.popen` stream closes by calling
-`Process::Status.new(pid, raw_status)` when the class happens to be defined,
-and falling back to a plain Integer when it is not. That soft integration keeps
-working unchanged: `Process::Status.new(pid, raw_status)` is a supported way to
-build a status, and the status decodes itself through the same HAL that
-`Process.waitpid` uses, so a status `mruby-io` produced reads exactly like one
-this gem reaped.
+`mruby-io` sets `$?` after an `IO.popen` stream closes by building a status
+when the class happens to be defined, and falling back to a plain Integer when
+it is not. `Process::Status.new` is undefined, as it is in CRuby, so what it
+builds one with is `mrb_obj_new()`: the instance is allocated and handed to
+`#initialize`, which takes the pid and the raw platform status. That is the
+same path `Process.waitpid` takes here, and a status decodes itself through
+the same HAL whichever way it was built, so one `mruby-io` produced reads
+exactly like one this gem reaped.
 
 A `Process::Status` stores only the pid and the raw platform status, and asks
 the HAL afresh for every question about it. Nothing above the HAL ever holds a
@@ -151,8 +152,14 @@ kept separate from adding this gem.
   when `mruby-errno` is in the build. Methods are never conditionally absent,
   so a program can be written once and told at the call site what this platform
   will not do.
-- **`Process::Status.new(pid, raw_status)` stays public.** Making it private
-  would break the `mruby-io` path it exists for.
+- **`Process::Status.new` is undefined and `#initialize` is private.** A
+  status reports what happened to a process, so one written by hand reports
+  nothing; CRuby leaves the class without an allocator to say so, and this
+  gem says the same by undefining `new`. What the `mruby-io` seam needs is
+  not a public constructor but a way to build the object from C, and
+  `mrb_obj_new()` allocates and initializes without asking the class for
+  `new`. The allocator itself is left in place for that reason: taking it
+  away, as CRuby does, would close the seam along with the constructor.
 - **A wait flag no port stands for is refused before a port sees it.** The
   flags are mruby's own bits, and a port reads the ones it knows and can say
   nothing about the rest, so `MRB_PROCESS_WAIT_FLAGS` names every bit a wait

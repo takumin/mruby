@@ -9,10 +9,12 @@
 ** Ruby side never grows its own idea of what the bits mean and a status
 ** built elsewhere reads exactly as one this gem reaped.
 **
-** That "built elsewhere" is the point of keeping `Process::Status.new(pid,
-** raw_status)` a working construction path: mruby-io's `IO.popen` sets `$?`
-** that way when this gem happens to be present, and it must keep working
-** without either gem depending on the other.
+** That "built elsewhere" is mruby-io: its `IO.popen` sets `$?` with a status
+** it builds when this gem happens to be present, and that has to keep
+** working without either gem depending on the other.  `Process::Status.new`
+** is undefined here as it is in CRuby, so the seam is not a constructor but
+** the allocate-and-#initialize pair `mrb_obj_new()` performs, which is also
+** how Process.waitpid builds the status it publishes.
 */
 
 #include <mruby.h>
@@ -67,12 +69,12 @@ status_flag(mrb_state *mrb, mrb_value self, unsigned int flag)
 }
 
 /*
- * call-seq:
- *   Process::Status.new(pid, raw_status) -> status
- *
  * Wraps a platform wait status for the process +pid+.  +raw_status+ is the
  * value the platform reported the process with, as Process.waitpid passes
  * on and as Process::Status#to_i gives back.
+ *
+ * Private, and reached by allocating an instance and initializing it rather
+ * than through `new`, which this class does not have.
  */
 static mrb_value
 status_initialize(mrb_state *mrb, mrb_value self)
@@ -343,7 +345,12 @@ mrb_process_status_init(mrb_state *mrb, struct RClass *process)
 
   status = mrb_define_class_under_id(mrb, process, MRB_SYM(Status), mrb->object_class);
 
-  mrb_define_method_id(mrb, status, MRB_SYM(initialize), status_initialize, MRB_ARGS_REQ(2));
+  /* A status reports something that happened, so one written by hand reports
+     nothing: CRuby leaves the class without an allocator for that reason and
+     `Process::Status.new` raises there, as it does here.  What is left is
+     #initialize, which mrb_obj_new() calls without asking for `new` -- the
+     path Process.waitpid takes, and the one mruby-io takes to set `$?`. */
+  mrb_define_private_method_id(mrb, status, MRB_SYM(initialize), status_initialize, MRB_ARGS_REQ(2));
   mrb_define_method_id(mrb, status, MRB_SYM(pid),        status_pid,        MRB_ARGS_NONE());
   mrb_define_method_id(mrb, status, MRB_SYM(to_i),       status_to_i,       MRB_ARGS_NONE());
   mrb_define_method_id(mrb, status, MRB_SYM(to_s),       status_to_s,       MRB_ARGS_NONE());
@@ -355,4 +362,6 @@ mrb_process_status_init(mrb_state *mrb, struct RClass *process)
   mrb_define_method_id(mrb, status, MRB_SYM(stopsig),    status_stopsig,    MRB_ARGS_NONE());
   mrb_define_method_id(mrb, status, MRB_SYM_Q(coredump), status_coredump_p, MRB_ARGS_NONE());
   mrb_define_method_id(mrb, status, MRB_OPSYM(eq),       status_eq,         MRB_ARGS_REQ(1));
+
+  mrb_undef_class_method_id(mrb, status, MRB_SYM(new));
 }
