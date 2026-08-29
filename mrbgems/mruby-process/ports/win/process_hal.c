@@ -14,7 +14,12 @@
 **     `IO.popen` already gives the `Process::Status` it builds on this
 **     platform, so a decoded status always reads as exited;
 **   - only `KILL` and `TERM` can be delivered, both as TerminateProcess(),
-**     and signal 0 asks whether the process can be opened at all.
+**     and signal 0 asks whether the process can be opened at all;
+**   - there are no POSIX user or group IDs.  Windows identifies a user by a
+**     SID, which is not a number and has no numbering that could stand in for
+**     one, so include/process_hal_features.h declares none of the credential
+**     calls and every `Process::Sys` method is unimplemented rather than
+**     answered with an invented 0.
 **
 ** The clocks are clock_hal.c's.
 */
