@@ -14,12 +14,13 @@
 ** other direction, no platform type or macro (`pid_t`, `WIFEXITED`,
 ** `SIGTERM`, `WNOHANG`, `CLOCK_MONOTONIC`, `clock_t`, ...) crosses into the
 ** common layer: process and signal numbers travel as `mrb_int`, wait options
-** as the MRB_PROCESS_WAIT_* bits below, a decoded wait status as
-** `mrb_process_status`, a clock as one of the `mrb_process_clock_id` values,
-** a time it reported as `mrb_process_clock_time`, whose two fields are
-** `int64_t` rather than `mrb_int` for the reason given where it is defined,
-** and the four CPU time totals behind `Process.times` as `mrb_process_times`,
-** four more `mrb_process_clock_time` readings rather than platform ticks.
+** as the MRB_PROCESS_WAIT_* bits below, a credential operation as
+** `mrb_process_op`, a decoded wait status as `mrb_process_status`, a clock as
+** one of the `mrb_process_clock_id` values, a time it reported as
+** `mrb_process_clock_time`, whose two fields are `int64_t` rather than
+** `mrb_int` for the reason given where it is defined, and the four CPU time
+** totals behind `Process.times` as `mrb_process_times`, four more
+** `mrb_process_clock_time` readings rather than platform ticks.
 **
 ** What a signal is *called* is not asked here at all.  mruby-signal owns
 ** that table, and both `Process.kill` and `Process::Status#to_s` reach it
@@ -44,6 +45,38 @@
  * is defined.
  */
 #include "process_hal_features.h"
+
+/*
+ * What the port owes for what it declared
+ *
+ * The credential calls come in a few shapes and a port implements each
+ * shape once, as the functions under "Process credentials" below, so a
+ * function is owed as soon as any call of its shape is declared; and a port
+ * that declared any call taking an ID has to say which numbers name one.
+ * Derived here from the port's macros, one a call, and not the port's to
+ * define.  Reading a name is not derived: a port declares it on its own
+ * (MRB_HAL_PROCESS_HAS_ID_BY_NAME), and one that takes IDs without it takes
+ * them by number alone.
+ */
+#if defined(MRB_HAL_PROCESS_HAS_GETUID) || defined(MRB_HAL_PROCESS_HAS_GETEUID) || \
+    defined(MRB_HAL_PROCESS_HAS_GETGID) || defined(MRB_HAL_PROCESS_HAS_GETEGID)
+# define MRB_HAL_PROCESS_NEEDS_GETID
+#endif
+#if defined(MRB_HAL_PROCESS_HAS_SETUID) || defined(MRB_HAL_PROCESS_HAS_SETEUID) || \
+    defined(MRB_HAL_PROCESS_HAS_SETRUID) || defined(MRB_HAL_PROCESS_HAS_SETGID) || \
+    defined(MRB_HAL_PROCESS_HAS_SETEGID) || defined(MRB_HAL_PROCESS_HAS_SETRGID)
+# define MRB_HAL_PROCESS_NEEDS_SETID
+#endif
+#if defined(MRB_HAL_PROCESS_HAS_SETREUID) || defined(MRB_HAL_PROCESS_HAS_SETREGID)
+# define MRB_HAL_PROCESS_NEEDS_SETREID
+#endif
+#if defined(MRB_HAL_PROCESS_HAS_SETRESUID) || defined(MRB_HAL_PROCESS_HAS_SETRESGID)
+# define MRB_HAL_PROCESS_NEEDS_SETRESID
+#endif
+#if defined(MRB_HAL_PROCESS_NEEDS_SETID) || defined(MRB_HAL_PROCESS_NEEDS_SETREID) || \
+    defined(MRB_HAL_PROCESS_NEEDS_SETRESID)
+# define MRB_HAL_PROCESS_TAKES_ID
+#endif
 
 MRB_BEGIN_DECL
 
@@ -208,6 +241,200 @@ int mrb_hal_process_waitpid(mrb_state *mrb, mrb_int pid, unsigned int flags,
  *         cannot deliver this signal at all)
  */
 int mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo);
+
+/*
+ * Process credentials
+ */
+
+/*
+ * Which credential call an operation stands for.
+ *
+ * The calls come in a few shapes and a port implements each shape once, so
+ * an operation is passed along to say which call is meant.  The comments
+ * name the function each value is passed to.  Every value exists whatever
+ * the port declares; which of them reach a function is which calls the
+ * port declared, one MRB_HAL_PROCESS_HAS_* macro a call.
+ */
+typedef enum mrb_process_op {
+  /* mrb_hal_process_getid() */
+  MRB_PROCESS_OP_GETUID,
+  MRB_PROCESS_OP_GETEUID,
+  MRB_PROCESS_OP_GETGID,
+  MRB_PROCESS_OP_GETEGID,
+  /* mrb_hal_process_setid() */
+  MRB_PROCESS_OP_SETUID,
+  MRB_PROCESS_OP_SETEUID,
+  MRB_PROCESS_OP_SETRUID,
+  MRB_PROCESS_OP_SETGID,
+  MRB_PROCESS_OP_SETEGID,
+  MRB_PROCESS_OP_SETRGID,
+  /* mrb_hal_process_setreid() */
+  MRB_PROCESS_OP_SETREUID,
+  MRB_PROCESS_OP_SETREGID,
+  /* mrb_hal_process_setresid() */
+  MRB_PROCESS_OP_SETRESUID,
+  MRB_PROCESS_OP_SETRESGID,
+  /* mrb_hal_process_issetugid() */
+  MRB_PROCESS_OP_ISSETUGID,
+} mrb_process_op;
+
+/*
+ * Which of the two ID spaces a value belongs to.  A user ID and a group ID
+ * are separate types on the platform and need not be the same width.
+ */
+typedef enum mrb_process_id_kind {
+  MRB_PROCESS_ID_USER,
+  MRB_PROCESS_ID_GROUP
+} mrb_process_id_kind;
+
+/*
+ * Whether `id` is held by an integer type `size` bytes wide, `is_signed` or
+ * not, counting the negative the top half of an unsigned type reads as.  A
+ * port whose IDs are plain integers answers mrb_hal_process_id_fits() with
+ * this and the size and sign of its own types, as the POSIX port does.  It
+ * is here rather than in that port so that every such port answers alike,
+ * and so that the gem's tests can ask it about widths and signs the host
+ * does not have.  A type 64 bits wide holds every int64_t, which is all
+ * that crosses the HAL.
+ */
+MRB_INLINE mrb_bool
+mrb_process_id_fits_type(int64_t id, size_t size, mrb_bool is_signed)
+{
+  unsigned bits = (unsigned)(size * CHAR_BIT);
+  int64_t low, high;
+
+  if (bits >= 64) return TRUE;
+  low = -((int64_t)1 << (bits - 1));
+  high = is_signed ? ((int64_t)1 << (bits - 1)) - 1
+                   : (int64_t)(((uint64_t)1 << bits) - 1);
+  return id >= low && id <= high;
+}
+
+/*
+ * An ID crosses the HAL as an `int64_t`.  POSIX fixes neither width nor sign
+ * for `uid_t` and `gid_t`, and the platform's are the port's to know: the
+ * common layer asks mrb_hal_process_id_fits() which numbers name an ID here,
+ * and the port widens the ones it reports as the platform's type reads
+ * them.  What a number then means to the platform, the -1 that setreuid(2)
+ * and setresuid(2) take for "leave this one alone" among them, is passed
+ * through; the common layer gives no ID a meaning of its own.
+ *
+ * The transport has one bound of its own: a type has to fit in an int64_t
+ * for every value it holds to cross whole, which any type narrower than 64
+ * bits does and a signed one exactly that wide.  No platform has a `uid_t`
+ * past that; a port for one would have to widen the transport rather than
+ * report the top half of its IDs as negative numbers, and the POSIX port
+ * asserts the bound at compile time so that such a host is told.
+ */
+
+#ifdef MRB_HAL_PROCESS_TAKES_ID
+
+/*
+ * Whether `id` names a user or group ID on this platform.
+ *
+ * A number names an ID when the platform's type holds it, and also, for an
+ * unsigned type, when it is the negative the same bits read as, which is
+ * how Ruby spells the `(uid_t)-1` of setreuid(2): on a 32-bit unsigned
+ * `uid_t` the numbers are [-2**31, 2**32-1].  A signed type spells -1 as
+ * itself, so on a 32-bit signed one they are [-2**31, 2**31-1], and a number
+ * past its top is refused rather than folded onto a lower ID by the cast.
+ * The common layer asks this before it sends a number to any function below
+ * and refuses one that does not fit with a RangeError, so those functions
+ * are only ever handed numbers that fit.
+ *
+ * @param kind  which type the number is held to
+ * @param id    the number
+ * @return TRUE when the number names an ID
+ */
+mrb_bool mrb_hal_process_id_fits(mrb_process_id_kind kind, int64_t id);
+
+/*
+ * Look up a user or a group by name.
+ *
+ * Ruby lets a credential be named rather than numbered, and the name comes
+ * from whatever the platform keeps its accounts in.  Three answers: found,
+ * unknown, and a lookup that failed before it could say.  The last is what a
+ * name service that is down reports, and is an error of its own rather than
+ * an unknown name; the two share a return value and `errno` tells them
+ * apart, as it does for getpwnam(3) itself.
+ *
+ * Owed by a port that declared MRB_HAL_PROCESS_HAS_ID_BY_NAME beside a call
+ * taking an ID.  Without it the common layer refuses a name where it
+ * refuses anything that is not an Integer, with a TypeError, which is what
+ * CRuby built without <pwd.h> answers.
+ *
+ * @param kind  which table the name is looked up in
+ * @param name  a NUL-terminated name
+ * @param id    out: the ID the name stands for
+ * @return 0 when the name was found; -1 with `errno` 0 when no account has
+ *         it; -1 with `errno` set when the lookup failed
+ */
+#ifdef MRB_HAL_PROCESS_HAS_ID_BY_NAME
+int mrb_hal_process_id_by_name(mrb_state *mrb, mrb_process_id_kind kind,
+                               const char *name, int64_t *id);
+#endif
+
+#endif /* MRB_HAL_PROCESS_TAKES_ID */
+
+#ifdef MRB_HAL_PROCESS_NEEDS_GETID
+/*
+ * Read one of the calling process's user or group IDs.
+ *
+ * @param op  one of the MRB_PROCESS_OP_GET* values, whichever the port
+ *            declared the call of
+ * @param id  out: the ID as the platform's type reads it; an unsigned
+ *            `uid_t` arrives as the number itself, a signed one keeps its
+ *            sign
+ * @return 0 on success, -1 on error (sets errno)
+ */
+int mrb_hal_process_getid(mrb_state *mrb, mrb_process_op op, int64_t *id);
+#endif /* MRB_HAL_PROCESS_NEEDS_GETID */
+
+#ifdef MRB_HAL_PROCESS_NEEDS_SETID
+/*
+ * Set one of the calling process's user or group IDs.
+ *
+ * @param op  one of MRB_PROCESS_OP_SETUID, SETEUID, SETRUID, SETGID, SETEGID
+ *            or SETRGID, whichever the port declared the call of
+ * @param id  a number mrb_hal_process_id_fits() answered TRUE for
+ * @return 0 on success, -1 on error (sets errno)
+ */
+int mrb_hal_process_setid(mrb_state *mrb, mrb_process_op op, int64_t id);
+#endif /* MRB_HAL_PROCESS_NEEDS_SETID */
+
+#ifdef MRB_HAL_PROCESS_NEEDS_SETREID
+/*
+ * Set the real and effective user or group ID together.
+ *
+ * @param op   MRB_PROCESS_OP_SETREUID or MRB_PROCESS_OP_SETREGID, whichever
+ *             the port declared the call of
+ * @return 0 on success, -1 on error (sets errno)
+ */
+int mrb_hal_process_setreid(mrb_state *mrb, mrb_process_op op, int64_t rid, int64_t eid);
+#endif /* MRB_HAL_PROCESS_NEEDS_SETREID */
+
+#ifdef MRB_HAL_PROCESS_NEEDS_SETRESID
+/*
+ * Set the real, effective and saved user or group ID together.
+ *
+ * @param op   MRB_PROCESS_OP_SETRESUID or MRB_PROCESS_OP_SETRESGID, whichever
+ *             the port declared the call of
+ * @return 0 on success, -1 on error (sets errno)
+ */
+int mrb_hal_process_setresid(mrb_state *mrb, mrb_process_op op,
+                             int64_t rid, int64_t eid, int64_t sid);
+#endif /* MRB_HAL_PROCESS_NEEDS_SETRESID */
+
+#ifdef MRB_HAL_PROCESS_HAS_ISSETUGID
+/*
+ * Whether the process was started from a set-user-ID or set-group-ID
+ * executable, or otherwise had its credentials changed out from under it.
+ *
+ * @param tainted  out: what the platform answers
+ * @return 0 on success, -1 on error (sets errno)
+ */
+int mrb_hal_process_issetugid(mrb_state *mrb, mrb_bool *tainted);
+#endif /* MRB_HAL_PROCESS_HAS_ISSETUGID */
 
 /*
  * Read a platform wait status into its neutral form.

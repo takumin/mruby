@@ -4,9 +4,20 @@
 ** See Copyright Notice in mruby.h
 **
 ** POSIX implementation of the process HAL using getpid(2), getppid(2),
-** waitpid(2) and kill(2).  The clocks are clock_hal.c's.
+** waitpid(2) and kill(2), and the user and group ID calls.  The clocks are
+** clock_hal.c's.
 ** Supported platforms: Linux, macOS, BSD, Unix
+**
+** Not every credential call is POSIX.  Which ones this host has is declared
+** in include/process_hal_features.h, at compile time and never from an
+** errno: a call the kernel refused at run time is a different thing, and
+** stays an errno.
 */
+
+/* setresuid(2) and setresgid(2) need _GNU_SOURCE to be declared on glibc.  It
+   is set in this gem's mrbgem.rake rather than here: a feature-test macro has
+   to precede every header, and this source does not always get to be first,
+   since the amalgam concatenates every source into one translation unit. */
 
 #include <mruby.h>
 #include "process_hal.h"
@@ -17,10 +28,11 @@
 #include <errno.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdint.h>
 #include <unistd.h>
 
 /*
- * Feature Capabilities
+ * Wait status feature capabilities
  *
  * Each MRB_PROCESS_HAVE_* is always defined, to 0 or 1, so the rest of this
  * file tests it with #if rather than #ifdef; the #ifndef guard around each
@@ -115,6 +127,314 @@ mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo)
   }
   return kill((pid_t)pid, (int)signo);
 }
+
+/*
+ * Process credentials
+ */
+
+/* POSIX fixes neither width nor sign for uid_t and gid_t: 32 bits and
+   unsigned on every current host, 16 bits on old ones, signed on a few.  So
+   both are read off the type rather than assumed, and the numbers that name
+   an ID here are the ones the type holds and, for an unsigned type, the
+   negative the same bits read as, which is how Ruby spells the (uid_t)-1 of
+   setreuid(2).  A signed type spells -1 as itself, and a number past its top
+   is refused rather than folded onto a lower ID by the cast: 4294967295 on
+   a signed 32-bit uid_t would land on the -1 that setreuid(2) reads as
+   "leave this one alone".  The common layer asks this before it sends a
+   number down, so the casts below are the platform reading its own type and
+   never a value it would have to rename.
+
+   Whether a type is signed is whether -1 stays below 1 in it, spelled that
+   way rather than against 0, which compilers flag as always false for an
+   unsigned type. */
+#define ID_TYPE_SIGNED(type) ((type)-1 < (type)1)
+
+/* An ID crosses the HAL as an int64_t, so a type has to fit in one for
+   every value it holds to cross whole: any type narrower than 64 bits, and
+   a signed one exactly that wide.  No host has a uid_t past that; one that
+   did would need the transport widened, and is told so here rather than
+   left to report the top half of its IDs as negative numbers or the getters
+   left to hand back the low 64 bits of one. */
+#define ID_TYPE_FITS_INT64(type) \
+  (sizeof(type) < sizeof(int64_t) || \
+   (sizeof(type) == sizeof(int64_t) && ID_TYPE_SIGNED(type)))
+
+mrb_static_assert(ID_TYPE_FITS_INT64(uid_t),
+                  "uid_t does not fit the int64_t an ID crosses the HAL as");
+mrb_static_assert(ID_TYPE_FITS_INT64(gid_t),
+                  "gid_t does not fit the int64_t an ID crosses the HAL as");
+
+#ifdef MRB_HAL_PROCESS_TAKES_ID
+mrb_bool
+mrb_hal_process_id_fits(mrb_process_id_kind kind, int64_t id)
+{
+  return (kind == MRB_PROCESS_ID_USER)
+    ? mrb_process_id_fits_type(id, sizeof(uid_t), ID_TYPE_SIGNED(uid_t))
+    : mrb_process_id_fits_type(id, sizeof(gid_t), ID_TYPE_SIGNED(gid_t));
+}
+#endif /* MRB_HAL_PROCESS_TAKES_ID */
+
+/* Each shape once, and inside it one case a call, under the macro that
+   declared the call: a case for a call the host does not have would not
+   compile, and the macros in process_hal_features.h decide which operations
+   reach a function, so the default is a caller that went around them. */
+
+#ifdef MRB_HAL_PROCESS_NEEDS_GETID
+int
+mrb_hal_process_getid(mrb_state *mrb, mrb_process_op op, int64_t *id)
+{
+  (void)mrb;
+
+  /* Widened as the type reads it: an unsigned uid_t arrives as the number
+     itself and a signed one keeps its sign.  Nothing is reinterpreted. */
+  switch (op) {
+#ifdef MRB_HAL_PROCESS_HAS_GETUID
+  case MRB_PROCESS_OP_GETUID:  *id = (int64_t)getuid();  return 0;
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_GETEUID
+  case MRB_PROCESS_OP_GETEUID: *id = (int64_t)geteuid(); return 0;
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_GETGID
+  case MRB_PROCESS_OP_GETGID:  *id = (int64_t)getgid();  return 0;
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_GETEGID
+  case MRB_PROCESS_OP_GETEGID: *id = (int64_t)getegid(); return 0;
+#endif
+  default:
+    errno = ENOSYS;
+    return -1;
+  }
+}
+#endif /* MRB_HAL_PROCESS_NEEDS_GETID */
+
+#ifdef MRB_HAL_PROCESS_NEEDS_SETID
+int
+mrb_hal_process_setid(mrb_state *mrb, mrb_process_op op, int64_t id)
+{
+  (void)mrb;
+
+  switch (op) {
+#ifdef MRB_HAL_PROCESS_HAS_SETUID
+  case MRB_PROCESS_OP_SETUID:  return setuid((uid_t)id);
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_SETEUID
+  case MRB_PROCESS_OP_SETEUID: return seteuid((uid_t)id);
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_SETRUID
+  case MRB_PROCESS_OP_SETRUID: return setruid((uid_t)id);
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_SETGID
+  case MRB_PROCESS_OP_SETGID:  return setgid((gid_t)id);
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_SETEGID
+  case MRB_PROCESS_OP_SETEGID: return setegid((gid_t)id);
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_SETRGID
+  case MRB_PROCESS_OP_SETRGID: return setrgid((gid_t)id);
+#endif
+  default:
+    errno = ENOSYS;
+    return -1;
+  }
+}
+#endif /* MRB_HAL_PROCESS_NEEDS_SETID */
+
+#ifdef MRB_HAL_PROCESS_NEEDS_SETREID
+int
+mrb_hal_process_setreid(mrb_state *mrb, mrb_process_op op, int64_t rid, int64_t eid)
+{
+  (void)mrb;
+
+  switch (op) {
+#ifdef MRB_HAL_PROCESS_HAS_SETREUID
+  case MRB_PROCESS_OP_SETREUID: return setreuid((uid_t)rid, (uid_t)eid);
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_SETREGID
+  case MRB_PROCESS_OP_SETREGID: return setregid((gid_t)rid, (gid_t)eid);
+#endif
+  default:
+    errno = ENOSYS;
+    return -1;
+  }
+}
+#endif /* MRB_HAL_PROCESS_NEEDS_SETREID */
+
+#ifdef MRB_HAL_PROCESS_NEEDS_SETRESID
+int
+mrb_hal_process_setresid(mrb_state *mrb, mrb_process_op op,
+                         int64_t rid, int64_t eid, int64_t sid)
+{
+  (void)mrb;
+
+  switch (op) {
+#ifdef MRB_HAL_PROCESS_HAS_SETRESUID
+  case MRB_PROCESS_OP_SETRESUID: return setresuid((uid_t)rid, (uid_t)eid, (uid_t)sid);
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_SETRESGID
+  case MRB_PROCESS_OP_SETRESGID: return setresgid((gid_t)rid, (gid_t)eid, (gid_t)sid);
+#endif
+  default:
+    errno = ENOSYS;
+    return -1;
+  }
+}
+#endif /* MRB_HAL_PROCESS_NEEDS_SETRESID */
+
+#if defined(MRB_HAL_PROCESS_TAKES_ID) && defined(MRB_HAL_PROCESS_HAS_ID_BY_NAME)
+
+#include <grp.h>
+#include <pwd.h>
+
+/*
+ * Looking an ID up by name
+ *
+ * getpwnam_r(3) and getgrnam_r(3) answer from whatever the host keeps its
+ * accounts in, which is the same place Ruby's own lookup reads.  The
+ * reentrant forms, because the plain ones hand out one static record shared
+ * by every thread of the process, and a host program may run an interpreter
+ * on each of several threads, or call the plain forms itself.  The record's
+ * strings go in a buffer the caller supplies, whose size only the name
+ * service knows: sysconf(3) offers a first guess where the C library has a
+ * name to ask it by, ERANGE says it was not enough, and the buffer doubles
+ * up to a limit, as CRuby's does.
+ *
+ * Three answers come back.  A record is the ID.  No record is an unknown
+ * name when the return value is one getpwnam(3) lists for a name that was
+ * not found: 0, which is how POSIX has the call say it, and ENOENT, ESRCH,
+ * EBADF and EPERM, which is how one name-service backend or another says
+ * the same thing (glibc's switch answers ENOENT, musl 0); CRuby's
+ * pwd_not_found reads the same five.  errno is left clear for all of them.
+ * Anything else is the lookup failing before it could answer, and stays in
+ * errno: a directory service that could not be reached is not an account
+ * that does not exist.  The manual ends its list with an ellipsis, so a C
+ * library that says not found some other way reports an Errno::* here.
+ */
+
+#define NAME_BUF_DEFAULT 4096
+#define NAME_BUF_LIMIT   0x10000
+
+static int
+name_not_found(int err)
+{
+  switch (err) {
+  case 0:
+  case ENOENT:
+  case ESRCH:
+  case EBADF:
+  case EPERM:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* One call of the reentrant lookup into `buf`: the return value is the
+   call's, `*raw` is written when a record came back, and `*found` says
+   whether one did.  Two of these, since the two calls fill different
+   records, and the loop that sizes the buffer is written once below. */
+typedef int name_lookup(const char *name, char *buf, size_t len,
+                        int *found, int64_t *raw);
+
+static int
+passwd_lookup(const char *name, char *buf, size_t len, int *found, int64_t *raw)
+{
+  struct passwd pw, *result = NULL;
+  int err = getpwnam_r(name, &pw, buf, len, &result);
+
+  *found = (err == 0 && result != NULL);
+  if (*found) *raw = (int64_t)result->pw_uid;
+  return err;
+}
+
+static int
+group_lookup(const char *name, char *buf, size_t len, int *found, int64_t *raw)
+{
+  struct group gr, *result = NULL;
+  int err = getgrnam_r(name, &gr, buf, len, &result);
+
+  *found = (err == 0 && result != NULL);
+  if (*found) *raw = (int64_t)result->gr_gid;
+  return err;
+}
+
+/* The size to try first.  _SC_GETPW_R_SIZE_MAX and _SC_GETGR_R_SIZE_MAX
+   are POSIX's, but mrbgem.rake asks about the two calls and not about the
+   two names, and a C library may have the calls without them, so each is
+   asked of sysconf(3) only where the header defines it, as CRuby does, and
+   the default stands where it is not or sysconf(3) has no answer. */
+static size_t
+passwd_buf_size(void)
+{
+#ifdef _SC_GETPW_R_SIZE_MAX
+  long hint = sysconf(_SC_GETPW_R_SIZE_MAX);
+  if (hint > 0) return (size_t)hint;
+#endif
+  return NAME_BUF_DEFAULT;
+}
+
+static size_t
+group_buf_size(void)
+{
+#ifdef _SC_GETGR_R_SIZE_MAX
+  long hint = sysconf(_SC_GETGR_R_SIZE_MAX);
+  if (hint > 0) return (size_t)hint;
+#endif
+  return NAME_BUF_DEFAULT;
+}
+
+static int
+id_by_name(mrb_state *mrb, name_lookup *lookup, size_t len,
+           const char *name, int64_t *id)
+{
+  char *buf = NULL;
+  int64_t raw = 0;
+  int found = 0;
+  int err;
+
+  for (;;) {
+    char *grown = (char*)mrb_realloc_simple(mrb, buf, len);
+    if (grown == NULL) {
+      mrb_free(mrb, buf);
+      errno = ENOMEM;
+      return -1;
+    }
+    buf = grown;
+    err = lookup(name, buf, len, &found, &raw);
+    if (err != ERANGE || len >= NAME_BUF_LIMIT) break;
+    len *= 2;
+  }
+  mrb_free(mrb, buf);
+
+  if (found) {
+    *id = raw;
+    return 0;
+  }
+  errno = name_not_found(err) ? 0 : err;
+  return -1;
+}
+
+int
+mrb_hal_process_id_by_name(mrb_state *mrb, mrb_process_id_kind kind,
+                           const char *name, int64_t *id)
+{
+  return (kind == MRB_PROCESS_ID_USER)
+    ? id_by_name(mrb, passwd_lookup, passwd_buf_size(), name, id)
+    : id_by_name(mrb, group_lookup, group_buf_size(), name, id);
+}
+
+#endif /* MRB_HAL_PROCESS_TAKES_ID && MRB_HAL_PROCESS_HAS_ID_BY_NAME */
+
+#ifdef MRB_HAL_PROCESS_HAS_ISSETUGID
+int
+mrb_hal_process_issetugid(mrb_state *mrb, mrb_bool *tainted)
+{
+  (void)mrb;
+
+  /* issetugid(2) has no failure of its own; it answers or it is not there. */
+  *tainted = issetugid() != 0;
+  return 0;
+}
+#endif /* MRB_HAL_PROCESS_HAS_ISSETUGID */
 
 /*
  * Status Decoding
