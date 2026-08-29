@@ -20,4 +20,13 @@
    so `Process.wait` and its three other spellings are answerable once
    spawn exists and not before. */
 
+/* No user or group IDs.  A Windows process has an access token holding SIDs,
+   not a uid_t and a gid_t, and no part of that reduces to the number the
+   `Process::Sys` calls trade in.  So none of the credential macros is
+   defined, and every `Process::Sys` method is the mark of an unimplemented
+   one: `respond_to?` answers false and calling it raises NotImplementedError.
+   The alternative, answering 0 from the getters as CRuby's Windows build
+   does, is what a privileged POSIX process reports, and a program reading it
+   would conclude it is running as root. */
+
 #endif /* MRUBY_PROCESS_HAL_FEATURES_H */

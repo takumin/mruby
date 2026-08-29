@@ -19,6 +19,11 @@ MRB_BEGIN_DECL
    has to narrow it to.  A no-op where mruby's own Integer is no wider. */
 mrb_int mrb_process_int_arg(mrb_state *mrb, mrb_int v, const char *what);
 
+/* Define Process::Sys under `process`.  Called once from gem init.  Every
+   method is defined; which have a body and which are the mark of an
+   unimplemented one is the port's process_hal_features.h's to say. */
+void mrb_process_sys_init(mrb_state *mrb, struct RClass *process);
+
 /* Define Process::Status under `process`.  Called once from gem init. */
 void mrb_process_status_init(mrb_state *mrb, struct RClass *process);
 
