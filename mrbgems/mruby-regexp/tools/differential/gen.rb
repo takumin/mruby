@@ -40,6 +40,14 @@
 #                       when lazy is on), and the comma-first `{,m}`, which
 #                       both engines read as `{0,m}` though neither's
 #                       documentation lists it
+#   requantify          a quantifier on a quantifier, `a**` and `a{2}{3}`,
+#                       which repeats the repeat where it does not coalesce:
+#                       a `?` behind a quantifier is its lazy mark and a `+`
+#                       behind `*`, `+` or `?` its possessive one, so what a
+#                       join spells is part of what is compared. The pair is
+#                       marked as able to match empty when either can, which
+#                       over-marks a lazy join and is read only as a reason
+#                       to draw no recursive call.
 #   class               `.` `\w` `\W` and classes over the alphabet, negated too
 #   class-syntax        what a bracket expression may hold beside a list of
 #                       characters: a range `a-b`, a POSIX bracket
@@ -172,8 +180,8 @@
 
 require 'optparse'
 
-FEATURES = %w[lazy interval class class-syntax escape control anchor newline
-              empty lookahead lookbehind
+FEATURES = %w[lazy interval requantify class class-syntax escape control anchor
+              newline empty lookahead lookbehind
               lookaround-capture backref backref-name backref-forward
               named-group duplicate-name atomic possessive inline-option
               extended call alternation].freeze
@@ -638,6 +646,15 @@ def seq(depth, groups, in_lookahead: false)
     a = atom(depth, groups, in_lookahead: in_lookahead)
     if rand < $quantify && !a.unrepeatable && (on?("empty") || !a.empty)
       q, qempty = quantifier
+      # A quantifier may land on the quantified atom in turn, repeating the
+      # repeat where the join does not coalesce into a lazy or possessive
+      # mark. The join is gated as the first quantifier was: one whose inner
+      # pair can match empty is a repeat of an empty-matching body.
+      if on?("requantify") && (on?("empty") || !(a.empty || qempty)) && rand < 0.15
+        q2, q2empty = quantifier
+        q += q2
+        qempty ||= q2empty
+      end
       # A filler between an atom and its quantifier is dropped under `x`, and
       # without it is a character the quantifier repeats in the atom's place.
       # The atom is then one the sequence must match, so what is recorded here
