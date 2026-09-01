@@ -18,9 +18,7 @@
 #include <mruby/proc.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
-#ifdef MRB_USE_BIGINT
 #include <mruby/internal.h>
-#endif
 #include "process_hal.h"
 #include "process_internal.h"
 #include "signal_hal.h"
@@ -29,6 +27,12 @@
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
+
+static mrb_value
+last_status_gv_get(mrb_state *mrb)
+{
+  return mrb_vm_statevar_get(mrb, MRB_STATEVAR_LASTSTATUS);
+}
 
 /*
  * Refuse a value that would not survive the narrowing a port has to do with
@@ -218,12 +222,10 @@ process_kill(mrb_state *mrb, mrb_value self)
 }
 
 #ifdef MRB_HAL_PROCESS_HAS_WAIT
-/* `$?` and `$$` are not word names, so MRB_GVSYM() cannot spell them and
-   they are interned where they are used. */
 static void
 set_last_status(mrb_state *mrb, mrb_value status)
 {
-  mrb_gv_set(mrb, mrb_intern_lit(mrb, "$?"), status);
+  mrb_vm_statevar_set(mrb, MRB_STATEVAR_LASTSTATUS, status);
 }
 
 /* The wait itself.  Two module functions differ only in whether the status
@@ -347,6 +349,13 @@ mrb_mruby_process_gem_init(mrb_state *mrb)
 
   mrb_process_clock_init(mrb, process);
   mrb_process_status_init(mrb, process);
+
+  /* `$?` and `$$` are not word names, so MRB_GVSYM() cannot spell them and
+     they are interned here. The NULL setter makes `$?` read-only: the
+     NameError comes from mrb_gv_set()'s dispatch, as CRuby's comes from
+     registering `$?` with rb_define_virtual_variable(name, get, 0). */
+  mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$?"),
+                        last_status_gv_get, NULL);
 
   pid = mrb_hal_process_pid(mrb);
   if (pid >= 0) {

@@ -613,9 +613,27 @@ assert('IO#gets - separator across a buffer boundary') do
   end
 end
 
+# mruby-io registers `$?` itself, so a build without mruby-process still
+# has the name defined from startup and read-only, as in CRuby.
+assert('$? is defined from startup') do
+  assert_equal "global-variable", defined?($?)
+  assert_true global_variables.include?(:$?)
+end
+
+assert('$? is a read-only variable') do
+  err = nil
+  begin
+    $? = 1
+  rescue NameError => e
+    err = e
+  end
+  assert_kind_of NameError, err
+  assert_equal "$? is a read-only variable", err.message
+  assert_equal :$?, err.name
+end
+
 assert('IO.popen') do
   begin
-    $? = nil
     io = IO.popen("#{$cmd}echo mruby-io")
     # A port without close-on-exec still runs the command and reports the
     # child, so the rest of the test is for it too.
