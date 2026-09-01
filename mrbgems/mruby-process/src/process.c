@@ -11,6 +11,7 @@
 
 #include <mruby.h>
 #include <mruby/array.h>
+#include <mruby/class.h>
 #include <mruby/error.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
@@ -760,6 +761,51 @@ process_clock_getres(mrb_state *mrb, mrb_value self)
   return clock_unit_convert(mrb, u, &t, TRUE);
 }
 
+/*
+ * call-seq:
+ *   Process.times -> a Process::Tms
+ *
+ * How much CPU time this process, and its waited-for terminated children,
+ * have used, as a Process::Tms holding four Float numbers of seconds:
+ * +utime+ and +stime+ for this process's own user and system time, +cutime+
+ * and +cstime+ for the same totalled over every terminated child this
+ * process has waited for so far, through Process.wait, Process.waitpid,
+ * or another wait(2)/waitpid(2) call this gem did not itself make, such as
+ * the one IO.popen(...).close makes on its own.  A child still running, or
+ * one this process has never waited for, is not counted; see Process::Tms.
+ *
+ * Answers only in Float, as CRuby does, there being no argument to name an
+ * Integer unit by the way Process.clock_gettime has one, so a build without
+ * Float raises NotImplementedError rather than answering something narrower.
+ */
+static mrb_value
+process_times(mrb_state *mrb, mrb_value self)
+{
+#ifndef MRB_NO_FLOAT
+  struct RClass *process = mrb_module_get_id(mrb, MRB_SYM(Process));
+  struct RClass *tms = mrb_class_get_under_id(mrb, process, MRB_SYM(Tms));
+  mrb_process_times pt;
+  mrb_value argv[4];
+
+  if (mrb_hal_process_times(mrb, &pt) != 0) {
+    /* Names no object, as a wait or a kill does not either: nothing this
+       call was working on failed, the reading itself did. */
+    mrb_sys_fail(mrb, NULL);
+  }
+  argv[0] = clock_float_result(mrb, &pt.utime,  1.0);
+  argv[1] = clock_float_result(mrb, &pt.stime,  1.0);
+  argv[2] = clock_float_result(mrb, &pt.cutime, 1.0);
+  argv[3] = clock_float_result(mrb, &pt.cstime, 1.0);
+  /* Process::Tms is the Struct mrblib/tms.rb defines, so it is built the
+     way any Struct is: allocate and hand #initialize the four members, in
+     the order Struct.new() was given them. */
+  return mrb_obj_new(mrb, tms, 4, argv);
+#else
+  mrb_raise(mrb, E_NOTIMP_ERROR, "Process.times needs a build with Float");
+  return mrb_nil_value(); /* not reached */
+#endif
+}
+
 void
 mrb_mruby_process_gem_init(mrb_state *mrb)
 {
@@ -798,6 +844,7 @@ mrb_mruby_process_gem_init(mrb_state *mrb)
   mrb_define_module_function_id(mrb, process, MRB_SYM(wait2),    process_waitpid2, MRB_ARGS_OPT(2));
   mrb_define_module_function_id(mrb, process, MRB_SYM(clock_gettime), process_clock_gettime, MRB_ARGS_ARG(1, 1));
   mrb_define_module_function_id(mrb, process, MRB_SYM(clock_getres),  process_clock_getres,  MRB_ARGS_ARG(1, 1));
+  mrb_define_module_function_id(mrb, process, MRB_SYM(times),         process_times,         MRB_ARGS_NONE());
 
   mrb_process_status_init(mrb, process);
 

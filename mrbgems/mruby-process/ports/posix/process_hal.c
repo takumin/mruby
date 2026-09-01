@@ -5,7 +5,9 @@
 **
 ** POSIX implementation of the process HAL using getpid(2), getppid(2),
 ** waitpid(2), kill(2), clock_gettime(2) and clock_getres(2), falling back to
-** gettimeofday(2) where the host has no POSIX clocks.
+** gettimeofday(2) where the host has no POSIX clocks, and getrusage(2) for
+** the CPU time totals behind Process.times, falling back to times(2) scaled
+** by sysconf(_SC_CLK_TCK) where the host has no getrusage(2).
 ** Supported platforms: Linux, macOS, BSD, Unix
 */
 
@@ -13,6 +15,7 @@
 #include "process_hal.h"
 
 #include <sys/time.h>
+#include <sys/times.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -83,6 +86,28 @@
 #  define MRB_PROCESS_HAVE_WCOREDUMP 1
 # else
 #  define MRB_PROCESS_HAVE_WCOREDUMP 0
+# endif
+#endif
+
+/* Whether this host has getrusage(2), which is how Process.times reads CPU
+   time here: RUSAGE_SELF and RUSAGE_CHILDREN are both XSI extensions
+   (SUSv2), present on Linux, macOS and the BSDs but not guaranteed by base
+   POSIX.1, so a host missing either falls back to times(2) scaled by
+   sysconf(_SC_CLK_TCK), which reads only to the granularity of a clock tick
+   rather than a microsecond. <sys/resource.h> itself is part of that same
+   XSI extension: a build that already knows its target lacks the call and
+   the header can predefine MRB_PROCESS_HAVE_GETRUSAGE to 0 to skip both the
+   probe below and this #include, rather than have it fail outright. A build
+   that predefines it to 1 is asserting the header and the call are both
+   there, so the #include still runs to back that up. */
+#if !defined(MRB_PROCESS_HAVE_GETRUSAGE) || MRB_PROCESS_HAVE_GETRUSAGE
+# include <sys/resource.h>
+#endif
+#ifndef MRB_PROCESS_HAVE_GETRUSAGE
+# if defined(RUSAGE_SELF) && defined(RUSAGE_CHILDREN)
+#  define MRB_PROCESS_HAVE_GETRUSAGE 1
+# else
+#  define MRB_PROCESS_HAVE_GETRUSAGE 0
 # endif
 #endif
 
@@ -305,6 +330,109 @@ mrb_hal_process_clock_getres(mrb_state *mrb, mrb_int clock_id,
   return 0;
 #endif
 }
+
+/*
+ * CPU Time Totals
+ */
+
+#if MRB_PROCESS_HAVE_GETRUSAGE
+
+/* Convert a struct timeval, as getrusage(2) reports CPU time in, into an
+   mrb_process_clock_time.  tv_usec is always in [0, 1000000), so unlike the
+   FILETIME split on Windows there is nothing here to carry downwards. */
+static void
+timeval_to_clock_time(mrb_process_clock_time *t, const struct timeval *tv)
+{
+  t->sec = (int64_t)tv->tv_sec;
+  t->nsec = (int64_t)tv->tv_usec * 1000;
+}
+
+int
+mrb_hal_process_times(mrb_state *mrb, mrb_process_times *t)
+{
+  struct rusage self, children;
+  (void)mrb;
+
+  /* RUSAGE_SELF is this process, summed across every thread that has ever
+     run in it; RUSAGE_CHILDREN is every child this process has reaped via
+     wait(2)/waitpid(2), summed the same way, which is exactly the
+     utime/stime and cutime/cstime split Process.times reports. Both read to
+     the microsecond, finer than times(2)'s clock-tick granularity and with
+     no sysconf(_SC_CLK_TCK) scale factor to look up. */
+  if (getrusage(RUSAGE_SELF, &self) != 0) return -1;
+  if (getrusage(RUSAGE_CHILDREN, &children) != 0) return -1;
+
+  timeval_to_clock_time(&t->utime,  &self.ru_utime);
+  timeval_to_clock_time(&t->stime,  &self.ru_stime);
+  timeval_to_clock_time(&t->cutime, &children.ru_utime);
+  timeval_to_clock_time(&t->cstime, &children.ru_stime);
+  return 0;
+}
+
+#else /* !MRB_PROCESS_HAVE_GETRUSAGE */
+
+#define NSEC_PER_SEC 1000000000LL
+
+/* Split a count of times(2) ticks into seconds and nanoseconds.  A tms field
+   is never negative, so unlike the FILETIME split on Windows there is
+   nothing here to carry downwards. */
+static void
+ticks_to_clock_time(mrb_process_clock_time *t, clock_t ticks, long clk_tck)
+{
+  int64_t v = (int64_t)ticks;
+
+  t->sec = v / (int64_t)clk_tck;
+  t->nsec = (v % (int64_t)clk_tck) * NSEC_PER_SEC / (int64_t)clk_tck;
+}
+
+int
+mrb_hal_process_times(mrb_state *mrb, mrb_process_times *t)
+{
+  struct tms tm;
+  long clk_tck;
+  (void)mrb;
+
+  /* Where getrusage(2) is unavailable, times(2) is the POSIX.1 baseline: it
+     reports the same four totals, just as clock_t ticks rather than a
+     struct timeval, so a scale factor (ticks per second) is looked up to
+     turn them into seconds and nanoseconds.
+
+     times(2)'s return value is not an error indicator the way most syscalls'
+     is: it is the elapsed real time since some arbitrary point in the past
+     (system boot, typically), measured in the same clock_t ticks as the tms
+     fields. POSIX gives (clock_t)-1 as the error return, but on a host where
+     clock_t is a 32-bit signed count of ticks (true of every glibc/musl
+     Linux target this port ships on), that same bit pattern is also a
+     value the elapsed-time counter legitimately passes through on wraparound
+     (roughly every 497 days at a 100 Hz tick rate), long before any of the
+     tms fields overflow. Treating the return value alone as the error
+     signal would misreport that day as a failure while returning a struct
+     tms that was filled in correctly. errno is instead cleared first and
+     read back after: times(2) sets it only on genuine failure, so a stray
+     -1 with errno left at 0 is the wraparound, not an error. */
+  errno = 0;
+  if (times(&tm) == (clock_t)-1 && errno != 0) return -1;
+
+  /* The scale times(2) counts in, in ticks per second.  POSIX guarantees
+     _SC_CLK_TCK an answer; a non-positive one would only mean a host
+     declining to say, which none of this port's targets do. Falling back to
+     CLOCKS_PER_SEC would silently answer in clock(3)'s unit instead of
+     times(2)'s, which is not always the same number, so a host that declines
+     is reported as the failure it is rather than guessed past. */
+  clk_tck = sysconf(_SC_CLK_TCK);
+  if (clk_tck <= 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  ticks_to_clock_time(&t->utime,  tm.tms_utime,  clk_tck);
+  ticks_to_clock_time(&t->stime,  tm.tms_stime,  clk_tck);
+  ticks_to_clock_time(&t->cutime, tm.tms_cutime, clk_tck);
+  ticks_to_clock_time(&t->cstime, tm.tms_cstime, clk_tck);
+  return 0;
+}
+
+#endif /* MRB_PROCESS_HAVE_GETRUSAGE */
 
 /*
  * HAL Initialization/Finalization
