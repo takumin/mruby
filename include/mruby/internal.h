@@ -237,6 +237,28 @@ mrb_value mrb_vm_svar_get(mrb_state *mrb, enum mrb_svar_index key);
  * slot already reads as. */
 void mrb_vm_svar_set(mrb_state *mrb, enum mrb_svar_index key, mrb_value v);
 
+/* The keys of the state-scoped special variables, the middle layer of
+ * CRuby's three (frame svar / thread-local / process-wide): mruby has no
+ * threads, so what CRuby keeps in the thread (`th->last_status` for `$?`)
+ * maps to the state itself, in the `mrb->statevars` array. The namespace
+ * and the API line are the same as `enum mrb_svar_index` above: keys are
+ * enumerators here, never minted at runtime, the accessors stay
+ * core-internal, and a gem publishes a variable by registering a virtual
+ * global whose getter closes over its key, the way mruby-process keeps
+ * `$?` under MRB_STATEVAR_LASTSTATUS. */
+enum mrb_statevar_index {
+  MRB_STATEVAR_LASTSTATUS = 0,  /* $? */
+  MRB_STATEVAR_MAX
+};
+
+/* Reads one state-scoped slot; nil while the container is unallocated. */
+mrb_value mrb_vm_statevar_get(mrb_state *mrb, enum mrb_statevar_index key);
+
+/* Writes one state-scoped slot. The container is allocated on the first
+ * non-nil write; a nil write into a state that has none is dropped, nil
+ * being what a missing slot already reads as. */
+void mrb_vm_statevar_set(mrb_state *mrb, enum mrb_statevar_index key, mrb_value v);
+
 #ifdef MRUBY_PROC_H
 /* A closed env may carry one slot past its locals: the special-variable
  * container of the scope the env escapes from, which mrb_env_detach()
