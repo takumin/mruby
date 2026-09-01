@@ -457,12 +457,18 @@ A backreference is drawn in each spelling CRuby reads: `\1`, `\k<1>` and
 `\k'1'`, the relative `\k<-1>`, which counts back over the groups opened so
 far, and a reference standing before the group it names, which compiles and
 matches only once that group has captured. Some of the patterns declare their
-groups with `(?<gN>...)`, where a plain `(...)` captures nothing and a
-numbered reference is refused whatever its spelling, so the references in
-them name a group instead.
+groups with `(?<gN>...)` or `(?'gN'...)`, where a plain `(...)` captures
+nothing and a numbered reference is refused whatever its spelling, so the
+references in them name a group instead; a name may be declared twice, which
+a `\k` then reads across more than one group. A quantifier may land on a
+quantifier, `a**` repeating the repeat where `a*?` and `a*+` are the lazy and
+possessive marks, and an interval may be the comma-first `{,m}`.
 A character of the alphabet is written as itself and as each escape that
 spells one: `\x61` and the octal name a byte where `a` and `\u{61}` name
-a codepoint, which is the line a member of a class is read by. A class holds
+a codepoint, which is the line a member of a class is read by. The control
+characters stand in the patterns as well, each as its mnemonic or as the
+`\cX` and `\C-X` that name it by its letter, and the tab joins the subjects
+so their spellings have something to match. A class holds
 a range, a POSIX bracket, a shorthand and a `-` or `^` written as itself
 beside the list of characters it always held. What the `x` option drops is
 drawn as well, a space, a tab, a newline and a `#` comment closed by one,
