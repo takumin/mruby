@@ -411,6 +411,14 @@ struct mrb_state {
      global still pays nothing until a program actually writes through it. */
   mrb_bool svar_used;
 
+  /* One entry per key of `enum mrb_statevar_index` (internal.h): the
+     special variables scoped to the state itself, where CRuby scopes them
+     to the thread -- `$?` under MRB_STATEVAR_LASTSTATUS, the way a frame's
+     `$~` lives in c->svars.  NULL until a first write, so a program that
+     never reaps a process pays this pointer and nothing else.  Marked with
+     the other roots and freed with the state. */
+  mrb_value *statevars;
+
 #ifdef MRB_USE_REFINEMENTS
   struct RClass *refinement_class;
   /* Weak table of the refinement scopes procs carry by index (see
