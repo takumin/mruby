@@ -97,6 +97,13 @@
 #                       such a pattern name a group instead. A name is never
 #                       written before the group carrying it, which CRuby
 #                       refuses.
+#   duplicate-name      a named pattern may declare a name a second time. A
+#                       `\k` to such a name reads more than one group, and
+#                       CRuby refuses a call to it wherever the second
+#                       declaration stands, whether the call or the
+#                       declaration comes first, so a name a call has read is
+#                       never declared again and a doubled name takes no
+#                       call.
 #   atomic              `(?>...)`
 #   possessive          `*+` `++` `?+`, in place of the lazy mark; an interval
 #                       takes neither, since `{n,m}+` is a repeat of a repeat
@@ -153,8 +160,8 @@ require 'optparse'
 FEATURES = %w[lazy interval class class-syntax escape anchor newline empty
               lookahead lookbehind
               lookaround-capture backref backref-name backref-forward
-              named-group atomic possessive inline-option extended call
-              alternation].freeze
+              named-group duplicate-name atomic possessive inline-option
+              extended call alternation].freeze
 
 opts = {
   seed: 1, count: 1000, depth: 2, quantify: 0.5, alphabet: "ab",
@@ -353,7 +360,9 @@ end
 # names, and a plain (...) then captures nothing, so it takes no number here.
 class Groups
   attr_reader :opened, :closed
-  def initialize(named = false); @opened = 0; @closed = []; @names = {}; @named = named; end
+  def initialize(named = false)
+    @opened = 0; @closed = []; @names = {}; @named = named; @called = {}
+  end
   def named?; @named; end
   def open(name = nil)
     @opened += 1
@@ -362,6 +371,26 @@ class Groups
   end
   def close(n); @closed << n; end
   def closed_names; @closed.filter_map { |n| @names[n] }; end
+  # CRuby refuses a call to a name declared more than once wherever the second
+  # declaration stands, whether the call or the declaration comes first. So a
+  # call takes only a name declared once, called() holds that name to its one
+  # declaration for the rest of the pattern, and reusable_names leaves the
+  # held names out of what a second declaration may take.
+  def declared_once?(name); @names.values.count(name) == 1; end
+  def callable_names; closed_names.select { |name| declared_once?(name) }; end
+  def called(name); @called[name] = true; end
+  def reusable_names; @names.values.compact.uniq - @called.keys; end
+end
+
+# The name a named group is declared with: a fresh one, or one the pattern
+# already declares, so that two groups share it.
+def draw_name(groups)
+  reuse = groups.reusable_names
+  if on?("duplicate-name") && reuse.any? && rand < 0.3
+    reuse.sample
+  else
+    "g#{groups.opened + 1}"
+  end
 end
 
 # A named group in either spelling CRuby reads, `(?<name>...)` and
@@ -410,9 +439,14 @@ def call_reference(groups)
   forms = []
   if groups.named?
     # A named pattern refuses a numbered call whatever its spelling, as it
-    # refuses a numbered backreference.
-    names = groups.closed_names
-    forms << "\\g<#{names.sample}>" << "\\g'#{names.sample}'" if names.any?
+    # refuses a numbered backreference. Only a name declared once may take a
+    # call, and the call holds it to that.
+    names = groups.callable_names
+    if names.any?
+      name = names.sample
+      groups.called(name)
+      forms << "\\g<#{name}>" << "\\g'#{name}'"
+    end
   elsif groups.closed.any?
     k = groups.closed.sample
     forms << "\\g<#{k}>" << "\\g'#{k}'" << "\\g<-#{groups.opened + 1 - k}>"
@@ -473,7 +507,7 @@ def empty_atom(groups)
   when 1 then Atom.new("(?:#{c}|)", true)
   else
     body = rand < 0.5 ? "#{c}|" : "|#{c}"
-    name = (groups.named? && rand < 0.7) ? "g#{groups.opened + 1}" : nil
+    name = (groups.named? && rand < 0.7) ? draw_name(groups) : nil
     groups.close(groups.open(name)) if name || !groups.named?
     Atom.new(name ? named_group_src(name, body) : "(#{body})", true)
   end
@@ -486,7 +520,7 @@ def group(depth, groups, in_lookahead: false)
   wrap = rand < 0.4 && (!in_lookahead || on?("lookaround-capture"))
   # In a named pattern a plain (...) captures nothing and takes no number, so
   # a group written that way is still drawn, and no reference can name it.
-  name = (wrap && groups.named? && rand < 0.7) ? "g#{groups.opened + 1}" : nil
+  name = (wrap && groups.named? && rand < 0.7) ? draw_name(groups) : nil
   capture = wrap && (!groups.named? || !name.nil?)
   n = groups.open(name) if capture
   body = seq(depth - 1, groups, in_lookahead: in_lookahead)
@@ -504,9 +538,11 @@ def group(depth, groups, in_lookahead: false)
     # entry with nothing consumed; and the quantifier must admit zero, or no
     # invocation completes without recursing. Either way lies `never ending
     # recursion`.
-    if capture && on?("call") && !empty && rand < 0.3
+    if capture && on?("call") && !empty && rand < 0.3 &&
+       (name.nil? || groups.declared_once?(name))
       q = rand < 0.5 ? "?" : "*"
       q += "?" if on?("lazy") && rand < 0.4
+      groups.called(name) if name
       src += "\\g<#{name || n}>#{q}"
     end
     groups.close(n) if capture
