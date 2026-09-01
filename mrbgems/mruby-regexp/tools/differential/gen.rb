@@ -100,7 +100,15 @@
 #                       bodies nest
 #   lookahead           `(?=...)` and `(?!...)`
 #   lookbehind          `(?<=...)` and `(?<!...)`, fixed-length bodies of one
-#                       or two literals
+#                       or two members, each a literal or, under `class`, a
+#                       class form, which is one character wide whatever
+#                       names it; the body may stand in a non-capturing
+#                       group, which changes no width. A class is drawn
+#                       there only over an ASCII alphabet: a pattern holding
+#                       a character past ASCII is read in UTF-8, and CRuby
+#                       then refuses a class in a lookbehind for the widths
+#                       its members mix, where this gem counts characters
+#                       and accepts it.
 #   lookaround-capture  a capture group may open inside a lookahead
 #   backref             `\1`..`\9` to a group closed earlier in the pattern
 #   backref-name        the same reference spelled `\k<n>` or `\k'n'`, which
@@ -219,6 +227,13 @@ srand(opts[:seed])
 $features = opts[:features]
 $alphabet = opts[:alphabet].chars.uniq
 $quantify = opts[:quantify]
+# Whether a pattern over this alphabet stays ASCII. A pattern holding a
+# character past ASCII is read in UTF-8, and CRuby then measures a class in a
+# lookbehind by the widths of its members and refuses the mix any class has
+# there (`invalid pattern in look-behind`), where this gem counts characters
+# and accepts it. Every drawn pattern has to compile under CRuby, so a class
+# stands in a lookbehind only over an ASCII alphabet.
+$ascii_alphabet = $alphabet.all? { |c| c.ord < 0x80 }
 
 def on?(feature)
   $features.include?(feature)
@@ -616,8 +631,18 @@ def lookaround(depth, groups, in_lookahead: false)
     # A body written as escapes is the same fixed width as one written as
     # characters, which is what a lookbehind is measured by, and the byte
     # spellings say that width in bytes where the codepoint ones say it in
-    # characters.
-    body = Array.new(rand(1..2)) { spelled($alphabet.sample, groups) }.join
+    # characters. A class form is a member as a literal is, one character
+    # wide whatever names it, and a non-capturing group around the body
+    # changes no width; a class is drawn only over an ASCII alphabet, since
+    # CRuby refuses one in a lookbehind the pattern reads in UTF-8.
+    body = Array.new(rand(1..2)) do
+      if on?("class") && $ascii_alphabet && rand < 0.4
+        char_class(groups).src
+      else
+        spelled($alphabet.sample, groups)
+      end
+    end.join
+    body = "(?:#{body})" if rand < 0.2
   else
     body = seq(depth - 1, groups, in_lookahead: true).src
   end
