@@ -89,11 +89,14 @@
 #                       until the group has captured, which is what a
 #                       repetition such as `(?:\1|(a))+` is written for
 #   named-group         some patterns declare their capture groups with
-#                       `(?<gN>...)`. A plain (...) then captures nothing and
-#                       takes no number, and a numbered reference is refused
-#                       whatever its spelling, so references in such a pattern
-#                       name a group instead. A name is never written before
-#                       the group carrying it, which CRuby refuses.
+#                       `(?<gN>...)`, or with the quote spelling `(?'gN'...)`,
+#                       which the parser reads by an arm of its own as it does
+#                       `\k'n'` beside `\k<n>`. A plain (...) then captures
+#                       nothing and takes no number, and a numbered reference
+#                       is refused whatever its spelling, so references in
+#                       such a pattern name a group instead. A name is never
+#                       written before the group carrying it, which CRuby
+#                       refuses.
 #   atomic              `(?>...)`
 #   possessive          `*+` `++` `?+`, in place of the lazy mark; an interval
 #                       takes neither, since `{n,m}+` is a repeat of a repeat
@@ -361,6 +364,13 @@ class Groups
   def closed_names; @closed.filter_map { |n| @names[n] }; end
 end
 
+# A named group in either spelling CRuby reads, `(?<name>...)` and
+# `(?'name'...)`; each is an arm of its own in the parser, as `\k'n'` is
+# beside `\k<n>`.
+def named_group_src(name, body)
+  rand < 0.5 ? "(?<#{name}>#{body})" : "(?'#{name}'#{body})"
+end
+
 # A forward reference stands where the pattern's group count is not known yet,
 # so it is written as this marker and filled in once the pattern is whole.
 # A quantifier lands on the marker as it would on the reference itself.
@@ -465,7 +475,7 @@ def empty_atom(groups)
     body = rand < 0.5 ? "#{c}|" : "|#{c}"
     name = (groups.named? && rand < 0.7) ? "g#{groups.opened + 1}" : nil
     groups.close(groups.open(name)) if name || !groups.named?
-    Atom.new(name ? "(?<#{name}>#{body})" : "(#{body})", true)
+    Atom.new(name ? named_group_src(name, body) : "(#{body})", true)
   end
 end
 
@@ -500,7 +510,7 @@ def group(depth, groups, in_lookahead: false)
       src += "\\g<#{name || n}>#{q}"
     end
     groups.close(n) if capture
-    Atom.new(name ? "(?<#{name}>#{src})" : "(#{src})", empty)
+    Atom.new(name ? named_group_src(name, src) : "(#{src})", empty)
   elsif on?("atomic") && rand < 0.3
     Atom.new("(?>#{src})", empty)
   elsif on?("inline-option") && rand < 0.3

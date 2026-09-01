@@ -17,12 +17,12 @@
 # backreference corpus either way.
 #
 # What a reference resolves to depends on how the groups before it are
-# written, so the sequences are drawn over the four forms that number a group
+# written, so the sequences are drawn over the forms that number a group
 # differently: a plain group, which takes a number; `(?:...)`, which takes
 # none; a named group, which takes one and stops the plain ones from taking
-# any; and a capture inside a lookahead, which takes its number where it
-# stands. A name is drawn for a group the pattern opens and for one it does
-# not.
+# any, in both the spellings that declare one; and a capture inside a
+# lookahead, which takes its number where it stands. A name is drawn for a
+# group the pattern opens and for one it does not.
 #
 # Beside the sequences drawn over the forms, the corpus holds runs of plain
 # groups at the ceiling on how many a pattern may open, and references at the
@@ -51,8 +51,11 @@ abort "the subject cannot hold a tab or a newline" if opts[:subject] =~ /[\t\n\r
 
 # Each form as the text before the reference a case may write inside it and the
 # text after, so that a sequence is the forms joined and the reference goes
-# into whichever of them it stands in. `%d` numbers the names apart.
-FORMS = [["(a", ")"], ["(?:a", ")"], ["(?<g%d>a", ")"], ["(?=(a", "))"]].freeze
+# into whichever of them it stands in. `%d` numbers the names apart. The named
+# form is here in both its spellings, since `(?'name'...)` is an arm of its
+# own in the parser as `\k'n'` is beside `\k<n>`.
+FORMS = [["(a", ")"], ["(?:a", ")"], ["(?<g%d>a", ")"], ["(?'g%d'a", ")"],
+         ["(?=(a", "))"]].freeze
 
 # The number a reference names is written past what any group here carries and
 # past what the parser holds a number in: RE_MAX_BACKREF_NUM is where a number
