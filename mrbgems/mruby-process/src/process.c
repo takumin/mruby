@@ -16,9 +16,7 @@
 #include <mruby/proc.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
-#ifdef MRB_USE_BIGINT
 #include <mruby/internal.h>
-#endif
 #include "process_hal.h"
 #include "process_internal.h"
 #include "signal_hal.h"
@@ -28,12 +26,16 @@
 #include <stdint.h>
 #include <string.h>
 
-/* `$?` and `$$` are not word names, so MRB_GVSYM() cannot spell them and
-   they are interned where they are used. */
 static void
 set_last_status(mrb_state *mrb, mrb_value status)
 {
-  mrb_gv_set(mrb, mrb_intern_lit(mrb, "$?"), status);
+  mrb_vm_statevar_set(mrb, MRB_STATEVAR_LASTSTATUS, status);
+}
+
+static mrb_value
+last_status_gv_get(mrb_state *mrb)
+{
+  return mrb_vm_statevar_get(mrb, MRB_STATEVAR_LASTSTATUS);
 }
 
 /*
@@ -879,6 +881,13 @@ mrb_mruby_process_gem_init(mrb_state *mrb)
   }
 
   mrb_process_status_init(mrb, process);
+
+  /* `$?` and `$$` are not word names, so MRB_GVSYM() cannot spell them and
+     they are interned here. The NULL setter makes `$?` read-only: the
+     NameError comes from mrb_gv_set()'s dispatch, as CRuby's comes from
+     registering `$?` with rb_define_virtual_variable(name, get, 0). */
+  mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$?"),
+                        last_status_gv_get, NULL);
 
   pid = mrb_hal_process_pid(mrb);
   if (pid >= 0) {

@@ -522,9 +522,27 @@ assert('IO#gets - paragraph mode') do
   io.close
 end
 
+# mruby-io registers `$?` itself, so a build without mruby-process still
+# has the name defined from startup and read-only, as in CRuby.
+assert('$? is defined from startup') do
+  assert_equal "global-variable", defined?($?)
+  assert_true global_variables.include?(:$?)
+end
+
+assert('$? is a read-only variable') do
+  err = nil
+  begin
+    $? = 1
+  rescue NameError => e
+    err = e
+  end
+  assert_kind_of NameError, err
+  assert_equal "$? is a read-only variable", err.message
+  assert_equal :$?, err.name
+end
+
 assert('IO.popen') do
   begin
-    $? = nil
     io = IO.popen("#{$cmd}echo mruby-io")
     assert_true io.close_on_exec?
     assert_equal Integer, io.pid.class

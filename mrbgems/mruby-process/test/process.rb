@@ -464,6 +464,44 @@ assert('Process::Status#to_s spells a signal out') do
   end
 end
 
+# The name is registered at gem init, so unlike a plain global it is
+# defined before the first child gives it a value, as in CRuby.
+assert('$? is defined from startup') do
+  assert_equal "global-variable", defined?($?)
+  assert_true global_variables.include?(:$?)
+end
+
+assert('$? is a read-only variable') do
+  err = nil
+  begin
+    $? = 1
+  rescue NameError => e
+    err = e
+  end
+  assert_kind_of NameError, err
+  assert_equal "$? is a read-only variable", err.message
+  assert_equal :$?, err.name
+end
+
+# CRuby scopes `$?` to the thread, not the frame: a method sees the status
+# its caller's wait left behind.
+assert('$? is visible across method scopes') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+  io = ProcessTestUtil.spawn("exit 7")
+  skip "IO.popen is not available" unless io
+
+  io.read
+  Process.waitpid(io.pid)
+  reader = Object.new
+  def reader.last_status
+    $?
+  end
+  st = reader.last_status
+  assert_kind_of Process::Status, st
+  assert_equal 7, st.exitstatus
+  io.close
+end
+
 assert('Process.waitpid') do
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
   io = ProcessTestUtil.spawn("exit 3")
