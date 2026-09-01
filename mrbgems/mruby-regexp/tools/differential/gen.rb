@@ -37,9 +37,11 @@
 # Features
 #   lazy                lazy quantifiers `*?` `+?` `??`
 #   interval            interval quantifiers `{n}` `{n,}` `{n,m}` (lazy forms
-#                       when lazy is on), and the comma-first `{,m}`, which
-#                       both engines read as `{0,m}` though neither's
-#                       documentation lists it
+#                       when lazy is on)
+#   interval-comma      the comma-first `{,m}`, which both engines read as
+#                       `{0,m}` though neither's documentation lists it. It
+#                       widens `interval` and draws nothing while that one
+#                       is off.
 #   requantify          a quantifier on a quantifier, `a**` and `a{2}{3}`,
 #                       which repeats the repeat where it does not coalesce:
 #                       a `?` behind a quantifier is its lazy mark and a `+`
@@ -100,15 +102,17 @@
 #                       bodies nest
 #   lookahead           `(?=...)` and `(?!...)`
 #   lookbehind          `(?<=...)` and `(?<!...)`, fixed-length bodies of one
-#                       or two members, each a literal or, under `class`, a
-#                       class form, which is one character wide whatever
-#                       names it; the body may stand in a non-capturing
-#                       group, which changes no width. A class is drawn
-#                       there only over an ASCII alphabet: a pattern holding
-#                       a character past ASCII is read in UTF-8, and CRuby
-#                       then refuses a class in a lookbehind for the widths
-#                       its members mix, where this gem counts characters
-#                       and accepts it.
+#                       or two literals
+#   lookbehind-class    a member of a lookbehind body may be a class form,
+#                       which is one character wide whatever names it, and
+#                       the body may stand in a non-capturing group, which
+#                       changes no width. It widens `lookbehind`, draws a
+#                       class only while `class` is on, and only over an
+#                       ASCII alphabet: a pattern holding a character past
+#                       ASCII is read in UTF-8, and CRuby then refuses a
+#                       class in a lookbehind for the widths its members
+#                       mix, where this gem counts characters and accepts
+#                       it.
 #   lookaround-capture  a capture group may open inside a lookahead
 #   backref             `\1`..`\9` to a group closed earlier in the pattern
 #   backref-name        the same reference spelled `\k<n>` or `\k'n'`, which
@@ -120,14 +124,17 @@
 #                       until the group has captured, which is what a
 #                       repetition such as `(?:\1|(a))+` is written for
 #   named-group         some patterns declare their capture groups with
-#                       `(?<gN>...)`, or with the quote spelling `(?'gN'...)`,
-#                       which the parser reads by an arm of its own as it does
-#                       `\k'n'` beside `\k<n>`. A plain (...) then captures
-#                       nothing and takes no number, and a numbered reference
-#                       is refused whatever its spelling, so references in
-#                       such a pattern name a group instead. A name is never
+#                       `(?<gN>...)`. A plain (...) then captures nothing and
+#                       takes no number, and a numbered reference is refused
+#                       whatever its spelling, so references in such a
+#                       pattern name a group instead. A name is never
 #                       written before the group carrying it, which CRuby
 #                       refuses.
+#   group-quote         the quote spelling `(?'gN'...)` of a named group,
+#                       drawn in the angle one's place some of the time; the
+#                       parser reads it by an arm of its own, as it does
+#                       `\k'n'` beside `\k<n>`. It widens `named-group` and
+#                       draws nothing while that one is off.
 #   duplicate-name      a named pattern may declare a name a second time. A
 #                       `\k` to such a name reads more than one group, and
 #                       CRuby refuses a call to it wherever the second
@@ -188,11 +195,12 @@
 
 require 'optparse'
 
-FEATURES = %w[lazy interval requantify class class-syntax escape control anchor
-              newline empty lookahead lookbehind
+FEATURES = %w[lazy interval interval-comma requantify class class-syntax
+              escape control anchor newline empty
+              lookahead lookbehind lookbehind-class
               lookaround-capture backref backref-name backref-forward
-              named-group duplicate-name atomic possessive inline-option
-              extended call alternation].freeze
+              named-group group-quote duplicate-name atomic possessive
+              inline-option extended call alternation].freeze
 
 opts = {
   seed: 1, count: 1000, depth: 2, quantify: 0.5, alphabet: "ab",
@@ -398,8 +406,9 @@ end
 # `?` after any of them makes it lazy; a `+` after `*`, `+` or `?` makes it
 # possessive, and after an interval it is another repeat, so it is not drawn.
 def quantifier
+  arms = on?("interval") ? (on?("interval-comma") ? 7 : 6) : 3
   q, empty, bare_interval =
-    case rand(on?("interval") ? 7 : 3)
+    case rand(arms)
     when 0 then ["*", true]
     when 1 then ["+", false]
     when 2 then ["?", true]
@@ -463,7 +472,11 @@ end
 # `(?'name'...)`; each is an arm of its own in the parser, as `\k'n'` is
 # beside `\k<n>`.
 def named_group_src(name, body)
-  rand < 0.5 ? "(?<#{name}>#{body})" : "(?'#{name}'#{body})"
+  if on?("group-quote") && rand < 0.5
+    "(?'#{name}'#{body})"
+  else
+    "(?<#{name}>#{body})"
+  end
 end
 
 # A forward reference stands where the pattern's group count is not known yet,
@@ -506,12 +519,13 @@ def call_reference(groups)
   if groups.named?
     # A named pattern refuses a numbered call whatever its spelling, as it
     # refuses a numbered backreference. Only a name declared once may take a
-    # call, and the call holds it to that.
+    # call, and both names drawn here are held to their one declaration,
+    # whichever spelling the caller picks.
     names = groups.callable_names
     if names.any?
-      name = names.sample
-      groups.called(name)
-      forms << "\\g<#{name}>" << "\\g'#{name}'"
+      pair = [names.sample, names.sample]
+      pair.each { |name| groups.called(name) }
+      forms << "\\g<#{pair[0]}>" << "\\g'#{pair[1]}'"
     end
   elsif groups.closed.any?
     k = groups.closed.sample
@@ -631,18 +645,20 @@ def lookaround(depth, groups, in_lookahead: false)
     # A body written as escapes is the same fixed width as one written as
     # characters, which is what a lookbehind is measured by, and the byte
     # spellings say that width in bytes where the codepoint ones say it in
-    # characters. A class form is a member as a literal is, one character
-    # wide whatever names it, and a non-capturing group around the body
-    # changes no width; a class is drawn only over an ASCII alphabet, since
-    # CRuby refuses one in a lookbehind the pattern reads in UTF-8.
+    # characters. Under lookbehind-class a class form is a member as a
+    # literal is, one character wide whatever names it, and a non-capturing
+    # group around the body changes no width; a class is drawn only over an
+    # ASCII alphabet, since CRuby refuses one in a lookbehind the pattern
+    # reads in UTF-8.
+    widened = on?("lookbehind-class")
     body = Array.new(rand(1..2)) do
-      if on?("class") && $ascii_alphabet && rand < 0.4
+      if widened && on?("class") && $ascii_alphabet && rand < 0.4
         char_class(groups).src
       else
         spelled($alphabet.sample, groups)
       end
     end.join
-    body = "(?:#{body})" if rand < 0.2
+    body = "(?:#{body})" if widened && rand < 0.2
   else
     body = seq(depth - 1, groups, in_lookahead: true).src
   end
