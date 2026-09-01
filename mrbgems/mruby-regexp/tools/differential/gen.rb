@@ -60,6 +60,19 @@
 #                       `\u{...}` may list codepoints, and the list is a
 #                       sequence of atoms rather than one, so a quantifier
 #                       behind it repeats the last of them alone.
+#   control             the control characters `\a` `\t` `\n` `\v` `\f` `\r`
+#                       `\e`, as atoms and as members of a class, each in its
+#                       mnemonic spelling or as the `\cX` and `\C-X` that
+#                       name it by its letter; a class range whose ends are
+#                       two of them; and `\b` as a member, the backspace a
+#                       class reads where the word boundary cannot stand. The
+#                       tab joins the subjects, as the newline does under
+#                       `newline`, so the spellings of one have something to
+#                       match, and the cases are written escaped, as
+#                       `newline` writes them. `\c?` is left out: this gem
+#                       reads it as DEL, the way a String does, where CRuby
+#                       folds the `?` to U+001F, and the standing difference
+#                       would drown a report that drew it.
 #   anchor              `^` `$` `\A` `\z` `\Z` `\b` `\B`
 #   newline             the subjects hold newlines. A subject of one line
 #                       answers `^` where it answers `\A` and `$` where it
@@ -157,8 +170,8 @@
 
 require 'optparse'
 
-FEATURES = %w[lazy interval class class-syntax escape anchor newline empty
-              lookahead lookbehind
+FEATURES = %w[lazy interval class class-syntax escape control anchor newline
+              empty lookahead lookbehind
               lookaround-capture backref backref-name backref-forward
               named-group duplicate-name atomic possessive inline-option
               extended call alternation].freeze
@@ -236,6 +249,9 @@ def spelled(ch, groups)
 end
 
 def literal(groups)
+  if on?("control") && rand < 0.12
+    return Atom.new(CONTROLS.values.sample.sample, false)
+  end
   ch = $alphabet.sample
   # `\u{...}` may list codepoints, and the list is a sequence of atoms rather
   # than one: a quantifier behind it repeats the last codepoint alone.
@@ -244,6 +260,29 @@ def literal(groups)
     Atom.new("\\u{#{list}}", false)
   else
     Atom.new(spelled(ch, groups), false)
+  end
+end
+
+# The control characters and the spellings that name each: the mnemonic, and
+# the `\cX` and `\C-X` control marks with the letter whose low bits the
+# character is. `\c?` is not here: this gem reads it as DEL, the way a String
+# does, where CRuby folds the `?` to U+001F.
+CONTROLS = {
+  "\a" => %w[\a \cG \C-G], "\t" => %w[\t \cI \C-I], "\n" => %w[\n \cJ \C-J],
+  "\v" => %w[\v \cK \C-K], "\f" => %w[\f \cL \C-L], "\r" => %w[\r \cM \C-M],
+  "\e" => %w[\e],
+}.freeze
+
+# A member of a class out of the control characters: one of them in one of
+# its spellings, a range whose ends are two of them, or the backspace `\b`,
+# which a class reads where the word boundary cannot stand.
+def control_member
+  case rand(4)
+  when 0 then "\\b"
+  when 1
+    a, b = CONTROLS.keys.sample(2).sort
+    "#{CONTROLS[a].sample}-#{CONTROLS[b].sample}"
+  else CONTROLS.values.sample.sample
   end
 end
 
@@ -260,6 +299,7 @@ POSIX_NAMES = %w[alpha alnum blank cntrl digit graph lower print punct space
 # characters a range is drawn over are sorted before they are written, since
 # CRuby refuses a range whose ends stand the other way round.
 def class_member(groups)
+  return control_member if on?("control") && rand < 0.15
   case rand(4)
   when 0 then spelled($alphabet.sample, groups)
   when 1
@@ -619,9 +659,12 @@ end
 # The subjects are drawn over the alphabet, and over the newline as well when
 # the feature asks for it: a subject of one line answers `^` where it answers
 # `\A` and `$` where it answers `\z`, so the anchors that tell a line from the
-# whole subject part company only here. The newline joins the subjects alone;
-# the patterns are written over the alphabet as before.
-subject_alphabet = $alphabet + (on?("newline") ? ["\n"] : [])
+# whole subject part company only here. The tab joins under `control` the
+# same way, so the spellings of one have something to match. Either character
+# joins the subjects alone; the patterns are written over the alphabet as
+# before.
+subject_alphabet = $alphabet + (on?("newline") ? ["\n"] : []) +
+                   (on?("control") ? ["\t"] : [])
 subjects = (0..opts[:subject_length]).flat_map { |len| subject_alphabet.repeated_permutation(len).map(&:join) }
 # A long subject is a run rather than another string of the alphabet: one
 # character repeated is what a repetition crosses an iteration at a time, and
@@ -637,7 +680,7 @@ subjects.uniq!
 # that would break a line. run.rb reads that header and unescapes the two
 # fields before it runs them.
 ESCAPES = { "\\" => "\\\\", "\n" => "\\n", "\t" => "\\t", "\r" => "\\r" }.freeze
-escaped = on?("newline") || on?("extended")
+escaped = on?("newline") || on?("extended") || on?("control")
 puts "#escaped" if escaped
 
 def spell_field(s, escaped)
