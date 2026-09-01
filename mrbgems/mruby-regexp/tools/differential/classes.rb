@@ -38,8 +38,8 @@
 #                      none, which is the walk this tool had before them
 #       --compare      read the files named as runs and report where they part
 
-POSIX = %w[alpha alnum blank cntrl digit graph lower print punct space upper xdigit word]
-SHORTHAND = %w[\\w \\W \\d \\D \\s \\S]
+POSIX = %w[alpha alnum ascii blank cntrl digit graph lower print punct space upper xdigit word]
+SHORTHAND = %w[\\w \\W \\d \\D \\s \\S \\h \\H]
 
 # Every general category, the groups above them and `LC`; a spread of scripts,
 # `Common` and `Inherited` and `Unknown` among them, since those three are
