@@ -37,7 +37,9 @@
 # Features
 #   lazy                lazy quantifiers `*?` `+?` `??`
 #   interval            interval quantifiers `{n}` `{n,}` `{n,m}` (lazy forms
-#                       when lazy is on)
+#                       when lazy is on), and the comma-first `{,m}`, which
+#                       both engines read as `{0,m}` though neither's
+#                       documentation lists it
 #   class               `.` `\w` `\W` and classes over the alphabet, negated too
 #   class-syntax        what a bracket expression may hold beside a list of
 #                       characters: a range `a-b`, a POSIX bracket
@@ -374,13 +376,14 @@ end
 # possessive, and after an interval it is another repeat, so it is not drawn.
 def quantifier
   q, empty, bare_interval =
-    case rand(on?("interval") ? 6 : 3)
+    case rand(on?("interval") ? 7 : 3)
     when 0 then ["*", true]
     when 1 then ["+", false]
     when 2 then ["?", true]
     when 3 then n = rand(0..2); ["{#{n}}", n == 0, true]
     when 4 then n = rand(0..2); ["{#{n},}", n == 0]
-    else        n = rand(0..1); m = n + rand(1..2); ["{#{n},#{m}}", n == 0]
+    when 5 then n = rand(0..1); m = n + rand(1..2); ["{#{n},#{m}}", n == 0]
+    else        ["{,#{rand(1..2)}}", true]
     end
   if on?("lazy") && rand < 0.4
     q += "?"
