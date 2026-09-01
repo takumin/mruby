@@ -1723,6 +1723,12 @@ mrb_gv_set(mrb_state *mrb, mrb_sym sym, mrb_value v)
   }
   const struct gv_virtual *vt = gv_put(mrb, mrb->globals, sym, v);
   if (vt) {
+    /* the NameError is raised here rather than in a setter because the
+       setter type does not receive the variable's name; the dispatch is
+       the one place that still holds `sym` */
+    if (!vt->set) {
+      mrb_name_error(mrb, sym, "%n is a read-only variable", sym);
+    }
     vt->set(mrb, v);
   }
 }
