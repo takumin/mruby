@@ -193,13 +193,33 @@ That has three consequences worth knowing about:
   set.
 - `IO#pid` names that command, and keeps naming it after the stream is closed.
 
+The arguments are CRuby's, `IO.popen([env,] cmd, mode = "r" [, opt])`. The
+command is whatever `Process.spawn` takes: a String, a `[cmdname, argv0]`
+pair, or an Array of the command and its arguments, which may begin with an
+environment Hash and end with an options Hash as `Process.spawn`'s arguments
+may; a leading Hash outside the Array is the environment as well. The
+options are `Process.spawn`'s too, `chdir:`, `pgroup:` and the redirections
+included, plus `mode:` as another way to give the mode. The pipe's own ends
+are the child's 0 and 1, so naming either of those again is refused with
+`fd 1 specified twice`, as CRuby refuses it.
+
+```ruby
+IO.popen(["ls", "-l"], chdir: "/tmp") { |io| io.read }
+IO.popen({"LANG" => "C"}, "date") { |io| io.read }
+IO.popen("cat", mode: "r+") { |io| io.write "x"; io.close_write; io.read }
+```
+
 With nothing said about it, the command's standard error is left where this
 process's is, as it is in Ruby: diagnostics do not arrive in the pipe the
-command's output is read from. Pass `err:` an IO or a descriptor to place it
-somewhere else.
+command's output is read from. Pass `err:` an IO, a descriptor, a file name
+or `[:child, :out]` to place it somewhere else.
 
-`IO.popen("-")`, Ruby's spelling of "fork instead of executing a command", is
-not supported: mruby has no `fork`.
+Two things differ from CRuby. `IO.popen("-")`, Ruby's spelling of "fork
+instead of executing a command", is not supported: mruby has no `fork`. And
+an option that is neither `Process.spawn`'s nor `mode:` nor `binmode:` is
+refused with `ArgumentError`, where CRuby lets one it does not recognise
+pass unread; a stream here is bytes either way, so `binmode:` asks for what
+it already is.
 
 ## Porting Note
 
