@@ -176,6 +176,13 @@ module Process
         v
       end
 
+      # CRuby takes exactly true or false for these, and says so for anything
+      # else rather than reading it as one of the two.
+      def _spawn_bool(name, v)
+        return v if v == true || v == false
+        raise ArgumentError, "expected true or false as #{name}: #{v.inspect}"
+      end
+
       # [name, value, name, value, ...]; a nil value means "unset".  Deltas,
       # not a whole environment, so nothing here has to read the parent's,
       # which is what keeps this gem independent of mruby-env.
@@ -188,20 +195,33 @@ module Process
       end
 
       # The options Hash, read into the redirection table and the +options+
-      # the primitive takes.  A key that names an option is read here; every
-      # other key names descriptors to redirect.
+      # the primitive takes.  A key that is a Symbol names an option or one
+      # of the three standard descriptors; anything else names descriptors
+      # to redirect.  What is not one of CRuby's options is refused as CRuby
+      # refuses it.
       def _spawn_options(opts, options)
         table = []
         opened = []
+        named = {}
         begin
           opts.each do |key, value|
-            case key
-            when :chdir
-              options[:chdir] = value
-            when :close_others, :unsetenv_others
-              options[key] = value
+            if key.is_a?(Symbol)
+              case key
+              when :in, :out, :err
+                _spawn_redirect(key, value, table, opened, named)
+              when :chdir
+                options[:chdir] = _spawn_str(value)
+              when :close_others, :unsetenv_others
+                options[key] = _spawn_bool(key, value)
+              when :exception
+                raise ArgumentError, "exception option is not allowed"
+              else
+                raise ArgumentError, "wrong exec option symbol: #{key}"
+              end
+            elsif key.is_a?(Integer) || key.is_a?(Array) || key.respond_to?(:fileno)
+              _spawn_redirect(key, value, table, opened, named)
             else
-              _spawn_redirect(key, value, table, opened)
+              raise ArgumentError, "wrong exec option"
             end
           end
         rescue StandardError => e
@@ -219,10 +239,16 @@ module Process
       # `>log 2>&1` does; opening it once per descriptor would give each its
       # own offset into the same file, and each would write over what the
       # other had written.  Which way it is opened follows the first
-      # descriptor named, as it does in Ruby.
-      def _spawn_redirect(key, value, table, opened)
+      # descriptor named, as it does in Ruby.  A descriptor two keys name is
+      # refused as CRuby refuses it: the table is applied in order, and the
+      # second would silently undo the first.
+      def _spawn_redirect(key, value, table, opened, named)
         fds = (key.is_a?(Array) ? key : [key]).map { |k| _spawn_fd(k) }
         return if fds.empty?
+        fds.each do |fd|
+          raise ArgumentError, "fd #{fd} specified twice" if named[fd]
+          named[fd] = true
+        end
         kind, source = _spawn_source(fds[0], value, opened)
         fds.each { |fd| table << fd << kind << source }
       end
@@ -276,9 +302,9 @@ module Process
       end
 
       private :_spawn_normalize, :_spawn_command_line, :_spawn_split,
-              :_spawn_blank?, :_spawn_shell?, :_spawn_str, :_spawn_env,
-              :_spawn_options, :_spawn_redirect, :_spawn_fd, :_spawn_source,
-              :_spawn_open
+              :_spawn_blank?, :_spawn_shell?, :_spawn_str, :_spawn_bool,
+              :_spawn_env, :_spawn_options, :_spawn_redirect, :_spawn_fd,
+              :_spawn_source, :_spawn_open
     end
   end
 end
