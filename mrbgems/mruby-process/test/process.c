@@ -1,9 +1,15 @@
 #include <mruby.h>
+#include <mruby/error.h>
 #include "process_hal.h"
 #include "process_internal.h"
 
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
+
+#ifndef _WIN32
+#include <signal.h>
+#endif
 
 /* Read a decimal into an int64_t, refusing anything the type cannot hold. */
 static int64_t
@@ -82,6 +88,97 @@ test_clock_fits(mrb_state *mrb, mrb_value self)
 #endif
 }
 
+#ifndef _WIN32
+
+/*
+ * The signal state a child is spawned from, set from Ruby so that a test
+ * can ask what a child inherits of it.  Nothing in mruby ignores or blocks
+ * a signal, so the state an embedding process would hand over has to be
+ * made here: each helper sets it, runs the block, and puts it back however
+ * the block ended.
+ */
+
+struct signal_state {
+  int signo;
+  struct sigaction action;
+  sigset_t mask;
+  mrb_value blk;
+};
+
+static mrb_value
+signal_state_yield(mrb_state *mrb, void *p)
+{
+  return mrb_yield_argv(mrb, ((struct signal_state*)p)->blk, 0, NULL);
+}
+
+/* Run the block, then put back whatever `restore` puts back, and only then
+   let an exception the block raised go on. */
+static mrb_value
+signal_state_run(mrb_state *mrb, struct signal_state *st, void (*restore)(struct signal_state*))
+{
+  mrb_bool raised = FALSE;
+  mrb_value result = mrb_protect_error(mrb, signal_state_yield, st, &raised);
+
+  restore(st);
+  if (raised) mrb_exc_raise(mrb, result);
+  return result;
+}
+
+static void
+signal_state_restore_action(struct signal_state *st)
+{
+  sigaction(st->signo, &st->action, NULL);
+}
+
+static void
+signal_state_restore_mask(struct signal_state *st)
+{
+  sigprocmask(SIG_SETMASK, &st->mask, NULL);
+}
+
+/* ProcessSignalTest.ignoring(signo) { ... }
+ *
+ * Runs the block with `signo` ignored by this process, which is what a child
+ * inherits across an exec unless the spawn undoes it.
+ */
+static mrb_value
+test_signal_ignoring(mrb_state *mrb, mrb_value self)
+{
+  struct signal_state st;
+  struct sigaction ignore;
+  mrb_int signo;
+
+  mrb_get_args(mrb, "i&!", &signo, &st.blk);
+  st.signo = (int)signo;
+  memset(&ignore, 0, sizeof(ignore));
+  ignore.sa_handler = SIG_IGN;
+  sigemptyset(&ignore.sa_mask);
+  if (sigaction(st.signo, &ignore, &st.action) == -1) mrb_sys_fail(mrb, "sigaction");
+  return signal_state_run(mrb, &st, signal_state_restore_action);
+}
+
+/* ProcessSignalTest.blocking(signo) { ... }
+ *
+ * Runs the block with `signo` blocked in this thread, which is what a child
+ * inherits across an exec unless the spawn undoes it.
+ */
+static mrb_value
+test_signal_blocking(mrb_state *mrb, mrb_value self)
+{
+  struct signal_state st;
+  sigset_t block;
+  mrb_int signo;
+
+  mrb_get_args(mrb, "i&!", &signo, &st.blk);
+  st.signo = (int)signo;
+  sigemptyset(&block);
+  if (sigaddset(&block, st.signo) == -1) mrb_sys_fail(mrb, "sigaddset");
+  if (sigprocmask(SIG_BLOCK, &block, &st.mask) == -1) mrb_sys_fail(mrb, "sigprocmask");
+  return signal_state_run(mrb, &st, signal_state_restore_mask);
+}
+
+#endif /* !_WIN32 */
+
 void
 mrb_mruby_process_gem_test(mrb_state *mrb)
 {
@@ -90,4 +187,17 @@ mrb_mruby_process_gem_test(mrb_state *mrb)
   mrb_define_module_function(mrb, clock, "convert", test_clock_convert,
                              MRB_ARGS_ARG(3, 1));
   mrb_define_module_function(mrb, clock, "fits?", test_clock_fits, MRB_ARGS_REQ(1));
+
+#ifndef _WIN32
+  {
+    /* Defined only where there are signals to set, so that a test asks
+       whether the module is there rather than which platform this is. */
+    struct RClass *sig = mrb_define_module(mrb, "ProcessSignalTest");
+
+    mrb_define_module_function(mrb, sig, "ignoring", test_signal_ignoring,
+                               MRB_ARGS_REQ(1) | MRB_ARGS_BLOCK());
+    mrb_define_module_function(mrb, sig, "blocking", test_signal_blocking,
+                               MRB_ARGS_REQ(1) | MRB_ARGS_BLOCK());
+  }
+#endif
 }

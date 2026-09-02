@@ -64,6 +64,26 @@ module ProcessTestUtil
     nil
   end
 
+  # Tests that spawn a child from a signal state this process has changed.
+  # The helpers that change it are C, and are defined only where there are
+  # signals to set.
+  def self.signal_state_reason
+    return posix_reason if posix_reason
+    return "this platform has no signal state to hand a child" unless Object.const_defined?(:ProcessSignalTest)
+    nil
+  end
+
+  # The options that reach each way this port has of creating a child, so
+  # that a test of what a child starts with covers both.  Where the host has
+  # a posix_spawn() the plain spawn is that one call; `close_others` is a
+  # sweep only a child can make, so it is what sends a spawn down the fork
+  # instead.  Where the host has no posix_spawn(), both are the fork, and
+  # the test asks the same question twice.
+  def self.each_spawn_path
+    yield({})
+    yield({close_others: true})
+  end
+
   # Whether Process.kill turned +pid+ down rather than passing it on.  What a
   # non-positive pid selects is the platform's to say, so its answer cannot be
   # asserted here; that it was asked at all can be.
@@ -605,6 +625,60 @@ assert('Process.spawn with an option it does not take') do
   # wrote one is expecting it to happen.  A redirection is an option too, so
   # what is refused is only what neither list holds.
   assert_raise(ArgumentError) { Process.spawn("sh", "-c", "exit 0", pgroup: true) }
+end
+
+assert('Process.spawn starts the child with SIGPIPE at its default') do
+  skip ProcessTestUtil.signal_state_reason if ProcessTestUtil.signal_state_reason
+
+  # A process that ignores SIGPIPE, as one that talks to sockets commonly
+  # does, would hand that to every command it runs: an exec keeps an ignored
+  # signal ignored.  The spawn puts this one back, as CRuby's does, so a
+  # shell that sends itself the signal dies of it rather than going on.
+  pipe = Signal.list["PIPE"]
+  ProcessSignalTest.ignoring(pipe) do
+    ProcessTestUtil.each_spawn_path do |opts|
+      status = ProcessTestUtil.run("kill -PIPE $$; exit 7", **opts)
+      assert_true status.signaled?
+      assert_equal pipe, status.termsig
+    end
+  end
+end
+
+assert('Process.spawn starts the child with nothing blocked') do
+  skip ProcessTestUtil.signal_state_reason if ProcessTestUtil.signal_state_reason
+
+  # A signal blocked in this thread would stay blocked across the exec, and a
+  # command sent one would carry it around undelivered until it exited on its
+  # own.  The spawn empties the mask, so the shell dies of the signal it sends
+  # itself rather than reaching its exit.
+  term = Signal.list["TERM"]
+  ProcessSignalTest.blocking(term) do
+    ProcessTestUtil.each_spawn_path do |opts|
+      status = ProcessTestUtil.run("kill -TERM $$; exit 7", **opts)
+      assert_true status.signaled?
+      assert_equal term, status.termsig
+    end
+  end
+end
+
+assert('Process.spawn leaves any other ignored signal ignored') do
+  skip ProcessTestUtil.signal_state_reason if ProcessTestUtil.signal_state_reason
+
+  # SIGPIPE is the one exception.  Every other signal this process ignores
+  # stays ignored in the command, which is what an exec does and what a
+  # caller who ignored it meant; the same shell dies of the signal when
+  # nothing ignores it, so what is measured is the inheritance.
+  usr1 = Signal.list["USR1"]
+  ProcessTestUtil.each_spawn_path do |opts|
+    status = ProcessTestUtil.run("kill -USR1 $$; exit 7", **opts)
+    assert_true status.signaled?
+    assert_equal usr1, status.termsig
+  end
+  ProcessSignalTest.ignoring(usr1) do
+    ProcessTestUtil.each_spawn_path do |opts|
+      assert_equal 7, ProcessTestUtil.run("kill -USR1 $$; exit 7", **opts).exitstatus
+    end
+  end
 end
 
 assert('Process.waitpid') do

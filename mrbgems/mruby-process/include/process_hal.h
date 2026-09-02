@@ -320,6 +320,14 @@ int mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo);
  * command is reported here, through the return value and errno, rather than
  * left for the caller to guess from an exit status.
  *
+ * On a platform with signals, the command starts with none blocked and with
+ * SIGPIPE at its default disposition, whatever this process has done with
+ * either; any other signal this process ignores stays ignored, as it does
+ * across an exec.  A process that ignores SIGPIPE, as one that talks to
+ * sockets commonly does, would otherwise hand that to every command it
+ * runs, and a signal blocked in the calling thread would stay blocked in
+ * the command.  A platform without signals has nothing to do here.
+ *
  * @return 0 on success with *out holding a child registered in `ctx`,
  *         -1 on error (sets errno)
  */

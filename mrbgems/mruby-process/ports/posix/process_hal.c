@@ -666,6 +666,52 @@ close_fds(int low, int high, long maxfd)
   for (fd = low; fd <= high; fd++) close(fd);
 }
 
+/* How many signals there can be, one past the highest number.  Every host
+   this port has run on names it, but it is not POSIX; a host that does not
+   is given the widest table any of them has, since a number past the end is
+   refused below and a number short of it would be a signal left alone. */
+#ifndef NSIG
+# define NSIG 65
+#endif
+
+/* What the child does about signals before it execs.
+
+   Every signal is blocked here, since the parent blocked them all before the
+   fork: a handler the embedding process installed is inherited by the child,
+   and a signal arriving now would run it in a process it was never written
+   for.  So each handler is put back to its default while nothing can be
+   delivered, and the mask is emptied only then.  The exec would reset the
+   handlers itself, but not before this window closed.
+
+   Two things an exec carries over are undone here, as CRuby undoes them.  A
+   signal this thread blocks would stay blocked in the command, so none is.
+   A SIGPIPE the process ignores, as one that talks to sockets commonly
+   does, would be ignored by every command it runs, and `yes | head` would
+   then spin rather than stop, so that one is defaulted; any other signal
+   the process ignores stays ignored, since that is what an exec keeps and
+   what a caller who ignored it meant.
+
+   signal() and sigprocmask() are async-signal-safe.  Returns 0, or -1 with
+   errno set. */
+static int
+child_signals(void)
+{
+  sigset_t none;
+  int sig;
+
+  for (sig = 1; sig < NSIG; sig++) {
+    void (*handler)(int) = signal(sig, SIG_DFL);
+
+    if (handler == SIG_ERR) continue;   /* not a signal, or not one to be set */
+#ifdef SIGPIPE
+    if (sig == SIGPIPE) continue;
+#endif
+    if (handler == SIG_IGN) signal(sig, SIG_IGN);
+  }
+  sigemptyset(&none);
+  return sigprocmask(SIG_SETMASK, &none, NULL);
+}
+
 /* Everything the child does between fork() and exec().  It reports a failure
    by writing errno down `errfd`, which the parent is reading; the write end
    is close-on-exec, so a successful exec closes it and the parent's read
@@ -682,6 +728,8 @@ child_exec(const mrb_process_spawn_params *params, const struct exec_plan *plan,
   int low = 3;
   int denied = 0;
   mrb_int max_target = -1;
+
+  if (child_signals() == -1) goto fail;
 
   for (i = 0; i < params->nredirects; i++) {
     if (params->redirects[i].child_fd > max_target) {
@@ -844,6 +892,7 @@ spawn_fork(mrb_state *mrb, const mrb_process_spawn_params *params,
   int *keep = NULL;
   long maxfd;
   int child_errno, saved_errno;
+  sigset_t all, saved;
   pid_t pid;
   size_t i;
 
@@ -869,12 +918,25 @@ spawn_fork(mrb_state *mrb, const mrb_process_spawn_params *params,
 
   if (errpipe(errfds) == -1) goto error;
 
+  /* No signal may be delivered to the child until child_signals() has put
+     every handler back to its default, and the mask is the one thing a
+     fork carries across that decides it; see there.  It is this thread's
+     mask on every host this port runs on, which is what sigprocmask()
+     sets there whatever POSIX leaves unsaid about a process with threads,
+     and the parent's is put back the moment the fork has happened. */
+  sigfillset(&all);
+  if (sigprocmask(SIG_SETMASK, &all, &saved) == -1) goto error;
   pid = fork();
-  if (pid == -1) goto error;
+  saved_errno = errno;
   if (pid == 0) {
     close(errfds[0]);
     child_exec(params, plan, sources, errfds[1], keep, maxfd);
     /* not reached */
+  }
+  sigprocmask(SIG_SETMASK, &saved, NULL);
+  if (pid == -1) {
+    errno = saved_errno;
+    goto error;
   }
 
   close(errfds[1]);
@@ -967,7 +1029,11 @@ spawn_posix(mrb_state *mrb, const mrb_process_spawn_params *params,
             const struct exec_plan *plan, pid_t *out_pid)
 {
   posix_spawn_file_actions_t actions;
+  posix_spawnattr_t attr;
   int actions_ready = 0;
+  int attr_ready = 0;
+  sigset_t set;
+  short attr_flags = 0;
   int *dups = NULL;
   mrb_int max_target = -1;
   pid_t pid = -1;
@@ -989,6 +1055,27 @@ spawn_posix(mrb_state *mrb, const mrb_process_spawn_params *params,
     }
     for (i = 0; i < params->nredirects; i++) dups[i] = -1;
   }
+
+  /* The signal state the command starts in, which is what child_signals()
+     gives it on the fork path: nothing blocked, and SIGPIPE at its default
+     however this process has it.  The handlers a fork would have had to
+     put back are nothing to a posix_spawn(), which runs no code of this
+     process's in the child. */
+  err = posix_spawnattr_init(&attr);
+  if (err != 0) goto done;
+  attr_ready = 1;
+  sigemptyset(&set);
+  err = posix_spawnattr_setsigmask(&attr, &set);
+  if (err != 0) goto done;
+  attr_flags |= POSIX_SPAWN_SETSIGMASK;
+#ifdef SIGPIPE
+  sigaddset(&set, SIGPIPE);
+  err = posix_spawnattr_setsigdefault(&attr, &set);
+  if (err != 0) goto done;
+  attr_flags |= POSIX_SPAWN_SETSIGDEF;
+#endif
+  err = posix_spawnattr_setflags(&attr, attr_flags);
+  if (err != 0) goto done;
 
   err = posix_spawn_file_actions_init(&actions);
   if (err != 0) goto done;
@@ -1054,7 +1141,7 @@ spawn_posix(mrb_state *mrb, const mrb_process_spawn_params *params,
      here is what a host that handed one over empty would report. */
   err = ENOENT;
   for (i = 0; plan->path[i] != NULL; i++) {
-    err = posix_spawn(&pid, plan->path[i], &actions, NULL,
+    err = posix_spawn(&pid, plan->path[i], &actions, &attr,
                       (char*const*)plan->argv, plan->envp);
     if (err == 0) goto done;
     switch (err) {
@@ -1065,7 +1152,7 @@ spawn_posix(mrb_state *mrb, const mrb_process_spawn_params *params,
          nothing to fall back to and reports what it was told. */
       if (plan->sh_argv == NULL) goto done;
       plan->sh_argv[1] = plan->path[i];
-      err = posix_spawn(&pid, "/bin/sh", &actions, NULL,
+      err = posix_spawn(&pid, "/bin/sh", &actions, &attr,
                         (char*const*)plan->sh_argv, plan->envp);
       goto done;
     case EACCES:
@@ -1090,6 +1177,7 @@ done:
     mrb_free(mrb, dups);
   }
   if (actions_ready) posix_spawn_file_actions_destroy(&actions);
+  if (attr_ready) posix_spawnattr_destroy(&attr);
   if (err != 0) {
     errno = err;
     return -1;

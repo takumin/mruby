@@ -114,6 +114,14 @@ user-mode emulation, which carries the `vfork()` glibc reports through out as
 a `fork()`. The fork path reports through a pipe of its own and depends on
 neither.
 
+The command starts with no signal blocked and with `SIGPIPE` at its default
+disposition, whatever this process has done with either, as it does under
+CRuby. An exec keeps both, so a process that ignores `SIGPIPE`, as one that
+talks to sockets commonly does, would otherwise hand that to every command it
+runs, and `yes | head` would spin where it should stop. Any other signal this
+process ignores stays ignored in the command, which is what an exec does and
+what ignoring it meant; a handler never survives an exec at all.
+
 ## Redirecting the child's descriptors
 
 A trailing Hash is options. `:in`, `:out`, `:err` and plain descriptor numbers
@@ -509,5 +517,8 @@ process it runs in may already have some, and a fork taken while another thread
 holds a lock leaves the child holding a lock nobody will release. The bundled
 POSIX port therefore assembles the child's environment, resolves the command
 against the `PATH` it is being given, and reads `_SC_OPEN_MAX` before it forks,
-so that what is left on the other side is `dup2()`, `close()`, `chdir()` and
-`execve()`.
+so that what is left on the other side is `signal()`, `sigprocmask()`,
+`dup2()`, `close()`, `chdir()` and `execve()`. It also blocks every signal
+across the fork and has the child put each handler back to its default before
+it unblocks them, so that a handler the embedding process installed never runs
+in a child it was not written for.
