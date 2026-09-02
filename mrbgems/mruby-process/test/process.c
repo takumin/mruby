@@ -9,6 +9,7 @@
 
 #ifndef _WIN32
 #include <signal.h>
+#include <unistd.h>
 #endif
 
 /* Read a decimal into an int64_t, refusing anything the type cannot hold. */
@@ -177,6 +178,24 @@ test_signal_blocking(mrb_state *mrb, mrb_value self)
   return signal_state_run(mrb, &st, signal_state_restore_mask);
 }
 
+/* ProcessIdentityTest.uid, .gid -> Integer
+ *
+ * Who this process is, so that a test can ask a child to become that and
+ * know the request is one an unprivileged process may make: setuid() to
+ * the identity one already has is allowed to anyone.  This gem defines no
+ * Process.uid yet, and a test of the spawn option should not wait on it. */
+static mrb_value
+test_identity_uid(mrb_state *mrb, mrb_value self)
+{
+  return mrb_int_value(mrb, (mrb_int)getuid());
+}
+
+static mrb_value
+test_identity_gid(mrb_state *mrb, mrb_value self)
+{
+  return mrb_int_value(mrb, (mrb_int)getgid());
+}
+
 #endif /* !_WIN32 */
 
 void
@@ -198,6 +217,12 @@ mrb_mruby_process_gem_test(mrb_state *mrb)
                                MRB_ARGS_REQ(1) | MRB_ARGS_BLOCK());
     mrb_define_module_function(mrb, sig, "blocking", test_signal_blocking,
                                MRB_ARGS_REQ(1) | MRB_ARGS_BLOCK());
+  }
+  {
+    struct RClass *id = mrb_define_module(mrb, "ProcessIdentityTest");
+
+    mrb_define_module_function(mrb, id, "uid", test_identity_uid, MRB_ARGS_NONE());
+    mrb_define_module_function(mrb, id, "gid", test_identity_gid, MRB_ARGS_NONE());
   }
 #endif
 }
