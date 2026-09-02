@@ -160,9 +160,16 @@ rest, since what is open is what only the child can be asked, and so is a
 `1 => 1`, which asks for a descriptor to be left open rather than moved and is
 a file action not every host that has `posix_spawn(3)` defines.
 
+A descriptor two keys name is refused with `fd N specified twice`, as CRuby
+refuses it: the table is applied in order, and the second entry would
+silently undo the first.
+
 An option this build does not act on is refused with `ArgumentError` rather
-than dropped. `[cmdname, argv0]`, `pgroup`, `umask` and `rlimit_*` are not
-supported.
+than dropped, in the words CRuby refuses one, `wrong exec option symbol:
+pgroup`: a caller that wrote one is expecting it to happen. `[cmdname,
+argv0]`, `pgroup`, `umask` and `rlimit_*` are not supported.
+`:close_others` and `:unsetenv_others` take exactly `true` or `false`, and
+`:exception` is `system`'s and is refused, as CRuby refuses it.
 
 ## The child's environment and directory
 

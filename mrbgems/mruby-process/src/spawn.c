@@ -83,7 +83,12 @@ opt_get(mrb_state *mrb, mrb_value opts, mrb_sym key)
 static mrb_bool
 opt_bool(mrb_state *mrb, mrb_value opts, mrb_sym key)
 {
-  return mrb_test(opt_get(mrb, opts, key));
+  mrb_value v = opt_get(mrb, opts, key);
+
+  if (mrb_nil_p(v) || mrb_false_p(v)) return FALSE;
+  if (mrb_true_p(v)) return TRUE;
+  mrb_raisef(mrb, E_ARGUMENT_ERROR, "expected true or false as %n: %!v", key, v);
+  return FALSE; /* not reached */
 }
 
 static const char*

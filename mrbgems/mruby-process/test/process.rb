@@ -646,10 +646,49 @@ end
 assert('Process.spawn with an option it does not take') do
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
 
-  # An option nothing acts on is refused rather than dropped: a caller that
-  # wrote one is expecting it to happen.  A redirection is an option too, so
-  # what is refused is only what neither list holds.
-  assert_raise(ArgumentError) { Process.spawn("sh", "-c", "exit 0", pgroup: true) }
+  # An option nothing acts on is refused rather than dropped, in the words
+  # CRuby refuses it: a caller that wrote one is expecting it to happen.  A
+  # redirection is an option too, so what is refused is only what neither
+  # list holds; a key that is not even a Symbol is not an option at all.
+  assert_raise_with_message(ArgumentError, "wrong exec option symbol: foo") do
+    Process.spawn("sh", "-c", "exit 0", foo: true)
+  end
+  assert_raise_with_message(ArgumentError, "wrong exec option") do
+    Process.spawn("sh", "-c", "exit 0", "pgroup" => true)
+  end
+  # `exception:` is `system`'s, and CRuby's spawn says so rather than
+  # ignoring it.
+  assert_raise_with_message(ArgumentError, "exception option is not allowed") do
+    Process.spawn("sh", "-c", "exit 0", exception: true)
+  end
+end
+
+assert('Process.spawn takes true or false for a flag') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # CRuby reads exactly true or false for these, and says so for anything
+  # else rather than reading a String as one of the two.  `exit 0` is the
+  # shell's on every platform, cmd.exe's included.
+  [:close_others, :unsetenv_others].each do |flag|
+    assert_raise_with_message(ArgumentError, "expected true or false as #{flag}: \"x\"") do
+      Process.spawn("exit 0", flag => "x")
+    end
+    assert_true ProcessTestUtil.run("exit 0", flag => false).success?
+  end
+end
+
+assert('Process.spawn refuses a descriptor named twice') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # The table is applied in order, and a second entry for the same
+  # descriptor would silently undo the first; CRuby refuses it, naming the
+  # descriptor, and so does this, whichever spelling each entry used.
+  assert_raise_with_message(ArgumentError, "fd 1 specified twice") do
+    Process.spawn("sh", "-c", "exit 0", out: 2, 1 => 2)
+  end
+  assert_raise_with_message(ArgumentError, "fd 1 specified twice") do
+    Process.spawn("sh", "-c", "exit 0", [1, 1] => 2)
+  end
 end
 
 assert('Process.spawn keeps its helpers to itself') do
