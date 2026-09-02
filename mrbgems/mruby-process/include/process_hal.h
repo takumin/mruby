@@ -51,20 +51,15 @@
  * and a `hal-process-<conf>` gem may stand in for the bundled ports
  * altogether.  What each macro says, and what it guards, is written where it
  * is defined.
+ *
+ * MRB_NO_PROCESS_SPAWN is a build's veto over process creation: a
+ * configuration that defines it gets a gem with no `Process.spawn` whatever
+ * the port could do.
  */
 #include "process_hal_features.h"
 
-/* A platform that does not let a process create another has no process
-   creation whatever the configuration asks for, so it says so here rather
-   than leaving every build for it to be configured by hand.  iOS is the one
-   this gem knows of. */
-#if defined(__APPLE__)
-# include <TargetConditionals.h>
-# if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-#  ifndef MRB_NO_PROCESS_SPAWN
-#   define MRB_NO_PROCESS_SPAWN 1
-#  endif
-# endif
+#ifdef MRB_NO_PROCESS_SPAWN
+# undef MRB_HAL_PROCESS_HAS_SPAWN
 #endif
 
 MRB_BEGIN_DECL
@@ -307,6 +302,7 @@ int mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo);
  * HAL Interface - children
  */
 
+#ifdef MRB_HAL_PROCESS_HAS_SPAWN
 /*
  * Create a child process.
  *
@@ -329,6 +325,7 @@ int mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo);
 int mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
                           const mrb_process_spawn_params *params,
                           mrb_hal_process_child **out);
+#endif /* MRB_HAL_PROCESS_HAS_SPAWN */
 
 /*
  * Which children a wait draws from.

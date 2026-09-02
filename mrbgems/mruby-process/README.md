@@ -70,9 +70,10 @@ and mruby-io mark theirs: `respond_to?` answers false for it and a call raises
 `NotImplementedError`. A port that declares a capability it does not implement
 fails to link.
 
-| macro                      | methods                                           | posix | win |
-| -------------------------- | ------------------------------------------------- | ----- | --- |
-| `MRB_HAL_PROCESS_HAS_WAIT` | `Process.wait`, `.waitpid`, `.wait2`, `.waitpid2` | o     | o   |
+| macro                       | methods                                           | posix         | win |
+| --------------------------- | ------------------------------------------------- | ------------- | --- |
+| `MRB_HAL_PROCESS_HAS_SPAWN` | `Process.spawn`                                   | o, not on iOS | o   |
+| `MRB_HAL_PROCESS_HAS_WAIT`  | `Process.wait`, `.waitpid`, `.wait2`, `.waitpid2` | o             | o   |
 
 `Process::WNOHANG` and `Process::WUNTRACED` are the shape of the call and are
 defined whether or not the port waits. What a port has but cannot do for the
@@ -492,12 +493,17 @@ constrains; this list is a map.
 
 ## Build configuration
 
-`MRB_NO_PROCESS_SPAWN` builds the gem without process creation. `Process.spawn`
-is then not defined at all, rather than defined and always failing, so a
-program can ask `Process.respond_to?(:spawn)` before it commits to a plan that
-needs a child. `process_hal.h` sets it for iOS, where a process may not spawn
-another, so that platform needs no configuring to be told the truth. Everything
-else, `Process.pid` and signals and `Process::Status`, is unaffected.
+Whether this build can create a process is the port's to say. The port
+publishes it as `MRB_HAL_PROCESS_HAS_SPAWN` in the `process_hal_features.h`
+under its `include/`, which `process_hal.h` reads before it declares anything;
+the POSIX port leaves the macro out on iOS, where a process may not spawn
+another, so that platform needs no configuring to be told the truth.
+`MRB_NO_PROCESS_SPAWN` is a build's veto: a configuration that defines it gets
+the gem without process creation whatever the port could do. Either way
+`Process.spawn` is then not defined at all, rather than defined and always
+failing, so a program can ask `Process.respond_to?(:spawn)` before it commits
+to a plan that needs a child. Everything else, `Process.pid` and signals and
+`Process::Status`, is unaffected.
 
 `IO.popen` follows: with no `Process.spawn` to build on, it raises
 `NotImplementedError`. A build without this gem at all has no `IO.popen`

@@ -21,4 +21,8 @@
    open and says nothing about parentage. */
 #define MRB_HAL_PROCESS_HAS_WAIT
 
+/* CreateProcessW(): `Process.spawn`.  It is there on every Windows this port
+   runs on. */
+#define MRB_HAL_PROCESS_HAS_SPAWN
+
 #endif /* MRUBY_PROCESS_HAL_FEATURES_H */

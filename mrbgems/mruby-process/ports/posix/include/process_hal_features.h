@@ -17,4 +17,14 @@
    `Process.waitpid2`. */
 #define MRB_HAL_PROCESS_HAS_WAIT
 
+/* posix_spawn(3), or fork(2) and exec(3): `Process.spawn`.  A process may
+   create another everywhere this port runs but iOS, where the platform lets
+   no process do so whatever the configuration asks for. */
+#if defined(__APPLE__)
+# include <TargetConditionals.h>
+#endif
+#if !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
+# define MRB_HAL_PROCESS_HAS_SPAWN
+#endif
+
 #endif /* MRUBY_PROCESS_HAL_FEATURES_H */
