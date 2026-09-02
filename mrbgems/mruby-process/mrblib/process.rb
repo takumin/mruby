@@ -36,11 +36,14 @@ module Process
       # A single String is a command line, and it reaches the system shell
       # only when there is something in it for a shell to do; otherwise it
       # is split on blanks and the command is run directly.  Two or more
-      # arguments are always the command and its arguments.
+      # arguments are always the command and its arguments, and a first
+      # argument that is a two-element Array names the image apart from what
+      # the command sees itself called as:
       #
       #   Process.spawn("echo hello > out.txt")     # through the shell
       #   Process.spawn("echo hello")               # no shell involved
       #   Process.spawn("echo", "hello")            # no shell involved
+      #   Process.spawn(["sh", "myshell"], "-c", "echo $0")   # $0 is myshell
       #
       #   pid = Process.spawn("sleep", "1")
       #   Process.waitpid(pid)
@@ -90,8 +93,9 @@ module Process
       # `private` inside `class << self` opens no default-visibility scope.
 
       # What the positional arguments say: the environment deltas, the argv,
-      # whether the command is the shell's, and the options Hash still to
-      # be read.
+      # the two things about the command that are not in either, which is
+      # whether it is the shell's and which image it is, and the options
+      # Hash still to be read.
       def _spawn_normalize(args)
         args = args.dup
         env = args[0].is_a?(Hash) ? _spawn_env(args.shift) : []
@@ -102,9 +106,15 @@ module Process
         options = {}
 
         if args[0].is_a?(Array)
-          raise NotImplementedError, "[cmdname, argv0] form is not supported"
-        end
-        if args.size == 1
+          # [cmdname, argv0]: the image to run, and what it sees itself
+          # called as.  Never the shell's, however few arguments follow.
+          pair = args[0]
+          raise ArgumentError, "wrong first argument" unless pair.size == 2
+          options[:prog] = _spawn_str(pair[0])
+          options[:shell] = false
+          args[0] = pair[1]
+          argv = args.map { |a| _spawn_str(a) }
+        elsif args.size == 1
           shell, argv = _spawn_command_line(_spawn_str(args[0]))
           options[:shell] = shell
         else
