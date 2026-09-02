@@ -70,6 +70,7 @@ Process.spawn("a", "> b")        # two or more arguments: an argument
 
 Process.spawn({"LANG" => "C"}, "date")            # a leading Hash is env
 Process.spawn("make", chdir: "/tmp/build")
+Process.spawn(["sh", "myshell"], "-c", "echo $0")  # the image, and its argv[0]
 ```
 
 A single String is a command line, and it reaches the system shell only when
@@ -87,17 +88,19 @@ which is the rule CRuby follows and what makes
 shell to complain and exit 127.
 
 Two or more arguments name the image and its arguments, and no shell is
-involved whatever they hold. A bare name is looked up on `PATH`; a name that
-is a path is run as written, and handed to the shell if it turns out not to
-be an executable image, as `execvp(3)` hands one over. The lookup is CRuby's
-rather than `execvp(3)`'s: each `PATH` directory is asked, before any child
-is made, whether it holds something of that name that is not a directory and
-that this process may execute, and only what answers is tried. So a command
-costs one exec wherever it sits on the `PATH`, where `execvp(3)` would try an
-exec in every directory before it, and a name that stands for nothing
-runnable anywhere on it is `Errno::ENOENT`, where `execvp(3)` would say
-`EACCES` for the directories it stumbled over; `Process.spawn("..")` is the
-case in point.
+involved whatever they hold. A first argument that is a two-element Array,
+`[cmdname, argv0]`, names the image apart from what the command sees itself
+called as, and is never the shell's however few arguments follow it. A bare
+name is looked up on `PATH`; a name that is a path is run as written, and
+handed to the shell if it turns out not to be an executable image, as
+`execvp(3)` hands one over. The lookup is CRuby's rather than `execvp(3)`'s:
+each `PATH` directory is asked, before any child is made, whether it holds
+something of that name that is not a directory and that this process may
+execute, and only what answers is tried. So a command costs one exec
+wherever it sits on the `PATH`, where `execvp(3)` would try an exec in every
+directory before it, and a name that stands for nothing runnable anywhere on
+it is `Errno::ENOENT`, where `execvp(3)` would say `EACCES` for the
+directories it stumbled over; `Process.spawn("..")` is the case in point.
 
 A command that cannot be run raises the `Errno` the attempt failed with,
 rather than leaving a child that exited 127 to be told apart from a command
@@ -166,8 +169,8 @@ silently undo the first.
 
 An option this build does not act on is refused with `ArgumentError` rather
 than dropped, in the words CRuby refuses one, `wrong exec option symbol:
-pgroup`: a caller that wrote one is expecting it to happen. `[cmdname,
-argv0]`, `pgroup`, `umask` and `rlimit_*` are not supported.
+pgroup`: a caller that wrote one is expecting it to happen. `pgroup`,
+`umask` and `rlimit_*` are not supported.
 `:close_others` and `:unsetenv_others` take exactly `true` or `false`, and
 `:exception` is `system`'s and is refused, as CRuby refuses it.
 

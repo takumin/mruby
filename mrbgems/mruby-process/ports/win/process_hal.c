@@ -666,6 +666,42 @@ resolve_redirects(const mrb_process_spawn_params *params, HANDLE slots[3])
   return 0;
 }
 
+/* The image the `[cmdname, argv0]` form names, found the way CreateProcessW
+   would have found the first word of the command line had it been left to:
+   on the PATH, with `.exe` supplied where the name has no extension.  It
+   is handed to CreateProcessW apart from the command line, which is what
+   lets argv[0] there be whatever the caller wrote.  Returns the path, or
+   NULL with errno set. */
+static wchar_t*
+resolve_program(mrb_state *mrb, const char *prog)
+{
+  wchar_t *name = utf8_to_wide(mrb, prog);
+  wchar_t *path;
+  DWORD len;
+
+  if (name == NULL) return NULL;
+  len = SearchPathW(NULL, name, L".exe", 0, NULL, NULL);
+  if (len == 0) {
+    mrb_free(mrb, name);
+    errno = ENOENT;
+    return NULL;
+  }
+  path = (wchar_t*)mrb_malloc_simple(mrb, sizeof(wchar_t) * len);
+  if (path == NULL) {
+    mrb_free(mrb, name);
+    errno = ENOMEM;
+    return NULL;
+  }
+  if (SearchPathW(NULL, name, L".exe", len, path, NULL) == 0) {
+    mrb_free(mrb, name);
+    mrb_free(mrb, path);
+    errno = ENOENT;
+    return NULL;
+  }
+  mrb_free(mrb, name);
+  return path;
+}
+
 /* A command line that is nothing but blanks names no command, and handing it
    to the shell would start one that does nothing and reports success.  What
    the caller asked to run does not exist, which is what ENOENT says. */
@@ -694,12 +730,13 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   HANDLE dups[3] = { NULL, NULL, NULL };
   DWORD ninherit = 0, i, j;
   wchar_t *cmdline = NULL;
+  wchar_t *appname = NULL;
   wchar_t *envblock = NULL;
   wchar_t *workdir = NULL;
   int saved_errno;
 
   if (params->argv == NULL || params->argv[0] == NULL ||
-      command_is_blank(params->argv[0])) {
+      command_is_blank(params->prog != NULL ? params->prog : params->argv[0])) {
     errno = ENOENT;
     return -1;
   }
@@ -714,6 +751,10 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
 
   cmdline = build_command_line(mrb, params);
   if (cmdline == NULL) goto error;
+  if (params->prog != NULL) {
+    appname = resolve_program(mrb, params->prog);
+    if (appname == NULL) goto error;
+  }
   if (build_environment(mrb, params, &envblock) != 0) goto error;
   if (params->chdir != NULL) {
     workdir = utf8_to_wide(mrb, params->chdir);
@@ -790,7 +831,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
      leak into the next, and a read end nobody meant to give away keeps a
      pipe from ever reaching EOF.  With no handle to pass, nothing is passed. */
   memset(&pi, 0, sizeof(pi));
-  if (!CreateProcessW(NULL, cmdline, NULL, NULL, (ninherit > 0) ? TRUE : FALSE,
+  if (!CreateProcessW(appname, cmdline, NULL, NULL, (ninherit > 0) ? TRUE : FALSE,
                       flags, envblock,
                       workdir, &si.StartupInfo, &pi)) {
     set_errno_from_win32(GetLastError());
@@ -806,6 +847,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
     mrb_free(mrb, attrs);
   }
   mrb_free(mrb, cmdline);
+  mrb_free(mrb, appname);
   mrb_free(mrb, envblock);
   mrb_free(mrb, workdir);
 
@@ -829,6 +871,7 @@ error:
     mrb_free(mrb, attrs);
   }
   mrb_free(mrb, cmdline);
+  mrb_free(mrb, appname);
   mrb_free(mrb, envblock);
   mrb_free(mrb, workdir);
   mrb_free(mrb, child);

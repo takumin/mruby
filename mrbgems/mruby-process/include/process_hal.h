@@ -250,6 +250,7 @@ typedef enum mrb_process_spawn_kind {
 
 typedef struct mrb_process_spawn_params {
   mrb_process_spawn_kind kind;
+  const char *prog;                         /* the image to run, or NULL for argv[0] */
   const char *const *argv;                  /* NULL-terminated; SHELL uses argv[0] only */
   const mrb_process_env_entry *env;         /* deltas against the parent environment */
   size_t nenv;

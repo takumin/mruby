@@ -543,6 +543,27 @@ assert('Process.spawn with a redirection it cannot read') do
   assert_raise(ArgumentError) { Process.spawn("exit 0", 1 => :nonsense) }
 end
 
+assert('Process.spawn with [cmdname, argv0]') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # The image to run and what it sees itself called as, given apart.  The
+  # shell is told its own name is `mruby-argv0`, and that is what `$0`
+  # reads there.
+  assert_true ProcessTestUtil.run(["sh", "mruby-argv0"], "-c", 'test "$0" = mruby-argv0').success?
+  # A path is run as written, and the form is never the shell's: a single
+  # pair with nothing after it runs the image directly.
+  assert_true ProcessTestUtil.run(["/bin/sh", "x"], "-c", "exit 0").success?
+  assert_equal 0, ProcessTestUtil.run(["true", "not-a-shell-line >"]).exitstatus
+
+  # The pair is exactly two Strings, and the image has to be somewhere.
+  assert_raise_with_message(ArgumentError, "wrong first argument") { Process.spawn(["sh"]) }
+  assert_raise_with_message(ArgumentError, "wrong first argument") { Process.spawn(["sh", "a", "b"]) }
+  assert_raise(TypeError) { Process.spawn([:sh, "a"]) }
+  assert_raise(TypeError) { Process.spawn(["sh", :a]) }
+  assert_raise(Errno::ENOENT) { Process.spawn(["mruby-no-such-command", "sh"]) }
+  assert_raise(Errno::ENOENT) { Process.spawn(["", "sh"]) }
+end
+
 assert('Process.spawn looks a bare name up as CRuby does') do
   skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
 

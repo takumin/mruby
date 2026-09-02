@@ -192,6 +192,7 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
   memset(&params, 0, sizeof(params));
   params.kind = opt_bool(mrb, opts, MRB_SYM(shell)) ? MRB_PROCESS_SPAWN_SHELL
                                                     : MRB_PROCESS_SPAWN_ARGV;
+  params.prog = opt_cstr(mrb, opts, MRB_SYM(prog));
   params.chdir = opt_cstr(mrb, opts, MRB_SYM(chdir));
   if (opt_bool(mrb, opts, MRB_SYM(close_others))) params.flags |= MRB_PROCESS_SPAWN_CLOSE_OTHERS;
   if (opt_bool(mrb, opts, MRB_SYM(unsetenv_others))) params.flags |= MRB_PROCESS_SPAWN_UNSETENV_OTHERS;

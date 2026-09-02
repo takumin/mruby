@@ -413,7 +413,10 @@ plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_p
     while (environ[nparent] != NULL) nparent++;
   }
 
-  name = params->argv[0];
+  /* The image is argv[0] unless the caller named it apart, which is what
+     the `[cmdname, argv0]` form does: the image is looked up and run, and
+     argv[0] is whatever the caller wrote. */
+  name = (params->prog != NULL) ? params->prog : params->argv[0];
   namelen = strlen(name);
   if (params->kind == MRB_PROCESS_SPAWN_ARGV && strchr(name, '/') == NULL) {
     if (path_env == NULL) {
@@ -1233,7 +1236,7 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
      which is also what a command line of nothing but blanks arrives as. */
   memset(&plan, 0, sizeof(plan));
   if (params->argv == NULL || params->argv[0] == NULL ||
-      params->argv[0][0] == '\0') {
+      (params->prog != NULL ? params->prog : params->argv[0])[0] == '\0') {
     errno = ENOENT;
     return -1;
   }
