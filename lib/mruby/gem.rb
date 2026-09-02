@@ -26,6 +26,7 @@ module MRuby
 
       attr_accessor :rbfiles, :objs
       attr_reader :port_objs
+      attr_accessor :port_include_dir
       attr_writer :test_objs, :test_rbfiles
       attr_accessor :test_args, :test_preload
 
@@ -67,12 +68,18 @@ module MRuby
         # a port for the earlier names.  These objs are tracked
         # separately so List#resolve_external_hal! can drop them when
         # an external HAL provider (gem named hal-<short>-*) is loaded.
+        #
+        # The same directory is an include path for the gem's own sources
+        # and for any gem that depends on it: a port declares what it
+        # implements in a header there, and the gem's HAL header reads it.
         @port_objs = []
+        @port_include_dir = nil
         build.effective_ports.each do |port|
           port_dir = "#{@dir}/ports/#{port}"
           if File.directory?(port_dir)
             @port_objs = srcs_to_objs("ports/#{port}")
             @objs += @port_objs
+            @port_include_dir = port_dir
             break
           end
         end
@@ -119,6 +126,7 @@ module MRuby
           compiler.define_rules build_dir, @dir, @build.exts.object
           compiler.defines << %Q[MRBGEM_#{funcname.upcase}_VERSION=#{version}]
           compiler.include_paths << "#{@dir}/include" if File.directory? "#{@dir}/include"
+          compiler.include_paths << @port_include_dir if @port_include_dir
         end
 
         define_gem_init_builder if @generate_functions
@@ -511,6 +519,10 @@ module MRuby
                  overriders.map(&:name).join(", ")
           end
           target.objs.reject! { |o| target.port_objs.include?(o) }
+          # What the port would have declared, the provider now declares:
+          # its include/ is where the target's HAL header finds the
+          # feature header from here on.
+          target.port_include_dir = "#{overriders.first.dir}/include"
         end
       end
 
@@ -630,11 +642,15 @@ module MRuby
           # as circular dependency has already detected in the caller.
           import_include_paths(dep_g)
 
-          # Add dependency's include/ to compiler paths (for inter-gem use)
+          # Add dependency's include/ to compiler paths (for inter-gem use),
+          # and its port's directory with it: a HAL header the dependency
+          # exports reads the port's feature header, so a gem that includes
+          # the one has to find the other.
           dep_include = "#{dep_g.dir}/include"
-          if File.directory?(dep_include)
+          [dep_include, dep_g.port_include_dir].compact.each do |inc|
+            next unless File.directory?(inc)
             g.compilers.each do |compiler|
-              compiler.include_paths << dep_include
+              compiler.include_paths << inc
               compiler.include_paths.uniq!
             end
           end

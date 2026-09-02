@@ -393,6 +393,32 @@ Host builds auto-detect `:posix` or `:win` when `conf.ports` is
 not set. Sources outside `ports/` (i.e. `src/`) are always
 compiled regardless of the port selection.
 
+### What a Port Declares
+
+The selected `ports/<name>/` directory is also an include path, for
+the gem's own sources and for every gem that depends on it. That is
+where a port says what it implements: a header of feature macros,
+which the gem's HAL header includes and its `src/` sources read.
+Whether a method exists is the port's to answer, since the port is
+the only thing that knows, and `src/` asks the macro rather than
+the platform:
+
+```c
+/* ports/posix/process_hal_features.h */
+#define MRB_HAL_PROCESS_HAS_SPAWN
+
+/* include/process_hal.h */
+#include "process_hal_features.h"
+#ifdef MRB_HAL_PROCESS_HAS_SPAWN
+int mrb_hal_process_spawn(mrb_state *mrb, ...);
+#endif
+```
+
+One macro guards the prototype, the port's implementation and the
+method definition in `src/`, so a port that declares a capability and
+forgets to implement it fails to link, and one that declares nothing
+owes nothing.
+
 ### External HAL Provider Gems
 
 A third-party gem may replace another gem's bundled port at build
@@ -417,8 +443,9 @@ When a matching HAL provider gem is present in the build, the
 target gem's `ports/<conf.ports>/` sources are dropped from the
 build automatically. The HAL provider's own sources supply the
 implementation instead, avoiding duplicate symbol errors at link
-time. Loading two gems that match the same `hal-<short>-*`
-prefix is a build error.
+time, and its `include/` takes the port directory's place as the
+include path the feature header is found on. Loading two gems that
+match the same `hal-<short>-*` prefix is a build error.
 
 The naming convention is the only signal -- no spec attribute,
 no `add_dependency` flag is required. A gem author who wants to
