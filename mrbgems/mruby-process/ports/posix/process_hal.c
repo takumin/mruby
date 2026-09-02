@@ -113,9 +113,13 @@ extern char **environ;
    nothing, which would leave a command that could not be run looking exactly
    like a command that exited 127 of its own accord.  Whether a host does that
    is not something a compile can ask, so it is named here rather than
-   probed.  Darwin reports it because posix_spawn() is a system call there;
-   glibc reports it from 2.24 on, through the page it shares with the child it
-   vforks.  A build whose host does the same can define this itself.
+   probed.  Darwin and NetBSD report it because posix_spawn() is a system
+   call there, NetBSD only when asked with POSIX_SPAWN_RETURNERROR, which
+   spawn_posix() below asks; glibc reports it from 2.24 on, and FreeBSD
+   does, each through the memory it shares with the child it vforks.
+   OpenBSD and DragonFly fork a child that exits 127 and say nothing, and
+   musl reports through a pipe but has no macro to be told apart by, so a
+   build whose host reports and is not named here defines this itself.
    HAVE_POSIX_SPAWN, from mrbgem.rake, is whether the call is there at all.
 
    Defining it to 0 is how a build says the other thing, and what the host is
@@ -124,9 +128,14 @@ extern char **environ;
    carries the vfork() glibc shares its page with out as a fork().  A run
    under either tool wants the fork path, which reports through a pipe of
    its own and does not depend on the host at all. */
+#ifdef HAVE_POSIX_SPAWN
+# include <spawn.h>
+#endif
 #ifndef MRB_PROCESS_HAVE_POSIX_SPAWN
 # ifdef HAVE_POSIX_SPAWN
-#  if defined(__APPLE__)
+#  if defined(__APPLE__) || defined(__FreeBSD__)
+#   define MRB_PROCESS_HAVE_POSIX_SPAWN 1
+#  elif defined(__NetBSD__) && defined(POSIX_SPAWN_RETURNERROR)
 #   define MRB_PROCESS_HAVE_POSIX_SPAWN 1
 #  elif defined(__GLIBC__) && defined(__GLIBC_PREREQ)
 #   if __GLIBC_PREREQ(2, 24)
@@ -137,9 +146,6 @@ extern char **environ;
 # ifndef MRB_PROCESS_HAVE_POSIX_SPAWN
 #  define MRB_PROCESS_HAVE_POSIX_SPAWN 0
 # endif
-#endif
-#if MRB_PROCESS_HAVE_POSIX_SPAWN
-# include <spawn.h>
 #endif
 
 /* Whether this host has getrusage(2), which is how Process.times reads CPU
@@ -1073,6 +1079,12 @@ spawn_posix(mrb_state *mrb, const mrb_process_spawn_params *params,
   err = posix_spawnattr_setsigdefault(&attr, &set);
   if (err != 0) goto done;
   attr_flags |= POSIX_SPAWN_SETSIGDEF;
+#endif
+#ifdef POSIX_SPAWN_RETURNERROR
+  /* NetBSD lets the parent go before the exec unless this asks it to wait
+     for the answer, and the answer is the whole reason this path is taken;
+     see MRB_PROCESS_HAVE_POSIX_SPAWN. */
+  attr_flags |= POSIX_SPAWN_RETURNERROR;
 #endif
   err = posix_spawnattr_setflags(&attr, attr_flags);
   if (err != 0) goto done;
