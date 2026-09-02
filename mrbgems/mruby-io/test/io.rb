@@ -552,14 +552,12 @@ end
 
 assert('IO.popen with a command that cannot be run') do
   skip "this build has no IO.popen" unless IO.respond_to?(:popen)
-  begin
-    # A spawn that fails leaves the pipes this opened to be closed on the way
-    # out, and what the caller is owed is still the Errno the attempt failed
-    # with rather than whatever the closing raised.
-    assert_raise(Errno::ENOENT) { IO.popen("   ") }
-  rescue NotImplementedError => e
-    skip e.message
-  end
+  # A spawn that fails leaves the pipes this opened to be closed on the way
+  # out, and what the caller is owed is still the Errno the attempt failed
+  # with rather than whatever the closing raised.  A build whose process gem
+  # cannot spawn refuses before any of that, and is asked nothing more.
+  e = assert_raise(Errno::ENOENT, NotImplementedError) { IO.popen("   ") }
+  skip e.message if e.is_a?(NotImplementedError)
 end
 
 assert('IO.popen with a failing command') do
