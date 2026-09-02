@@ -71,12 +71,16 @@ module Process
       # bare <code>:out</code> names the parent's descriptor 1, and merging
       # inside the child is written <code>err: [:child, :out]</code>.
       #
-      # The remaining options are <code>:chdir</code>, which runs the child
-      # in another directory, <code>:unsetenv_others</code>, which starts the
-      # child's environment empty, and <code>:close_others</code>, which
-      # closes descriptors above 2 that the table does not name.  Descriptors
-      # this build opens are close-on-exec already, so the last one is rarely
-      # needed.
+      # The remaining options are CRuby's: <code>:chdir</code> runs the
+      # child in another directory, <code>:unsetenv_others</code> starts its
+      # environment empty, <code>:close_others</code> closes descriptors
+      # above 2 that the table does not name, <code>:pgroup</code> puts it
+      # in a process group (+true+ for one of its own), <code>:umask</code>,
+      # <code>:uid</code> and <code>:gid</code> set what they name, and
+      # <code>:rlimit_<i>resource</i></code> sets a resource limit to an
+      # Integer or a <code>[soft, hard]</code> pair.  On Windows
+      # <code>:new_pgroup</code> stands in for <code>:pgroup</code>.  An
+      # option the platform has no call behind is refused, as it is in CRuby.
       #
       def spawn(*args)
         env, argv, options, opts = _spawn_normalize(args)
@@ -186,11 +190,46 @@ module Process
         v
       end
 
+      def _spawn_int(name, v)
+        unless v.is_a?(Integer)
+          raise TypeError, "no implicit conversion of #{v.class} into Integer"
+        end
+        v
+      end
+
       # CRuby takes exactly true or false for these, and says so for anything
       # else rather than reading it as one of the two.
       def _spawn_bool(name, v)
         return v if v == true || v == false
         raise ArgumentError, "expected true or false as #{name}: #{v.inspect}"
+      end
+
+      # What :pgroup asks for, as the port takes it: nil for nothing, 0 for a
+      # group of the child's own, or the group to join.
+      def _spawn_pgroup(v)
+        return nil if v.nil? || v == false
+        return 0 if v == true
+        v = _spawn_int(:pgroup, v)
+        raise ArgumentError, "negative process group ID : #{v}" if v < 0
+        v
+      end
+
+      # One resource limit, as [resource, soft, hard].  The value is an
+      # Integer for both, or an Array of one or two of them.
+      def _spawn_rlimit(resource, v)
+        if v.is_a?(Array)
+          case v.size
+          when 1 then cur = max = _spawn_int(resource, v[0])
+          when 2
+            cur = _spawn_int(resource, v[0])
+            max = _spawn_int(resource, v[1])
+          else
+            raise ArgumentError, "wrong exec rlimit option"
+          end
+        else
+          cur = max = _spawn_int(resource, v)
+        end
+        [resource, cur, max]
       end
 
       # [name, value, name, value, ...]; a nil value means "unset".  Deltas,
@@ -208,7 +247,8 @@ module Process
       # the primitive takes.  A key that is a Symbol names an option or one
       # of the three standard descriptors; anything else names descriptors
       # to redirect.  What is not one of CRuby's options is refused as CRuby
-      # refuses it.
+      # refuses it, and what this port has no call behind is refused below,
+      # by the primitive, in the same words.
       def _spawn_options(opts, options)
         table = []
         opened = []
@@ -221,12 +261,21 @@ module Process
                 _spawn_redirect(key, value, table, opened, named)
               when :chdir
                 options[:chdir] = _spawn_str(value)
-              when :close_others, :unsetenv_others
+              when :close_others, :unsetenv_others, :new_pgroup
                 options[key] = _spawn_bool(key, value)
+              when :pgroup
+                options[:pgroup] = _spawn_pgroup(value)
+              when :umask, :uid, :gid
+                options[key] = _spawn_int(key, value)
               when :exception
                 raise ArgumentError, "exception option is not allowed"
               else
-                raise ArgumentError, "wrong exec option symbol: #{key}"
+                name = key.to_s
+                if name.length > 7 && name[0, 7] == "rlimit_"
+                  (options[:rlimits] ||= []) << _spawn_rlimit(name[7, name.length - 7].to_sym, value)
+                else
+                  raise ArgumentError, "wrong exec option symbol: #{name}"
+                end
               end
             elsif key.is_a?(Integer) || key.is_a?(Array) || key.respond_to?(:fileno)
               _spawn_redirect(key, value, table, opened, named)
@@ -312,9 +361,10 @@ module Process
       end
 
       private :_spawn_normalize, :_spawn_command_line, :_spawn_split,
-              :_spawn_blank?, :_spawn_shell?, :_spawn_str, :_spawn_bool,
-              :_spawn_env, :_spawn_options, :_spawn_redirect, :_spawn_fd,
-              :_spawn_source, :_spawn_open
+              :_spawn_blank?, :_spawn_shell?, :_spawn_str, :_spawn_int,
+              :_spawn_bool, :_spawn_pgroup, :_spawn_rlimit, :_spawn_env,
+              :_spawn_options, :_spawn_redirect, :_spawn_fd, :_spawn_source,
+              :_spawn_open
     end
   end
 end

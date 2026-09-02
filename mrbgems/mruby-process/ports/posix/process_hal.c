@@ -397,6 +397,154 @@ can_exec(const char *path)
 #endif
 }
 
+#ifdef MRB_HAL_PROCESS_HAS_RLIMIT
+
+/* The platform's number for each resource this interface names, or -1
+   where the platform has no such resource.  Which are which is the whole
+   reason the interface has a list of its own. */
+static int
+rlimit_resource(mrb_process_rlimit_id id)
+{
+  switch (id) {
+#define RLIMIT_CASE(name) case MRB_PROCESS_RLIMIT_##name: return RLIMIT_##name
+#ifdef RLIMIT_AS
+  RLIMIT_CASE(AS);
+#endif
+#ifdef RLIMIT_CORE
+  RLIMIT_CASE(CORE);
+#endif
+#ifdef RLIMIT_CPU
+  RLIMIT_CASE(CPU);
+#endif
+#ifdef RLIMIT_DATA
+  RLIMIT_CASE(DATA);
+#endif
+#ifdef RLIMIT_FSIZE
+  RLIMIT_CASE(FSIZE);
+#endif
+#ifdef RLIMIT_MEMLOCK
+  RLIMIT_CASE(MEMLOCK);
+#endif
+#ifdef RLIMIT_MSGQUEUE
+  RLIMIT_CASE(MSGQUEUE);
+#endif
+#ifdef RLIMIT_NICE
+  RLIMIT_CASE(NICE);
+#endif
+#ifdef RLIMIT_NOFILE
+  RLIMIT_CASE(NOFILE);
+#endif
+#ifdef RLIMIT_NPROC
+  RLIMIT_CASE(NPROC);
+#endif
+#ifdef RLIMIT_NPTS
+  RLIMIT_CASE(NPTS);
+#endif
+#ifdef RLIMIT_RSS
+  RLIMIT_CASE(RSS);
+#endif
+#ifdef RLIMIT_RTPRIO
+  RLIMIT_CASE(RTPRIO);
+#endif
+#ifdef RLIMIT_RTTIME
+  RLIMIT_CASE(RTTIME);
+#endif
+#ifdef RLIMIT_SBSIZE
+  RLIMIT_CASE(SBSIZE);
+#endif
+#ifdef RLIMIT_SIGPENDING
+  RLIMIT_CASE(SIGPENDING);
+#endif
+#ifdef RLIMIT_STACK
+  RLIMIT_CASE(STACK);
+#endif
+#undef RLIMIT_CASE
+  default:
+    return -1;
+  }
+}
+
+mrb_bool
+mrb_hal_process_rlimit_p(mrb_process_rlimit_id id)
+{
+  return rlimit_resource(id) != -1;
+}
+
+/* Put the limits on the calling process, which is the child.  setrlimit()
+   is not on the async-signal-safe list, and CRuby's child calls it all the
+   same with the remark that it is hopefully safe; it is a system call and
+   allocates nothing on every host this port runs on.  Returns 0, or -1
+   with errno set. */
+static int
+child_rlimits(const mrb_process_spawn_params *params)
+{
+  size_t i;
+
+  for (i = 0; i < params->nrlimits; i++) {
+    const mrb_process_rlimit *r = &params->rlimits[i];
+    struct rlimit rlim;
+
+    rlim.rlim_cur = (rlim_t)r->cur;
+    rlim.rlim_max = (rlim_t)r->max;
+    if (setrlimit(rlimit_resource(r->resource), &rlim) == -1) return -1;
+  }
+  return 0;
+}
+
+#endif /* MRB_HAL_PROCESS_HAS_RLIMIT */
+
+/* What the child becomes before it is anything else: its process group,
+   its resource limits and its umask, in the order CRuby's child takes them.
+   All three are system calls the child may make.  Returns 0, or -1 with
+   errno set. */
+static int
+child_identity_first(const mrb_process_spawn_params *params)
+{
+#ifdef MRB_HAL_PROCESS_HAS_PGROUP
+  if (params->pgroup != MRB_PROCESS_SPAWN_UNSET) {
+    /* 0 is "a group of its own", which setpgid() spells with the child's
+       own pid; getpid() is async-signal-safe. */
+    pid_t pgroup = (params->pgroup == 0) ? getpid() : (pid_t)params->pgroup;
+    if (setpgid(getpid(), pgroup) == -1) return -1;
+  }
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_RLIMIT
+  if (child_rlimits(params) == -1) return -1;
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_UMASK
+  if (params->umask != MRB_PROCESS_SPAWN_UNSET) {
+    umask((mode_t)params->umask);   /* never fails */
+  }
+#endif
+  return 0;
+}
+
+/* Who the child is, taken last so that everything before it was done as
+   the caller: the group first, since dropping the user first would leave
+   no right to change the group.  Returns 0, or -1 with errno set. */
+static int
+child_identity_last(const mrb_process_spawn_params *params)
+{
+#ifdef MRB_HAL_PROCESS_HAS_UID
+  if (params->gid != MRB_PROCESS_SPAWN_UNSET && setgid((gid_t)params->gid) == -1) return -1;
+  if (params->uid != MRB_PROCESS_SPAWN_UNSET && setuid((uid_t)params->uid) == -1) return -1;
+#endif
+  return 0;
+}
+
+/* Whether the request asks for something only the child can do for itself.
+   posix_spawn() has no action for a umask, a resource limit or an identity,
+   so a spawn given any of them is a fork whatever the host has. */
+static int
+needs_own_child(const mrb_process_spawn_params *params)
+{
+  if (params->umask != MRB_PROCESS_SPAWN_UNSET) return 1;
+  if (params->uid != MRB_PROCESS_SPAWN_UNSET) return 1;
+  if (params->gid != MRB_PROCESS_SPAWN_UNSET) return 1;
+  if (params->nrlimits > 0) return 1;
+  return 0;
+}
+
 /* Build the plan.  Returns 0, or -1 with errno set. */
 static int
 plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_plan *plan)
@@ -757,6 +905,7 @@ child_exec(const mrb_process_spawn_params *params, const struct exec_plan *plan,
   mrb_int max_target = -1;
 
   if (child_signals() == -1) goto fail;
+  if (child_identity_first(params) == -1) goto fail;
 
   for (i = 0; i < params->nredirects; i++) {
     if (params->redirects[i].child_fd > max_target) {
@@ -828,6 +977,7 @@ child_exec(const mrb_process_spawn_params *params, const struct exec_plan *plan,
   }
 
   if (params->chdir != NULL && chdir(params->chdir) == -1) goto fail;
+  if (child_identity_last(params) == -1) goto fail;
 
   /* The command, tried at each name the parent worked out for it.  What
      execvp() does with the PATH is done there, before the fork, because none
@@ -1019,6 +1169,10 @@ spawn_is_expressible(const mrb_process_spawn_params *params)
      and what is open is what only the child can be asked. */
   if (params->flags & MRB_PROCESS_SPAWN_CLOSE_OTHERS) return 0;
 
+  /* A umask, an identity or a resource limit is a call only the child can
+     make for itself, and no file action stands for any of them. */
+  if (needs_own_child(params)) return 0;
+
   for (i = 0; i < params->nredirects; i++) {
     const mrb_process_redirect *r = &params->redirects[i];
 
@@ -1106,6 +1260,15 @@ spawn_posix(mrb_state *mrb, const mrb_process_spawn_params *params,
      for the answer, and the answer is the whole reason this path is taken;
      see MRB_PROCESS_HAVE_POSIX_SPAWN. */
   attr_flags |= POSIX_SPAWN_RETURNERROR;
+#endif
+#ifdef MRB_HAL_PROCESS_HAS_PGROUP
+  /* The group the child joins, as the fork path's setpgid(); 0 is a group
+     of its own to posix_spawn() as it is to setpgid(). */
+  if (params->pgroup != MRB_PROCESS_SPAWN_UNSET) {
+    err = posix_spawnattr_setpgroup(&attr, (pid_t)params->pgroup);
+    if (err != 0) goto done;
+    attr_flags |= POSIX_SPAWN_SETPGROUP;
+  }
 #endif
   err = posix_spawnattr_setflags(&attr, attr_flags);
   if (err != 0) goto done;

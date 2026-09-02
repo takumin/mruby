@@ -763,6 +763,8 @@ mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
   /* The block above is UTF-16, and saying so is what keeps CreateProcessW
      from reading it as bytes in the active code page. */
   if (envblock != NULL) flags |= CREATE_UNICODE_ENVIRONMENT;
+  /* A group of its own, which is what Ctrl-C events are addressed to. */
+  if (params->flags & MRB_PROCESS_SPAWN_NEW_PGROUP) flags |= CREATE_NEW_PROCESS_GROUP;
 
   /* Hand the child duplicates of exactly the handles it is meant to have.
      Marking the originals inheritable and letting CreateProcess take every

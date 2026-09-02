@@ -167,12 +167,41 @@ A descriptor two keys name is refused with `fd N specified twice`, as CRuby
 refuses it: the table is applied in order, and the second entry would
 silently undo the first.
 
-An option this build does not act on is refused with `ArgumentError` rather
-than dropped, in the words CRuby refuses one, `wrong exec option symbol:
-pgroup`: a caller that wrote one is expecting it to happen. `pgroup`,
-`umask` and `rlimit_*` are not supported.
-`:close_others` and `:unsetenv_others` take exactly `true` or `false`, and
-`:exception` is `system`'s and is refused, as CRuby refuses it.
+## The child's process group, umask, identity and limits
+
+The rest of CRuby's options are here, and each is what CRuby makes of it:
+
+```ruby
+Process.spawn("cmd", pgroup: true)                  # a process group of its own
+Process.spawn("cmd", pgroup: pgid)                  # joins that group
+Process.spawn("cmd", umask: 022)
+Process.spawn("cmd", uid: 1000, gid: 1000)          # Integers; no name lookup
+Process.spawn("cmd", rlimit_core: 0)                # soft and hard
+Process.spawn("cmd", rlimit_nofile: [256, 1024])    # [soft, hard]
+Process.spawn("cmd", new_pgroup: true)              # Windows only, as in CRuby
+```
+
+`:pgroup` takes `true` or `0` for a group of the child's own and a positive
+Integer for a group to join; `false` and `nil` are the option not given. A
+resource is one of CRuby's names, downcased after `rlimit_`, and a limit is
+an Integer this build's Integer can hold: there is no `Process::RLIM_INFINITY`
+here yet, and the platform's "no limit" value is wider than any `mrb_int`.
+`:close_others`, `:unsetenv_others` and `:new_pgroup` take exactly `true` or
+`false`, and `:exception` is `system`'s and is refused, as CRuby refuses it.
+
+Which of these a port acts on is the port's to declare, in its
+`process_hal_features.h`; an option the port has not declared is refused as
+one that does not exist, `wrong exec option symbol: pgroup`, which is what
+CRuby answers for `pgroup` on Windows and `new_pgroup` everywhere else. The
+POSIX port declares them all: a process group is `setpgid(2)` in the child
+or `POSIX_SPAWN_SETPGROUP` where the spawn is a `posix_spawn(3)`, and a
+umask, an identity or a resource limit is a call only the child can make for
+itself, so a spawn given any of them takes the fork path whatever the host
+has. They are taken in CRuby's order: the group and the limits first, the
+umask next, then the redirections, the directory, and the identity last.
+
+An option that is not one of CRuby's is refused with `ArgumentError` rather
+than dropped: a caller that wrote one is expecting it to happen.
 
 ## The child's environment and directory
 
@@ -488,6 +517,16 @@ constrains; this list is a map.
   fails with `Errno::EINVAL`, since `WaitForMultipleObjects()` takes no more
   than that at a time and running it in chunks would not be a blocking wait
   over the set; a non-blocking one is not limited.
+- On Windows `umask:` is refused as an option that does not exist, where
+  CRuby's Windows build accepts it: the C runtime's umask is state of this
+  process that no child inherits, so CRuby cannot pass it on either, and
+  refusing is the honest answer. `pgroup:`, `uid:`, `gid:` and `rlimit_*:`
+  are refused there as CRuby refuses them.
+- `uid:` and `gid:` take an Integer only; CRuby looks a String up as a user
+  or group name, and this gem has no `getpwnam(3)` to do that with.
+- A command, an environment name or value, and a `chdir:` are Strings and
+  are not asked for `to_str` or `to_path`, as nothing in mruby asks; a
+  resource limit and a umask are Integers and are not asked for `to_int`.
 - On Windows `Process::Tms#cutime` and `#cstime` always read `0.0`: Win32
   reports no reaped child's CPU time, and CRuby's Windows build answers the
   same way.

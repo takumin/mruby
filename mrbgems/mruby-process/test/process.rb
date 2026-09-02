@@ -712,6 +712,115 @@ assert('Process.spawn refuses a descriptor named twice') do
   end
 end
 
+assert('Process.spawn with pgroup') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # A child in a group of its own is one that `waitpid(-pid)` finds, since
+  # that names the group whose id is the child's pid, and one in this
+  # process's group is not.  Asked down both paths: a posix_spawn() carries
+  # the request as an attribute, a fork as setpgid() in the child.
+  ProcessTestUtil.each_spawn_path do |opts|
+    pid = Process.spawn("exit 0", **opts)
+    assert_raise(Errno::ECHILD) { Process.waitpid(-pid) }
+    assert_equal pid, Process.waitpid(pid)
+
+    pid = Process.spawn("exit 5", pgroup: true, **opts)
+    assert_equal pid, Process.waitpid(-pid)
+    assert_equal 5, $?.exitstatus
+  end
+
+  # 0 is a group of its own as well; a number is a group to join, and a
+  # group is there while a member of it is.
+  leader = Process.spawn("sleep", "30", pgroup: 0)
+  begin
+    joiner = Process.spawn("exit 6", pgroup: leader)
+    assert_equal joiner, Process.waitpid(-leader)
+    assert_equal 6, $?.exitstatus
+  ensure
+    Process.kill(:KILL, leader)
+    Process.waitpid(leader)
+  end
+
+  # false and nil are the option not given.
+  assert_true ProcessTestUtil.run("sh", "-c", "exit 0", pgroup: false).success?
+  assert_true ProcessTestUtil.run("sh", "-c", "exit 0", pgroup: nil).success?
+  assert_raise_with_message(ArgumentError, "negative process group ID : -1") do
+    Process.spawn("sh", "-c", "exit 0", pgroup: -1)
+  end
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", pgroup: "1") }
+
+  # Windows' spelling is not this platform's.
+  assert_raise_with_message(ArgumentError, "wrong exec option symbol: new_pgroup") do
+    Process.spawn("sh", "-c", "exit 0", new_pgroup: true)
+  end
+end
+
+assert('Process.spawn with umask') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # What the child's umask is, asked of the shell that inherited it.
+  assert_true ProcessTestUtil.run('test "$(umask)" = 0077', umask: 077).success?
+  assert_true ProcessTestUtil.run('test "$(umask)" = 0022', umask: 022, close_others: true).success?
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", umask: "077") }
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", umask: nil) }
+end
+
+assert('Process.spawn with a resource limit') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # The limit the child starts under, asked of the shell that inherited it.
+  # An Integer is both limits, a pair is the soft and the hard one, and a
+  # pair of one is both again.  CPU seconds rather than descriptors: the
+  # child sets its limits before it execs, while it is still a copy of this
+  # process, and valgrind refuses a copy of a process it runs the hard
+  # descriptor limit it needs for itself.
+  assert_true ProcessTestUtil.run('test "$(ulimit -c)" = 0', rlimit_core: 0).success?
+  assert_true ProcessTestUtil.run('test "$(ulimit -St)" = 100 -a "$(ulimit -Ht)" = 200',
+                                  rlimit_cpu: [100, 200]).success?
+  assert_true ProcessTestUtil.run('test "$(ulimit -St)" = 150 -a "$(ulimit -Ht)" = 150',
+                                  rlimit_cpu: [150]).success?
+
+  assert_raise_with_message(ArgumentError, "wrong exec rlimit option") do
+    Process.spawn("sh", "-c", "exit 0", rlimit_core: [0, 0, 0])
+  end
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", rlimit_core: nil) }
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", rlimit_core: "0") }
+  # A resource is one of CRuby's names, downcased; a name no platform has,
+  # or one this platform has no number for, is an option that does not
+  # exist.
+  assert_raise_with_message(ArgumentError, "wrong exec option symbol: rlimit_foo") do
+    Process.spawn("sh", "-c", "exit 0", rlimit_foo: 0)
+  end
+  assert_raise_with_message(ArgumentError, "wrong exec option symbol: rlimit_CORE") do
+    Process.spawn("sh", "-c", "exit 0", rlimit_CORE: 0)
+  end
+  assert_raise_with_message(ArgumentError, "wrong exec option symbol: rlimit_") do
+    Process.spawn("sh", "-c", "exit 0", rlimit_: 0)
+  end
+end
+
+assert('Process.spawn with uid and gid') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+  skip "this platform has no identity to hand a child" unless Object.const_defined?(:ProcessIdentityTest)
+
+  # Becoming what one already is, which any process may do.
+  uid = ProcessIdentityTest.uid
+  gid = ProcessIdentityTest.gid
+  assert_true ProcessTestUtil.run("sh", "-c", "exit 0", uid: uid).success?
+  assert_true ProcessTestUtil.run("sh", "-c", "exit 0", gid: gid).success?
+  assert_true ProcessTestUtil.run("sh", "-c", "exit 0", uid: uid, gid: gid).success?
+
+  # Becoming someone else is the kernel's to refuse, and the child's
+  # refusal is reported as the spawn's, from the parent, with no child left
+  # to wait for.  Root may do it, and is not asked.
+  unless uid == 0
+    assert_raise(Errno::EPERM) { Process.spawn("sh", "-c", "exit 0", uid: 0) }
+    assert_raise(Errno::EPERM) { Process.spawn("sh", "-c", "exit 0", gid: 0) }
+  end
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", uid: "root") }
+  assert_raise(ArgumentError) { Process.spawn("sh", "-c", "exit 0", uid: -1) }
+end
+
 assert('Process.spawn keeps its helpers to itself') do
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
 

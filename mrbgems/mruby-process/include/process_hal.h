@@ -219,8 +219,10 @@ typedef struct mrb_process_times {
 /*
  * Spawn parameters
  *
- * Grouped in a struct so that later additions (process groups, umask,
- * resource limits) do not change every port's signature.
+ * Grouped in a struct so that an addition does not change every port's
+ * signature.  What a port acts on is what its process_hal_features.h
+ * declares: a field behind a capability the port has not declared is never
+ * set, since the common layer refuses the option before the port sees it.
  */
 
 typedef enum mrb_process_redirect_kind {
@@ -247,6 +249,49 @@ typedef enum mrb_process_spawn_kind {
 
 #define MRB_PROCESS_SPAWN_CLOSE_OTHERS    (1u << 0)
 #define MRB_PROCESS_SPAWN_UNSETENV_OTHERS (1u << 1)
+#define MRB_PROCESS_SPAWN_NEW_PGROUP      (1u << 2)  /* MRB_HAL_PROCESS_HAS_NEW_PGROUP */
+
+/*
+ * A resource limit the child starts under.
+ *
+ * The resources are mruby's own list, as the clocks are: `RLIMIT_NOFILE` is
+ * 7 on Linux and 8 on the BSDs, so a program naming a resource by the
+ * platform's number would name a different one on each port.  The common
+ * layer asks mrb_hal_process_rlimit_p() before it names one, and a port maps
+ * the ones it has.  A limit is an `mrb_int`, which is what a Ruby program
+ * can write; the platform's "no limit" value is wider than any Integer a
+ * build may have and is not expressible here.
+ */
+typedef enum mrb_process_rlimit_id {
+  MRB_PROCESS_RLIMIT_AS = 0,
+  MRB_PROCESS_RLIMIT_CORE,
+  MRB_PROCESS_RLIMIT_CPU,
+  MRB_PROCESS_RLIMIT_DATA,
+  MRB_PROCESS_RLIMIT_FSIZE,
+  MRB_PROCESS_RLIMIT_MEMLOCK,
+  MRB_PROCESS_RLIMIT_MSGQUEUE,
+  MRB_PROCESS_RLIMIT_NICE,
+  MRB_PROCESS_RLIMIT_NOFILE,
+  MRB_PROCESS_RLIMIT_NPROC,
+  MRB_PROCESS_RLIMIT_NPTS,
+  MRB_PROCESS_RLIMIT_RSS,
+  MRB_PROCESS_RLIMIT_RTPRIO,
+  MRB_PROCESS_RLIMIT_RTTIME,
+  MRB_PROCESS_RLIMIT_SBSIZE,
+  MRB_PROCESS_RLIMIT_SIGPENDING,
+  MRB_PROCESS_RLIMIT_STACK,
+  MRB_PROCESS_RLIMIT_COUNT                  /* how many there are; not a resource */
+} mrb_process_rlimit_id;
+
+typedef struct mrb_process_rlimit {
+  mrb_process_rlimit_id resource;
+  mrb_int cur;                              /* the soft limit */
+  mrb_int max;                              /* the hard limit */
+} mrb_process_rlimit;
+
+/* "Leave it as it is", for each of the numbers below that a caller may not
+   give.  None of them is negative when given. */
+#define MRB_PROCESS_SPAWN_UNSET (-1)
 
 typedef struct mrb_process_spawn_params {
   mrb_process_spawn_kind kind;
@@ -258,6 +303,13 @@ typedef struct mrb_process_spawn_params {
   size_t nredirects;
   const char *chdir;                        /* NULL means inherit */
   unsigned int flags;
+  mrb_int pgroup;                           /* MRB_HAL_PROCESS_HAS_PGROUP: the group to
+                                               join, 0 for a new one, UNSET to inherit */
+  mrb_int umask;                            /* MRB_HAL_PROCESS_HAS_UMASK */
+  mrb_int uid;                              /* MRB_HAL_PROCESS_HAS_UID */
+  mrb_int gid;                              /* MRB_HAL_PROCESS_HAS_UID */
+  const mrb_process_rlimit *rlimits;        /* MRB_HAL_PROCESS_HAS_RLIMIT; applied in order */
+  size_t nrlimits;
 } mrb_process_spawn_params;
 
 /*
@@ -335,12 +387,26 @@ int mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo);
  * stands for nothing runnable anywhere on it is ENOENT, and a name holding
  * a directory separator is used as written.
  *
+ * What else the child starts with is what its process_hal_features.h has
+ * declared the port acts on: a process group, a umask, a user and group
+ * identity, resource limits.  The order is CRuby's: the group and the
+ * limits first, the umask next, then the redirections, the directory, and
+ * the identity last.
+ *
  * @return 0 on success with *out holding a child registered in `ctx`,
  *         -1 on error (sets errno)
  */
 int mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
                           const mrb_process_spawn_params *params,
                           mrb_hal_process_child **out);
+
+#ifdef MRB_HAL_PROCESS_HAS_RLIMIT
+/* Whether this platform has the resource `id` names.  Asked before a spawn
+   is given a limit on it, so that a resource the platform has no number for
+   is refused as an option that does not exist rather than failing inside
+   the child. */
+mrb_bool mrb_hal_process_rlimit_p(mrb_process_rlimit_id id);
+#endif /* MRB_HAL_PROCESS_HAS_RLIMIT */
 #endif /* MRB_HAL_PROCESS_HAS_SPAWN */
 
 /*
