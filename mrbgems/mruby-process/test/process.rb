@@ -652,6 +652,21 @@ assert('Process.spawn with an option it does not take') do
   assert_raise(ArgumentError) { Process.spawn("sh", "-c", "exit 0", pgroup: true) }
 end
 
+assert('Process.spawn keeps its helpers to itself') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # What takes the arguments apart is not API: CRuby's Process has no
+  # method starting with an underscore and no constant about spawning, and
+  # neither does this one's public face.  Asked by calling, since mruby's
+  # respond_to? answers for private methods too.
+  assert_raise(NoMethodError) { Process._spawn_normalize([]) }
+  assert_raise(NoMethodError) { Process._spawn_options({}, {}) }
+  assert_true Process.respond_to?(:__spawn)   # the primitive, as IO._pipe is
+  Process.constants.each do |c|
+    assert_false c.to_s[0, 5] == "SPAWN" || c.to_s[0, 5] == "REDIR", "#{c} is not CRuby's"
+  end
+end
+
 assert('Process.spawn starts the child with SIGPIPE at its default') do
   skip ProcessTestUtil.signal_state_reason if ProcessTestUtil.signal_state_reason
 

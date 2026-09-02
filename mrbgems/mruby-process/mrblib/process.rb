@@ -4,35 +4,25 @@ module Process
   # that always fails, so a program can ask before it commits to a plan that
   # needs a child.
   if respond_to?(:__spawn)
-    # Internal encodings, shared with src/spawn.c.  They are not API: what a
-    # caller passes is the CRuby argument shape below, and this is only how
-    # it reaches C.
-    SPAWN_ARGV  = 0
-    SPAWN_SHELL = 1
-
+    # The two tables the shell decision is made from.  They are how the
+    # argument shape is read rather than anything a program is meant to
+    # see, and CRuby's Process has no such constants, so they are kept as
+    # state of the module rather than as constants of it.
+    #
     # The characters only a shell acts on.  A command line holding one of
     # them is the shell's to take apart; a command line holding none of them
     # is taken apart here instead.
-    SPAWN_META = "*?{}[]<>()~&|\\$;'\"`\n#"
+    @spawn_meta = "*?{}[]<>()~&|\\$;'\"`\n#"
 
     # The POSIX shell's reserved words and special built-ins.  Nothing on the
     # PATH is called any of these, so a command line naming one is the
     # shell's however plain the rest of it looks.
-    SPAWN_SH_CMDS = [
+    @spawn_sh_cmds = [
       "!", ".", ":", "break", "case", "continue", "do", "done", "elif",
       "else", "esac", "eval", "exec", "exit", "export", "fi", "for", "if",
       "in", "readonly", "return", "set", "shift", "then", "times", "trap",
       "unset", "until", "while"
     ]
-
-    REDIR_PARENT = 0
-    REDIR_CHILD  = 1
-    REDIR_CLOSE  = 2
-
-    SPAWN_CLOSE_OTHERS    = 1
-    SPAWN_UNSETENV_OTHERS = 2
-
-    SPAWN_OPTION_KEYS = [:close_others, :unsetenv_others, :chdir]
 
     class << self
       #
@@ -86,20 +76,22 @@ module Process
       # needed.
       #
       def spawn(*args)
-        env, kind, argv, opts = _spawn_normalize(args)
-        table, opened = _spawn_redirects(opts)
-        flags = 0
-        flags |= SPAWN_CLOSE_OTHERS if opts[:close_others]
-        flags |= SPAWN_UNSETENV_OTHERS if opts[:unsetenv_others]
+        env, argv, options, opts = _spawn_normalize(args)
+        table, opened = _spawn_options(opts, options)
         begin
-          __spawn(kind, argv, env, table, flags, opts[:chdir])
+          __spawn(argv, env, table, options)
         ensure
           opened.each { |io| io.close }
         end
       end
 
-      private
+      # Nothing below is API.  Named to `private` one by one at the end of
+      # this block: mruby honours `private` with arguments, and a bare
+      # `private` inside `class << self` opens no default-visibility scope.
 
+      # What the positional arguments say: the environment deltas, the argv,
+      # whether the command is the shell's, and the options Hash still to
+      # be read.
       def _spawn_normalize(args)
         args = args.dup
         env = args[0].is_a?(Hash) ? _spawn_env(args.shift) : []
@@ -107,16 +99,19 @@ module Process
           raise ArgumentError, "wrong number of arguments (given 0, expected 1+)"
         end
         opts = (args.size >= 2 && args[-1].is_a?(Hash)) ? args.pop : {}
+        options = {}
 
         if args[0].is_a?(Array)
           raise NotImplementedError, "[cmdname, argv0] form is not supported"
         end
         if args.size == 1
-          kind, argv = _spawn_command_line(_spawn_str(args[0]))
-          [env, kind, argv, opts]
+          shell, argv = _spawn_command_line(_spawn_str(args[0]))
+          options[:shell] = shell
         else
-          [env, SPAWN_ARGV, args.map { |a| _spawn_str(a) }, opts]
+          options[:shell] = false
+          argv = args.map { |a| _spawn_str(a) }
         end
+        [env, argv, options, opts]
       end
 
       # A single String is a command line, and CRuby does not hand every one
@@ -130,9 +125,9 @@ module Process
         words = _spawn_split(cmd)
         # Blanks name no command.  CRuby execs the empty string for them and
         # that answers ENOENT, which is what the port answers for it here.
-        return [SPAWN_ARGV, [""]] if words.empty?
-        return [SPAWN_SHELL, [cmd]] if _spawn_shell?(cmd, words[0])
-        [SPAWN_ARGV, words]
+        return [false, [""]] if words.empty?
+        return [true, [cmd]] if _spawn_shell?(cmd, words[0])
+        [false, words]
       end
 
       # The command line split as a shell would have split one holding
@@ -162,13 +157,13 @@ module Process
       # reserved word or a special built-in.
       def _spawn_shell?(cmd, first)
         i = 0
-        len = SPAWN_META.length
+        len = @spawn_meta.length
         while i < len
-          return true if cmd.index(SPAWN_META[i])
+          return true if cmd.index(@spawn_meta[i])
           i += 1
         end
         return true if first.index("=")
-        SPAWN_SH_CMDS.include?(first)
+        @spawn_sh_cmds.include?(first)
       end
 
       # mruby asks for the built-in type rather than converting to it, so a
@@ -192,23 +187,22 @@ module Process
         env
       end
 
-      def _spawn_redirects(opts)
+      # The options Hash, read into the redirection table and the +options+
+      # the primitive takes.  A key that names an option is read here; every
+      # other key names descriptors to redirect.
+      def _spawn_options(opts, options)
         table = []
         opened = []
         begin
           opts.each do |key, value|
-            next if SPAWN_OPTION_KEYS.include?(key)
-            fds = (key.is_a?(Array) ? key : [key]).map { |k| _spawn_fd(k) }
-            next if fds.empty?
-            # What the value names is worked out once and then written for
-            # every descriptor that named it, so `[1, 2] => "log"` opens the
-            # file once and the two share that one open file, as `>log 2>&1`
-            # does.  Opening it once per descriptor would give each its own
-            # offset into the same file, and each would write over what the
-            # other had written.  Which way it is opened follows the first
-            # descriptor named, as it does in Ruby.
-            kind, source = _spawn_source(fds[0], value, opened)
-            fds.each { |fd| table << fd << kind << source }
+            case key
+            when :chdir
+              options[:chdir] = value
+            when :close_others, :unsetenv_others
+              options[key] = value
+            else
+              _spawn_redirect(key, value, table, opened)
+            end
           end
         rescue StandardError => e
           # Named rather than re-raised bare: mruby's `raise` with no
@@ -217,6 +211,20 @@ module Process
           raise e
         end
         [table, opened]
+      end
+
+      # One redirection, written into the table for every descriptor the key
+      # names.  What the value names is worked out once, so `[1, 2] => "log"`
+      # opens the file once and the two share that one open file, as
+      # `>log 2>&1` does; opening it once per descriptor would give each its
+      # own offset into the same file, and each would write over what the
+      # other had written.  Which way it is opened follows the first
+      # descriptor named, as it does in Ruby.
+      def _spawn_redirect(key, value, table, opened)
+        fds = (key.is_a?(Array) ? key : [key]).map { |k| _spawn_fd(k) }
+        return if fds.empty?
+        kind, source = _spawn_source(fds[0], value, opened)
+        fds.each { |fd| table << fd << kind << source }
       end
 
       def _spawn_fd(v)
@@ -237,21 +245,21 @@ module Process
       def _spawn_source(first_fd, value, opened)
         case value
         when :close
-          [REDIR_CLOSE, -1]
+          [:close, -1]
         when String
           io = _spawn_open(value, first_fd == 0 ? "r" : "w", nil)
           opened << io
-          [REDIR_PARENT, io.fileno]
+          [:parent, io.fileno]
         when Array
           if value[0] == :child
-            [REDIR_CHILD, _spawn_fd(value[1])]
+            [:child, _spawn_fd(value[1])]
           else
             io = _spawn_open(value[0], value[1] || "r", value[2])
             opened << io
-            [REDIR_PARENT, io.fileno]
+            [:parent, io.fileno]
           end
         else
-          [REDIR_PARENT, _spawn_fd(value)]
+          [:parent, _spawn_fd(value)]
         end
       end
 
@@ -266,6 +274,11 @@ module Process
                end
         perm ? file.open(path, mode, perm) : file.open(path, mode)
       end
+
+      private :_spawn_normalize, :_spawn_command_line, :_spawn_split,
+              :_spawn_blank?, :_spawn_shell?, :_spawn_str, :_spawn_env,
+              :_spawn_options, :_spawn_redirect, :_spawn_fd, :_spawn_source,
+              :_spawn_open
     end
   end
 end
