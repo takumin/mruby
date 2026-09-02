@@ -152,3 +152,18 @@ MRuby::Build.new('no-bigint') do |conf|
   conf.enable_test
 end
 end
+
+# An emulated runner has one more thing to say about every build it runs.
+# glibc's posix_spawn() reports a failed exec through a page it shares with
+# the child it vforks, and qemu's user-mode emulation carries vfork() out as
+# a fork(), so that page is a copy over there and posix_spawn() answers 0 for
+# an image that is not there. The port has a define for a host whose
+# posix_spawn() says nothing, and this is such a host: the builds here take
+# the fork path, which reports down a pipe of its own. Which is coverage the
+# native runners do not give, all of them being hosts whose posix_spawn()
+# answers.
+unless ENV['MRUBY_CI_EMULATED'].to_s.empty?
+  MRuby.targets.each_value do |build|
+    build.compilers.each { |c| c.defines << 'MRB_PROCESS_HAVE_POSIX_SPAWN=0' }
+  end
+end

@@ -169,6 +169,58 @@ Add the line below to your build configuration.
 | File#size                   |          |          |
 | File#truncate               |          |          |
 
+## IO.popen and mruby-process
+
+A pipe to a command is two things: a pipe, and a child process. This gem
+provides the first and **mruby-process** provides the second, and `IO.popen`
+is written in `mrblib` as the composition of `IO.pipe` and `Process.spawn`.
+
+That has three consequences worth knowing about:
+
+- `IO.popen` needs **mruby-process** in the build, and a build without it has
+  no `IO.popen` at all rather than one that fails when it is called: the file
+  defining the method is left out, so `IO.respond_to?(:popen)` answers for it
+  the way it answers for any other method. A platform with no `IO.pipe`, iOS
+  among them, leaves it out for the same reason, which is what this gem's old
+  `MRB_NO_IO_POPEN` used to say. The one case where the method is there and
+  raises `NotImplementedError` is a build of **mruby-process** made with
+  `MRB_NO_PROCESS_SPAWN`: the gem is present and only its spawning is not.
+- `IO#close` waits for the command at the other end and sets `$?` to a
+  `Process::Status`, through the same `Process.waitpid` anyone else would
+  call. A stream that is already closed is left as it is, so the wait happens
+  once however many times `#close` is called; a command that was already
+  waited for elsewhere leaves nothing to report, and `$?` keeps what that wait
+  set.
+- `IO#pid` names that command, and keeps naming it after the stream is closed.
+
+The arguments are CRuby's, `IO.popen([env,] cmd, mode = "r" [, opt])`. The
+command is whatever `Process.spawn` takes: a String, a `[cmdname, argv0]`
+pair, or an Array of the command and its arguments, which may begin with an
+environment Hash and end with an options Hash as `Process.spawn`'s arguments
+may; a leading Hash outside the Array is the environment as well. The
+options are `Process.spawn`'s too, `chdir:`, `pgroup:` and the redirections
+included, plus `mode:` as another way to give the mode. The pipe's own ends
+are the child's 0 and 1, so naming either of those again is refused with
+`fd 1 specified twice`, as CRuby refuses it.
+
+```ruby
+IO.popen(["ls", "-l"], chdir: "/tmp") { |io| io.read }
+IO.popen({"LANG" => "C"}, "date") { |io| io.read }
+IO.popen("cat", mode: "r+") { |io| io.write "x"; io.close_write; io.read }
+```
+
+With nothing said about it, the command's standard error is left where this
+process's is, as it is in Ruby: diagnostics do not arrive in the pipe the
+command's output is read from. Pass `err:` an IO, a descriptor, a file name
+or `[:child, :out]` to place it somewhere else.
+
+Two things differ from CRuby. `IO.popen("-")`, Ruby's spelling of "fork
+instead of executing a command", is not supported: mruby has no `fork`. And
+an option that is neither `Process.spawn`'s nor `mode:` nor `binmode:` is
+refused with `ArgumentError`, where CRuby lets one it does not recognise
+pass unread; a stream here is bytes either way, so `binmode:` asks for what
+it already is.
+
 ## Porting Note
 
 If your (non Windows) platform does not support `getpwnam(3)` for some reason, define `MRB_IO_NO_PWNAM`.

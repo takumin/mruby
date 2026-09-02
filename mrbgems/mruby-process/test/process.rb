@@ -2,29 +2,86 @@
 # Process ISO Test
 
 module ProcessTestUtil
-  # mruby-io is a test-only dependency: mruby-process itself never needs it,
-  # but a child process is the only honest way to test waiting on one, and
-  # IO.popen is how this build makes children.
-  def self.popen?
-    Object.const_defined?(:IO) && IO.respond_to?(:popen)
+  # A child process is the only honest way to test waiting on one, and this
+  # gem now makes its own: nothing below reads a child's output through a
+  # pipe, and what a child did is asked of the status it exited with.
+  def self.spawn?
+    Process.respond_to?(:spawn)
   end
 
-  def self.windows?
-    Object.const_defined?(:File) && !File::ALT_SEPARATOR.nil?
+  # Whether a single-String command reaches a POSIX shell.  Running a command
+  # is not enough to ask it with: a Windows machine can have a POSIX `test` on
+  # its PATH, which `cmd.exe` then finds and runs, so `test 1 = 1` succeeds
+  # there while none of the shell syntax these tests rely on works.
+  # Arithmetic expansion reaching the exit status is the shell's own doing,
+  # and nothing on the PATH can stand in for it.  The answer is a number
+  # nothing is likely to have exited with for another reason.
+  def self.posix_shell?
+    return @posix_shell unless @posix_shell.nil?
+    @posix_shell = spawn? && run("exit $((6 * 7))").exitstatus == 42
+  rescue StandardError
+    @posix_shell = false
   end
 
-  # Why the tests that need a child are POSIX-only for now.  On Windows
-  # mruby-io hands out a process HANDLE as IO#pid, not a process ID, so
-  # there is nothing there to give Process.waitpid or Process.kill, and its
-  # IO.popen sets $? through a path that never fires; both are mruby-io's to
-  # fix, and neither is what this gem is being tested for.  The Windows port
-  # would refuse the wait in any case: it cannot tell a child from any other
-  # process it may open, so it reports ECHILD rather than a stranger's exit
-  # code.  See the README.
+  # A pid above every platform's maximum, so that kill(2) fails to find a
+  # process rather than signalling one.  Linux caps pid_max at 2**22 and the
+  # BSDs far lower.
+  NO_SUCH_PID = 1 << 30
+
+  # Whether the platform has the signal +name+ stands for.  Process.kill
+  # needs a process to name, so it is given one that cannot exist: an
+  # unsupported name is refused before the pid is looked at, and a supported
+  # one gets as far as not finding it.
+  def self.signal?(name)
+    Process.kill(name, NO_SUCH_PID)
+    true
+  rescue ArgumentError
+    false
+  rescue StandardError
+    true
+  end
+
+  # Why a test that needs a child is skipped, or nil when it can run.
   def self.child_reason
-    return "IO.popen is not available" unless popen?
-    return "IO#pid is a process handle, not a pid, on this platform" if windows?
+    return "this build cannot create processes" unless spawn?
     nil
+  end
+
+  # Tests that ask the child something through a POSIX shell.
+  def self.posix_reason
+    return child_reason if child_reason
+    return "the shell here is not a POSIX one" unless posix_shell?
+    nil
+  end
+
+  # Tests that need to stop, continue and kill a child.  Windows has none of
+  # that, and the parts of this gem they cover are not what it has.
+  def self.signal_reason
+    return posix_reason if posix_reason
+    unless signal?(:KILL) && signal?(:STOP) && signal?(:CONT)
+      return "the platform has no job-control signals"
+    end
+    nil
+  end
+
+  # Tests that spawn a child from a signal state this process has changed.
+  # The helpers that change it are C, and are defined only where there are
+  # signals to set.
+  def self.signal_state_reason
+    return posix_reason if posix_reason
+    return "this platform has no signal state to hand a child" unless Object.const_defined?(:ProcessSignalTest)
+    nil
+  end
+
+  # The options that reach each way this port has of creating a child, so
+  # that a test of what a child starts with covers both.  Where the host has
+  # a posix_spawn() the plain spawn is that one call; `close_others` is a
+  # sweep only a child can make, so it is what sends a spawn down the fork
+  # instead.  Where the host has no posix_spawn(), both are the fork, and
+  # the test asks the same question twice.
+  def self.each_spawn_path
+    yield({})
+    yield({close_others: true})
   end
 
   # Whether Process.kill turned +pid+ down rather than passing it on.  What a
@@ -37,15 +94,6 @@ module ProcessTestUtil
     true
   rescue StandardError
     false
-  end
-
-  # Write a status carrying +raw+ for +pid+.  Process::Status.new is
-  # undefined, here as in CRuby, so a status is built the way mruby-io builds
-  # the one it sets $? to: by allocating an instance and initializing it,
-  # which is what the C helper does.  +cls+ names the class to build, since a
-  # subclass has no `new` to reach either.
-  def self.status(pid, raw, cls = Process::Status)
-    ProcessStatusTest.build(pid, raw, cls)
   end
 
   # The four clocks Process names.  The ids are 0 to 3, so `clocks.size` is
@@ -95,13 +143,33 @@ module ProcessTestUtil
     Object.const_defined?(:Float)
   end
 
-  # Start a child running +cmd+ through a shell, or return nil where this
-  # build has no child to give.
-  def self.spawn(cmd)
-    return nil if child_reason
-    IO.popen(cmd)
-  rescue NotImplementedError
+  # Run +command+ and return how it finished.
+  def self.run(*command)
+    Process.waitpid(Process.spawn(*command))
+    $?
+  end
+
+  # A file that is executable and is not an executable image: no shebang, so
+  # exec answers ENOEXEC for it and only a shell can run it.  A shell writes
+  # it, which keeps this gem's tests off a filesystem of their own; nil where
+  # it could not be written.
+  def self.script
+    path = "/tmp/mruby-process-test-#{Process.pid}.sh"
+    run("printf 'exit 7\\n' > #{path} && chmod 755 #{path}").success? ? path : nil
+  rescue StandardError
     nil
+  end
+
+  def self.unlink(path)
+    run("rm", "-f", path)
+  rescue StandardError
+    nil
+  end
+
+  # Whether this is a Windows build.  What a clock is read by, and how finely,
+  # is the port's, so the tests that pin a Win32 reading ask first.
+  def self.windows?
+    Object.const_defined?(:File) && !File::ALT_SEPARATOR.nil?
   end
 end
 
@@ -273,7 +341,7 @@ assert('Process.kill passes the pid selectors on') do
 
   # The caller's own process group is one the caller is always in, so where
   # the platform reads the selectors as POSIX does, this one selects.
-  assert_equal 1, Process.kill(0, 0) unless ProcessTestUtil.windows?
+  assert_equal 1, Process.kill(0, 0) unless ProcessTestUtil.posix_reason
 end
 
 assert('a pid or a signal number too large for the platform') do
@@ -300,177 +368,68 @@ assert('a pid or a signal number too large for the platform') do
   end
 end
 
-assert('Process::Status.new is undefined') do
-  # As in CRuby, which undefines it: a status reports what happened to a
-  # process, so one written by hand reports nothing.  A subclass inherits the
-  # absence rather than gaining a way round it.
+assert('Process::Status.new') do
+  # A status stands for a wait this interpreter performed, and cannot be
+  # conjured out of numbers.
   assert_raise(NoMethodError) { Process::Status.new(1234, 0) }
-  assert_raise(NoMethodError) { Class.new(Process::Status).new(1234, 0) }
-end
-
-assert('Process::Status') do
-  # A raw status of 0 means "exited with 0" on every port, which is what lets
-  # this be asserted without knowing the platform's status layout.
-  st = ProcessTestUtil.status(1234, 0)
-  assert_equal 1234, st.pid
-  assert_equal 0, st.to_i
-  assert_true st.exited?
-  assert_equal 0, st.exitstatus
-  assert_true st.success?
-  assert_false st.signaled?
-  assert_nil st.termsig
-  assert_false st.stopped?
-  assert_nil st.stopsig
-  assert_false st.coredump?
-end
-
-assert('Process::Status keeps its pid and raw status out of instance_variables') do
-  # The pid and raw status are internal state, not something a caller wrote or
-  # is meant to read back by name; CRuby answers the same empty array, since
-  # it keeps both in the object's own struct rather than in an ivar table.
-  st = ProcessTestUtil.status(1234, 0)
-  assert_equal [], st.instance_variables
-end
-
-assert('Process::Status with a status too large for the platform') do
-  # A port reads a raw status as the `int` the platform reported it with, so a
-  # value that does not fit one is refused where RangeError can be said rather
-  # than answered about from bits nobody wrote.  Nothing this gem produces can
-  # reach it: waitpid carries a platform status, and mruby-io hands `IO#close`
-  # the same `int` on both platforms.
-  #
-  # This reads the same whatever the build's own Integer is.  Where it is
-  # wider than an int, this gem does the refusing; where it is not, a value
-  # this far out is a big integer that is turned away before the gem sees it.
-  # A build that can name neither raises working the value out, and is skipped.
-  big = (2**31 rescue nil)
-  skip "this build cannot name a number wider than an int" unless big
-
-  assert_raise(RangeError) { ProcessTestUtil.status(1234, big) }
-  assert_raise(RangeError) { ProcessTestUtil.status(1234, -big - 1) }
-
-  # The edges themselves are still statuses, being what an int can carry.
-  assert_equal big - 1, ProcessTestUtil.status(1234, big - 1).to_i
-  assert_equal(-big, ProcessTestUtil.status(1234, -big).to_i)
-end
-
-assert('Process::Status is frozen once built') do
-  # What a process did is over by the time there is a status for it, and the
-  # pid and the raw status set at construction are what every other question
-  # is read back from.  Freezing says so, and keeps the two from being
-  # rewritten under the answers; CRuby freezes the status it leaves in $?.
-  st = ProcessTestUtil.status(1234, 0)
-  assert_true st.frozen?
-  # Written through the one door there is: #initialize is where the two are
-  # set, and a frozen receiver turns a second pass through it away.
-  assert_raise(FrozenError) { st.__send__(:initialize, 1234, 1) }
-  assert_equal 1234, st.pid
-  assert_equal 0, st.to_i
-end
-
-assert('Process::Status subclass is left to finish building itself') do
-  # A subclass calls super to have the two set and goes on to set whatever
-  # else it is made of, so it is still being built when #initialize returns
-  # and freezing there would turn the rest of its construction into a
-  # FrozenError.  What gets frozen is what is a status and nothing more.
-  cls = Class.new(Process::Status) do
-    def initialize(pid, raw_status)
-      super
-      @tag = "reaped"
-    end
-
-    attr_reader :tag
-  end
-
-  st = ProcessTestUtil.status(1234, 0, cls)
-  assert_false st.frozen?
-  assert_equal "reaped", st.tag
-  # Still a status, and still read as one.
-  assert_equal 1234, st.pid
-  assert_equal 0, st.to_i
-  assert_true st.exited?
-  assert_operator st, :==, ProcessTestUtil.status(1234, 0)
 end
 
 assert('Process::Status#==') do
-  st = ProcessTestUtil.status(1234, 0)
-  assert_operator st, :==, ProcessTestUtil.status(1234, 0)
-  # The raw status alone decides, so the pid does not have to match.
-  assert_operator st, :==, ProcessTestUtil.status(1235, 0)
-  assert_not_operator st, :==, ProcessTestUtil.status(1234, 1)
-  assert_operator st, :==, 0
-  assert_not_operator st, :==, 1
-  assert_not_operator st, :==, "0"
-end
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
 
-assert('Process::Status#== reads a subclass as the status it is') do
-  # What decides is the raw status, and carrying one is not something a
-  # subclass stops doing.  CRuby never asks about the class here: its
-  # Integer#== hands a non-numeric right operand the question back, so the
-  # object on the right answers through whichever #== it inherits.  mruby's
-  # Integer#== does not hand back, so the unwrapping is this method's to do
-  # and it has to read a subclass as a status.
-  sub = Class.new(Process::Status)
-  st = ProcessTestUtil.status(1234, 0)
+  status = ProcessTestUtil.run("exit 0")
+  assert_operator status, :==, status
+  assert_operator status, :==, status.to_i
+  assert_not_operator status, :==, status.to_i + 1
+  assert_not_operator status, :==, "0"
+  assert_not_operator status, :==, ProcessTestUtil.run("exit 1")
 
-  assert_operator st, :==, ProcessTestUtil.status(1234, 0, sub)
-  assert_operator ProcessTestUtil.status(1234, 0, sub), :==, st
-  # The pid takes no part here either.
-  assert_operator st, :==, ProcessTestUtil.status(1235, 0, sub)
-  assert_not_operator st, :==, ProcessTestUtil.status(1234, 1, sub)
-  assert_not_operator ProcessTestUtil.status(1234, 1, sub), :==, st
+  # The raw status alone decides, so two children that left the same way are
+  # equal although no two live children share a pid.
+  other = ProcessTestUtil.run("exit 0")
+  assert_not_equal status.pid, other.pid
+  assert_operator status, :==, other
 end
 
 assert('Process::Status does not answer to_int') do
   # mruby has no implicit-conversion protocol, so nothing would ever call it,
   # and CRuby does not have the method either.
-  assert_false ProcessTestUtil.status(1234, 0).respond_to?(:to_int)
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  assert_false ProcessTestUtil.run("exit 0").respond_to?(:to_int)
 end
 
 assert('Process::Status#to_s, #inspect') do
-  st = ProcessTestUtil.status(1234, 0)
-  assert_equal "pid 1234 exit 0", st.to_s
-  assert_equal "#<Process::Status: pid 1234 exit 0>", st.inspect
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  status = ProcessTestUtil.run("exit 0")
+  assert_equal "pid #{status.pid} exit 0", status.to_s
+  assert_equal "#<Process::Status: pid #{status.pid} exit 0>", status.inspect
 end
 
 assert('Process::Status#to_s spells a signal out') do
   # The seam with mruby-signal: a status carries a number, and the name it is
-  # written with is the one Signal.signame answers with.  Each raw value is
-  # checked through the decoding predicates first, so a platform that reads
-  # one differently skips rather than fails on an encoding assumed here.
+  # written with is the one Signal.signame answers with.
+  skip ProcessTestUtil.signal_reason if ProcessTestUtil.signal_reason
+
+  pid = Process.spawn("sleep", "30")
+  Process.kill(:KILL, pid)
+  Process.waitpid(pid)
+  status = $?
+  skip "a killed child is not reported as signalled here" unless status.signaled?
+
   kill = Signal.list["KILL"]
-  st = ProcessTestUtil.status(1234, kill)
-  skip "a raw status is not a POSIX wait status on this platform" unless st.signaled?
-  assert_equal "pid 1234 SIGKILL (signal #{kill})", st.to_s
-
-  st = ProcessTestUtil.status(1234, kill | 0x80)
-  assert_equal "pid 1234 SIGKILL (signal #{kill}) (core dumped)", st.to_s if st.coredump?
-
-  # A raw stopped status can only be spelled where the platform has STOP to
-  # spell it with.  The skip above already keeps every such platform out, but
-  # asking the table rather than leaning on that keeps this case readable on
-  # its own.
-  stop = Signal.list["STOP"]
-  if stop
-    st = ProcessTestUtil.status(1234, (stop << 8) | 0x7f)
-    assert_equal "pid 1234 stopped SIGSTOP (signal #{stop})", st.to_s if st.stopped?
-  end
-
-  # A number this platform gives no name is written as the bare number.
-  unnamed = (1..63).find { |signo| Signal.signame(signo).nil? }
-  if unnamed
-    st = ProcessTestUtil.status(1234, unnamed)
-    assert_equal "pid 1234 signal #{unnamed}", st.to_s if st.signaled?
-  end
+  assert_equal kill, status.termsig
+  assert_equal "pid #{pid} SIGKILL (signal #{kill})", status.to_s
+  assert_equal "#<Process::Status: pid #{pid} SIGKILL (signal #{kill})>", status.inspect
 end
 
-assert('Process.waitpid') do
+assert('Process.spawn') do
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
-  io = ProcessTestUtil.spawn("exit 3")
-  skip "IO.popen is not available" unless io
 
-  io.read
-  pid = io.pid
+  pid = Process.spawn("exit 3")
+  assert_kind_of Integer, pid
+  assert_true pid > 0
   assert_equal pid, Process.waitpid(pid)
 
   # waitpid publishes what it reaped through $?
@@ -480,74 +439,610 @@ assert('Process.waitpid') do
   assert_true $?.exited?
   assert_equal 3, $?.exitstatus
   assert_false $?.success?
-  io.close
+  assert_false $?.signaled?
+  assert_nil $?.termsig
+  assert_false $?.stopped?
+  assert_nil $?.stopsig
+  assert_false $?.coredump?
+end
+
+assert('Process.spawn without a shell') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # Two or more arguments are the command and its arguments, so nothing
+  # expands `*` on the way and no shell stands between this and the command.
+  assert_equal 0, ProcessTestUtil.run("sh", "-c", "exit 0").exitstatus
+  assert_equal 4, ProcessTestUtil.run("sh", "-c", "exit 4").exitstatus
+
+  # A name that is a path is run as written; a bare name is looked up on the
+  # PATH, which happens before the fork because a child between fork() and
+  # exec() may not walk one itself.
+  assert_equal 3, ProcessTestUtil.run("/bin/sh", "-c", "exit 3").exitstatus
+end
+
+assert('Process.spawn looks a bare name up on the environment it gives') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # Where a bare name is found is worked out before the fork, since a child
+  # between fork() and exec() may not walk a PATH itself, and what it is
+  # looked up on is the PATH the child is being given rather than this
+  # process's.  So an environment that names nowhere to look finds nothing.
+  assert_raise(Errno::ENOENT) do
+    Process.spawn({"PATH" => "/nonexistent"}, "sh", "-c", "exit 0")
+  end
+
+  # A name that is a path is not looked up at all, so no PATH is needed.
+  assert_equal 3, ProcessTestUtil.run({"PATH" => nil}, "/bin/sh", "-c", "exit 3").exitstatus
+
+  # No PATH to look on is not no places to look: a bare name still falls back
+  # to the list the host names, which is longer than the nothing it was given
+  # and is what the arrays holding the candidates have to be sized from.
+  assert_equal 3, ProcessTestUtil.run({"PATH" => nil}, "sh", "-c", "exit 3").exitstatus
+end
+
+assert('Process.spawn with a command line that needs no shell') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # A single String reaches the shell only where there is something in it for
+  # a shell to do.  There is nothing in these, so they are split here and the
+  # command is run directly, which is what a reported Errno says: a shell
+  # would have been executed successfully and left a child exiting 127.
+  assert_raise(Errno::ENOENT) { Process.spawn("mruby-no-such-command") }
+  assert_raise(Errno::ENOENT) { Process.spawn("mruby-no-such-command arg") }
+
+  # And the words the line was split into are the command's arguments.
+  assert_equal 0, ProcessTestUtil.run("sh -c :").exitstatus
+  assert_equal 1, ProcessTestUtil.run("sh -c false").exitstatus
+end
+
+assert('Process.spawn with a file that is not an executable image') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  path = ProcessTestUtil.script
+  skip "nowhere to write a script" unless path
+  begin
+    # execvp(3) hands a file the kernel will not execute to the shell,
+    # arguments and all, and so does this.  A name that is a path is handed
+    # over the same way as a name found on the PATH.
+    assert_equal 7, ProcessTestUtil.run(path).exitstatus
+    assert_equal 7, ProcessTestUtil.run(path, "ignored").exitstatus
+  ensure
+    ProcessTestUtil.unlink(path)
+  end
+end
+
+assert('Process.spawn with no command to run') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  assert_raise(ArgumentError) { Process.spawn }
+  assert_raise(Errno::ENOENT) { Process.spawn("") }
+  assert_raise(Errno::ENOENT) { Process.spawn("   ") }
+  assert_raise(Errno::ENOENT) { Process.spawn("mruby-no-such-command", "arg") }
+end
+
+assert('Process.spawn takes Strings without converting to one') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # mruby asks for the built-in type rather than converting to it, so a
+  # command that is not a String is refused rather than sent through to_str.
+  stringish = Object.new
+  def stringish.to_str
+    "true"
+  end
+  assert_raise(TypeError) { Process.spawn(stringish) }
+  assert_raise(TypeError) { Process.spawn(:true) }
+  assert_raise(TypeError) { Process.spawn("sh", 0) }
+end
+
+assert('Process.spawn with a redirection it cannot read') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # What is wrong with the value is what it is, and that is what the caller is
+  # owed: the cleanup on the way out closes what it had opened and leaves the
+  # exception alone.
+  assert_raise(ArgumentError) { Process.spawn("exit 0", 1 => :nonsense) }
+end
+
+assert('Process.spawn with [cmdname, argv0]') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # The image to run and what it sees itself called as, given apart.  The
+  # shell is told its own name is `mruby-argv0`, and that is what `$0`
+  # reads there.
+  assert_true ProcessTestUtil.run(["sh", "mruby-argv0"], "-c", 'test "$0" = mruby-argv0').success?
+  # A path is run as written, and the form is never the shell's: a single
+  # pair with nothing after it runs the image directly.
+  assert_true ProcessTestUtil.run(["/bin/sh", "x"], "-c", "exit 0").success?
+  assert_equal 0, ProcessTestUtil.run(["true", "not-a-shell-line >"]).exitstatus
+
+  # The pair is exactly two Strings, and the image has to be somewhere.
+  assert_raise_with_message(ArgumentError, "wrong first argument") { Process.spawn(["sh"]) }
+  assert_raise_with_message(ArgumentError, "wrong first argument") { Process.spawn(["sh", "a", "b"]) }
+  assert_raise(TypeError) { Process.spawn([:sh, "a"]) }
+  assert_raise(TypeError) { Process.spawn(["sh", :a]) }
+  assert_raise(Errno::ENOENT) { Process.spawn(["mruby-no-such-command", "sh"]) }
+  assert_raise(Errno::ENOENT) { Process.spawn(["", "sh"]) }
+end
+
+assert('Process.spawn looks a bare name up as CRuby does') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # execvp(3) tries every PATH directory and reports EACCES where what it
+  # found could not be run; CRuby looks first, counts only a file that is
+  # not a directory and may be executed, and reports ENOENT where nothing
+  # counted.  `..` is a directory every PATH element has, and a file that is
+  # merely there is not a command.
+  assert_raise(Errno::ENOENT) { Process.spawn("..") }
+  assert_raise(Errno::ENOENT) { Process.spawn({"PATH" => "/"}, "tmp") }
+
+  path = "/tmp/mruby-process-noexec-#{Process.pid}"
+  skip "nowhere to write a file" unless ProcessTestUtil.run("printf 'exit 7\\n' > #{path} && chmod 644 #{path}").success?
+  begin
+    assert_raise(Errno::ENOENT) do
+      Process.spawn({"PATH" => "/tmp"}, "mruby-process-noexec-#{Process.pid}")
+    end
+    # A name that is a path is not looked up at all, and what the kernel
+    # says about it is what is reported.
+    assert_raise(Errno::EACCES) { Process.spawn(path) }
+  ensure
+    ProcessTestUtil.unlink(path)
+  end
+end
+
+assert('Process.spawn with a redirection') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # What a redirection did is asked of the child: with its standard output
+  # closed there is nowhere for `echo` to write, and it says so by failing.
+  assert_true ProcessTestUtil.run("echo hello").success?
+  assert_false ProcessTestUtil.run("echo hello", out: :close).success?
+
+  # `err: [:child, :out]` is 2>&1: the child's own descriptor 1, as the table
+  # has left it by then, and not the parent's.  So the order of the table is
+  # the order it is written in: naming err first copies the descriptor 1
+  # still has, and closing 1 afterwards does not take that copy back.
+  assert_true ProcessTestUtil.run("echo oops 1>&2").success?
+  assert_true ProcessTestUtil.run("echo oops 1>&2", err: [:child, :out], out: :close).success?
+
+  # The other way round asks for a copy of a descriptor that is closed by the
+  # time it is asked for, and the child reports that rather than running.
+  assert_raise(StandardError) do
+    ProcessTestUtil.run("echo oops 1>&2", out: :close, err: [:child, :out])
+  end
+
+  # A descriptor of the parent's, named as a number rather than as an IO.
+  assert_true ProcessTestUtil.run("echo hello", out: 2).success?
+end
+
+assert('Process.spawn with close_others') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # What close_others closes is the descriptors nobody asked about; an
+  # explicit redirection is asking, so a sweep that took descriptor 2 with it
+  # would undo the redirection just performed.
+  assert_true ProcessTestUtil.run("echo hello", out: 2, close_others: true).success?
+end
+
+assert('Process.spawn with a descriptor number no descriptor can be') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # A negative descriptor names none, and a port numbers descriptors with an
+  # `int`, so a number wider than one would reach it as a different
+  # descriptor.  What is wrong with that one is its size, which is RangeError
+  # here as it is in Ruby.
+  assert_raise(ArgumentError) { Process.spawn("exit 0", -1 => 1) }
+  assert_raise(ArgumentError) { Process.spawn("exit 0", 1 => -1) }
+
+  big = (2**31 rescue nil)
+  skip "this build cannot name a number wider than an int" unless big
+  assert_raise(RangeError) { Process.spawn("exit 0", big => 1) }
+  assert_raise(RangeError) { Process.spawn("exit 0", 1 => big) }
+end
+
+assert('Process.spawn with an environment') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  assert_true ProcessTestUtil.run({"MRUBY_SPAWN_TEST" => "bar"},
+                                  'test "$MRUBY_SPAWN_TEST" = bar').success?
+  # A nil value removes a variable rather than setting it.
+  assert_true ProcessTestUtil.run({"MRUBY_SPAWN_TEST" => nil},
+                                  'test -z "$MRUBY_SPAWN_TEST"').success?
+  # An empty environment still takes the deltas: they are what to put in it,
+  # not what to change about the parent's.
+  assert_true ProcessTestUtil.run({"MRUBY_SPAWN_TEST" => "bar"},
+                                  'test "$MRUBY_SPAWN_TEST" = bar',
+                                  unsetenv_others: true).success?
+
+  # A name is a name, not half an entry.
+  assert_raise(ArgumentError) { Process.spawn({"A=B" => "c"}, "exit 0") }
+end
+
+assert('Process.spawn with chdir') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  assert_true ProcessTestUtil.run('test "`pwd`" = /', chdir: "/").success?
+  assert_raise(StandardError) { Process.spawn("exit 0", chdir: "/nonexistent") }
+end
+
+assert('Process.spawn with an option it does not take') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # An option nothing acts on is refused rather than dropped, in the words
+  # CRuby refuses it: a caller that wrote one is expecting it to happen.  A
+  # redirection is an option too, so what is refused is only what neither
+  # list holds; a key that is not even a Symbol is not an option at all.
+  assert_raise_with_message(ArgumentError, "wrong exec option symbol: foo") do
+    Process.spawn("sh", "-c", "exit 0", foo: true)
+  end
+  assert_raise_with_message(ArgumentError, "wrong exec option") do
+    Process.spawn("sh", "-c", "exit 0", "pgroup" => true)
+  end
+  # `exception:` is `system`'s, and CRuby's spawn says so rather than
+  # ignoring it.
+  assert_raise_with_message(ArgumentError, "exception option is not allowed") do
+    Process.spawn("sh", "-c", "exit 0", exception: true)
+  end
+end
+
+assert('Process.spawn takes true or false for a flag') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # CRuby reads exactly true or false for these, and says so for anything
+  # else rather than reading a String as one of the two.  `exit 0` is the
+  # shell's on every platform, cmd.exe's included.
+  [:close_others, :unsetenv_others].each do |flag|
+    assert_raise_with_message(ArgumentError, "expected true or false as #{flag}: \"x\"") do
+      Process.spawn("exit 0", flag => "x")
+    end
+    assert_true ProcessTestUtil.run("exit 0", flag => false).success?
+  end
+end
+
+assert('Process.spawn refuses a descriptor named twice') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # The table is applied in order, and a second entry for the same
+  # descriptor would silently undo the first; CRuby refuses it, naming the
+  # descriptor, and so does this, whichever spelling each entry used.
+  assert_raise_with_message(ArgumentError, "fd 1 specified twice") do
+    Process.spawn("sh", "-c", "exit 0", out: 2, 1 => 2)
+  end
+  assert_raise_with_message(ArgumentError, "fd 1 specified twice") do
+    Process.spawn("sh", "-c", "exit 0", [1, 1] => 2)
+  end
+end
+
+assert('Process.spawn with pgroup') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # A child in a group of its own is one that `waitpid(-pid)` finds, since
+  # that names the group whose id is the child's pid, and one in this
+  # process's group is not.  Asked down both paths: a posix_spawn() carries
+  # the request as an attribute, a fork as setpgid() in the child.
+  ProcessTestUtil.each_spawn_path do |opts|
+    pid = Process.spawn("exit 0", **opts)
+    assert_raise(Errno::ECHILD) { Process.waitpid(-pid) }
+    assert_equal pid, Process.waitpid(pid)
+
+    pid = Process.spawn("exit 5", pgroup: true, **opts)
+    assert_equal pid, Process.waitpid(-pid)
+    assert_equal 5, $?.exitstatus
+  end
+
+  # 0 is a group of its own as well; a number is a group to join, and a
+  # group is there while a member of it is.
+  leader = Process.spawn("sleep", "30", pgroup: 0)
+  begin
+    joiner = Process.spawn("exit 6", pgroup: leader)
+    assert_equal joiner, Process.waitpid(-leader)
+    assert_equal 6, $?.exitstatus
+  ensure
+    Process.kill(:KILL, leader)
+    Process.waitpid(leader)
+  end
+
+  # false and nil are the option not given.
+  assert_true ProcessTestUtil.run("sh", "-c", "exit 0", pgroup: false).success?
+  assert_true ProcessTestUtil.run("sh", "-c", "exit 0", pgroup: nil).success?
+  assert_raise_with_message(ArgumentError, "negative process group ID : -1") do
+    Process.spawn("sh", "-c", "exit 0", pgroup: -1)
+  end
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", pgroup: "1") }
+
+  # Windows' spelling is not this platform's.
+  assert_raise_with_message(ArgumentError, "wrong exec option symbol: new_pgroup") do
+    Process.spawn("sh", "-c", "exit 0", new_pgroup: true)
+  end
+end
+
+assert('Process.spawn with umask') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # What the child's umask is, asked of the shell that inherited it.
+  assert_true ProcessTestUtil.run('test "$(umask)" = 0077', umask: 077).success?
+  assert_true ProcessTestUtil.run('test "$(umask)" = 0022', umask: 022, close_others: true).success?
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", umask: "077") }
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", umask: nil) }
+end
+
+assert('Process.spawn with a resource limit') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # The limit the child starts under, asked of the shell that inherited it.
+  # An Integer is both limits, a pair is the soft and the hard one, and a
+  # pair of one is both again.  CPU seconds rather than descriptors: the
+  # child sets its limits before it execs, while it is still a copy of this
+  # process, and valgrind refuses a copy of a process it runs the hard
+  # descriptor limit it needs for itself.
+  assert_true ProcessTestUtil.run('test "$(ulimit -c)" = 0', rlimit_core: 0).success?
+  assert_true ProcessTestUtil.run('test "$(ulimit -St)" = 100 -a "$(ulimit -Ht)" = 200',
+                                  rlimit_cpu: [100, 200]).success?
+  assert_true ProcessTestUtil.run('test "$(ulimit -St)" = 150 -a "$(ulimit -Ht)" = 150',
+                                  rlimit_cpu: [150]).success?
+
+  assert_raise_with_message(ArgumentError, "wrong exec rlimit option") do
+    Process.spawn("sh", "-c", "exit 0", rlimit_core: [0, 0, 0])
+  end
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", rlimit_core: nil) }
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", rlimit_core: "0") }
+  # A resource is one of CRuby's names, downcased; a name no platform has,
+  # or one this platform has no number for, is an option that does not
+  # exist.
+  assert_raise_with_message(ArgumentError, "wrong exec option symbol: rlimit_foo") do
+    Process.spawn("sh", "-c", "exit 0", rlimit_foo: 0)
+  end
+  assert_raise_with_message(ArgumentError, "wrong exec option symbol: rlimit_CORE") do
+    Process.spawn("sh", "-c", "exit 0", rlimit_CORE: 0)
+  end
+  assert_raise_with_message(ArgumentError, "wrong exec option symbol: rlimit_") do
+    Process.spawn("sh", "-c", "exit 0", rlimit_: 0)
+  end
+end
+
+assert('Process.spawn with uid and gid') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+  skip "this platform has no identity to hand a child" unless Object.const_defined?(:ProcessIdentityTest)
+
+  # Becoming what one already is, which any process may do.
+  uid = ProcessIdentityTest.uid
+  gid = ProcessIdentityTest.gid
+  assert_true ProcessTestUtil.run("sh", "-c", "exit 0", uid: uid).success?
+  assert_true ProcessTestUtil.run("sh", "-c", "exit 0", gid: gid).success?
+  assert_true ProcessTestUtil.run("sh", "-c", "exit 0", uid: uid, gid: gid).success?
+
+  # Becoming someone else is the kernel's to refuse, and the child's
+  # refusal is reported as the spawn's, from the parent, with no child left
+  # to wait for.  Root may do it, and is not asked.
+  unless uid == 0
+    assert_raise(Errno::EPERM) { Process.spawn("sh", "-c", "exit 0", uid: 0) }
+    assert_raise(Errno::EPERM) { Process.spawn("sh", "-c", "exit 0", gid: 0) }
+  end
+  assert_raise(TypeError) { Process.spawn("sh", "-c", "exit 0", uid: "root") }
+  assert_raise(ArgumentError) { Process.spawn("sh", "-c", "exit 0", uid: -1) }
+end
+
+assert('Process.spawn keeps its helpers to itself') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # What takes the arguments apart is not API: CRuby's Process has no
+  # method starting with an underscore and no constant about spawning, and
+  # neither does this one's public face.  Asked by calling, since mruby's
+  # respond_to? answers for private methods too.
+  assert_raise(NoMethodError) { Process._spawn_normalize([]) }
+  assert_raise(NoMethodError) { Process._spawn_options({}, {}) }
+  assert_true Process.respond_to?(:__spawn)   # the primitive, as IO._pipe is
+  Process.constants.each do |c|
+    assert_false c.to_s[0, 5] == "SPAWN" || c.to_s[0, 5] == "REDIR", "#{c} is not CRuby's"
+  end
+end
+
+assert('Process.spawn starts the child with SIGPIPE at its default') do
+  skip ProcessTestUtil.signal_state_reason if ProcessTestUtil.signal_state_reason
+
+  # A process that ignores SIGPIPE, as one that talks to sockets commonly
+  # does, would hand that to every command it runs: an exec keeps an ignored
+  # signal ignored.  The spawn puts this one back, as CRuby's does, so a
+  # shell that sends itself the signal dies of it rather than going on.
+  pipe = Signal.list["PIPE"]
+  ProcessSignalTest.ignoring(pipe) do
+    ProcessTestUtil.each_spawn_path do |opts|
+      status = ProcessTestUtil.run("kill -PIPE $$; exit 7", **opts)
+      assert_true status.signaled?
+      assert_equal pipe, status.termsig
+    end
+  end
+end
+
+assert('Process.spawn starts the child with nothing blocked') do
+  skip ProcessTestUtil.signal_state_reason if ProcessTestUtil.signal_state_reason
+
+  # A signal blocked in this thread would stay blocked across the exec, and a
+  # command sent one would carry it around undelivered until it exited on its
+  # own.  The spawn empties the mask, so the shell dies of the signal it sends
+  # itself rather than reaching its exit.
+  term = Signal.list["TERM"]
+  ProcessSignalTest.blocking(term) do
+    ProcessTestUtil.each_spawn_path do |opts|
+      status = ProcessTestUtil.run("kill -TERM $$; exit 7", **opts)
+      assert_true status.signaled?
+      assert_equal term, status.termsig
+    end
+  end
+end
+
+assert('Process.spawn leaves any other ignored signal ignored') do
+  skip ProcessTestUtil.signal_state_reason if ProcessTestUtil.signal_state_reason
+
+  # SIGPIPE is the one exception.  Every other signal this process ignores
+  # stays ignored in the command, which is what an exec does and what a
+  # caller who ignored it meant; the same shell dies of the signal when
+  # nothing ignores it, so what is measured is the inheritance.
+  usr1 = Signal.list["USR1"]
+  ProcessTestUtil.each_spawn_path do |opts|
+    status = ProcessTestUtil.run("kill -USR1 $$; exit 7", **opts)
+    assert_true status.signaled?
+    assert_equal usr1, status.termsig
+  end
+  ProcessSignalTest.ignoring(usr1) do
+    ProcessTestUtil.each_spawn_path do |opts|
+      assert_equal 7, ProcessTestUtil.run("kill -USR1 $$; exit 7", **opts).exitstatus
+    end
+  end
+end
+
+assert('Process.waitpid') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # Waiting by number is the platform's own selector, but a number this
+  # interpreter spawned is also a record it holds, and the wait goes through
+  # that record so that the two cannot come apart.
+  pid = Process.spawn("exit 3")
+  assert_equal pid, Process.waitpid(pid)
+  assert_kind_of Process::Status, $?
+  assert_equal pid, $?.pid
+  assert_equal 3, $?.exitstatus
+end
+
+assert('Process.waitpid for a process this one did not spawn') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # A pid reaches the platform as written, and what it answers for is the
+  # children the running process has.  Its own parent is not one of them, so
+  # this is ECHILD wherever a parent can be named at all.
+  ppid = begin
+           Process.ppid
+         rescue StandardError
+           nil
+         end
+  skip "this platform cannot name a parent process" unless ppid
+
+  assert_raise(Errno::ECHILD) { Process.waitpid(ppid) }
 end
 
 assert('Process.waitpid with Process::WNOHANG') do
-  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
-  # `exec` so that the pid this knows is the one that sleeps.  IO.popen runs
-  # the command under /bin/sh, and a shell that forks it rather than replacing
-  # itself with it leaves the sleep running once the shell has been killed.
-  io = ProcessTestUtil.spawn("exec sleep 30")
-  skip "IO.popen is not available" unless io
+  skip ProcessTestUtil.signal_reason if ProcessTestUtil.signal_reason
 
+  # The argv form, so that no shell stands between this and the process it
+  # signals: a single String is run under /bin/sh, and a shell that forks the
+  # command rather than replacing itself with it would be what this kills.
+  pid = Process.spawn("sleep", "30")
   # Nothing has finished, so the wait returns at once with nothing to report.
-  assert_nil Process.waitpid(io.pid, Process::WNOHANG)
+  assert_nil Process.waitpid(pid, Process::WNOHANG)
   assert_nil $?
 
-  Process.kill(:KILL, io.pid)
-  assert_equal io.pid, Process.waitpid(io.pid)
+  Process.kill(:KILL, pid)
+  assert_equal pid, Process.waitpid(pid)
   assert_true $?.signaled?
   assert_false $?.exited?
   assert_nil $?.exitstatus
   assert_nil $?.success?
   assert_equal "KILL", Signal.signame($?.termsig)
-  io.close
+end
+
+assert('Process.waitpid with Process::WUNTRACED') do
+  skip ProcessTestUtil.signal_reason if ProcessTestUtil.signal_reason
+
+  pid = Process.spawn("sleep", "30")
+  Process.kill(:STOP, pid)
+  assert_equal pid, Process.waitpid(pid, Process::WUNTRACED)
+  assert_true $?.stopped?
+  assert_false $?.exited?
+  assert_equal "STOP", Signal.signame($?.stopsig)
+
+  # A stop is news about the child, not the end of it: it is still this
+  # interpreter's to wait for, so a wait that reports nothing is nil rather
+  # than Errno::ECHILD.
+  assert_nil Process.waitpid(pid, Process::WNOHANG)
+  Process.kill(:CONT, pid)
+  Process.kill(:KILL, pid)
+  assert_equal pid, Process.waitpid(pid)
+  assert_true $?.signaled?
 end
 
 assert('Process.waitpid with no child to wait for') do
-  # A pid reaped once is gone; waiting on it again has nothing to find.
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
-  io = ProcessTestUtil.spawn("exit 0")
-  skip "IO.popen is not available" unless io
 
-  io.read
-  pid = io.pid
+  # A pid reaped once is gone; waiting on it again has nothing to find, and
+  # the number may by then belong to someone else's process.  The record went
+  # with the wait, so nothing here still owes a reap for that number.
+  pid = Process.spawn("exit 0")
   Process.waitpid(pid)
   assert_raise(Errno::ECHILD) { Process.waitpid(pid) }
-  io.close
+  assert_raise(Errno::ECHILD) { Process.waitpid(pid + 1000000) }
+end
+
+assert('Process.waitpid over a process group') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # A child inherits this process's group, so 0, the caller's own group,
+  # reaches it.  A pid below -1 is the same call with the group named
+  # outright, which would need a getpgrp this gem does not have.
+  pid = Process.spawn("exit 0")
+  assert_equal pid, Process.waitpid(0)
+  assert_true $?.exited?
+  assert_equal 0, $?.exitstatus
+
+  # The record the wait landed on is found from the pid it reported, so a
+  # group wait accounts for the child exactly as a wait that named it would:
+  # nothing is left owing a reap for it.
+  assert_raise(Errno::ECHILD) { Process.waitpid(pid) }
+end
+
+assert('Process.waitpid over a process group that has no number') do
+  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+
+  # A pid below -1 names the process group whose ID is that number negated,
+  # and the smallest Integer a build can hold has no negation.  Each of these
+  # is that number in some build and merely an out-of-range one in the rest,
+  # so what is asserted is that neither is negated and passed on: ECHILD
+  # where the number is an Integer this build holds, RangeError where it is
+  # wider than one.
+  [31, 63].each do |bits|
+    pid = begin
+            -(2 ** bits)
+          rescue StandardError
+            next   # this build cannot name the number at all
+          end
+    assert_raise(StandardError) { Process.waitpid(pid) }
+  end
+end
+
+assert('Process.waitpid over a process group with no child in it') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # A group holds whatever it holds; what a wait draws from it is the running
+  # process's children, so a group with none of them in it has nothing to
+  # report even where the group itself is populated.
+  assert_raise(Errno::ECHILD) { Process.waitpid(0) }
 end
 
 assert('Process.kill reports the error by itself') do
-  # Signalling names no object either, so its message is the error alone.  A
-  # reaped pid is one nothing answers to any more, which is how the failure is
-  # reached without naming a process that might belong to someone else.
-  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
-  io = ProcessTestUtil.spawn("exit 0")
-  skip "IO.popen is not available" unless io
-
-  io.read
-  pid = io.pid
-  Process.waitpid(pid)
-  io.close
-
-  e = assert_raise(Errno::ESRCH) { Process.kill(0, pid) }
+  # Signalling names no object either, so its message is the error alone.  The
+  # pid is one above every platform's maximum, so the failure is reached
+  # without naming a process that might belong to someone else.  A reaped pid
+  # would not do: whether it answers to anything afterwards is the platform's
+  # to say, and Windows can hand the same number out again.
+  e = assert_raise(Errno::ESRCH) { Process.kill(0, ProcessTestUtil::NO_SUCH_PID) }
   assert_equal SystemCallError.new(e.errno).message, e.message
 end
 
 assert('Process.wait') do
   # The same wait under Ruby's other name for it.
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
-  io = ProcessTestUtil.spawn("exit 4")
-  skip "IO.popen is not available" unless io
 
-  io.read
-  pid = io.pid
+  pid = Process.spawn("exit 4")
   assert_equal pid, Process.wait(pid)
   assert_kind_of Process::Status, $?
   assert_equal pid, $?.pid
   assert_equal 4, $?.exitstatus
-  io.close
+
+  pid = Process.spawn("exit 0")
+  # -1 is "whichever child finishes first", which need not be the one just
+  # started: another test may have left one behind.
+  reaped = Process.wait
+  reaped = Process.wait while reaped != pid
+  assert_equal pid, reaped
+  assert_true $?.success?
 end
 
 assert('Process.waitpid2, Process.wait2') do
@@ -555,11 +1050,8 @@ assert('Process.waitpid2, Process.wait2') do
   # same status, so the pair is a second way to reach it and not a second
   # wait: asking twice would find nothing to wait for the second time.
   skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
-  io = ProcessTestUtil.spawn("exit 4")
-  skip "IO.popen is not available" unless io
 
-  io.read
-  pid = io.pid
+  pid = Process.spawn("exit 4")
   result = Process.waitpid2(pid)
   assert_kind_of Array, result
   assert_equal 2, result.size
@@ -570,43 +1062,24 @@ assert('Process.waitpid2, Process.wait2') do
   # The same object, not merely a status that reads the same: one wait
   # happened, and both ways of reaching it reach that one.
   assert_true result[1].equal?($?)
-  io.close
 end
 
 assert('Process.wait2 with Process::WNOHANG') do
-  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
-  # `exec` so that the pid this knows is the one that sleeps; see
-  # Process.waitpid with Process::WNOHANG above.
-  io = ProcessTestUtil.spawn("exec sleep 30")
-  skip "IO.popen is not available" unless io
+  skip ProcessTestUtil.signal_reason if ProcessTestUtil.signal_reason
 
+  # The argv form, so that the pid this holds is the one that sleeps; see
+  # Process.waitpid with Process::WNOHANG above.
+  pid = Process.spawn("sleep", "30")
   # Nothing has finished, so there is no pair to hand back.
-  assert_nil Process.wait2(io.pid, Process::WNOHANG)
+  assert_nil Process.wait2(pid, Process::WNOHANG)
   assert_nil $?
 
-  Process.kill(:KILL, io.pid)
-  pid, status = Process.wait2(io.pid)
-  assert_equal io.pid, pid
+  Process.kill(:KILL, pid)
+  reaped, status = Process.wait2(pid)
+  assert_equal pid, reaped
   assert_true status.signaled?
   assert_nil status.exitstatus
   assert_equal "KILL", Signal.signame(status.termsig)
-  io.close
-end
-
-assert('$? after IO.popen') do
-  # mruby-io builds the status it sets $? to when this gem is present, by
-  # allocating one and initializing it with the pid and the raw status.
-  # Neither gem depends on the other; this is the seam.
-  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
-  io = ProcessTestUtil.spawn("exit 0")
-  skip "IO.popen is not available" unless io
-
-  io.read
-  pid = io.pid
-  io.close
-  assert_kind_of Process::Status, $?
-  assert_equal pid, $?.pid
-  assert_true $?.success?
 end
 
 
@@ -708,19 +1181,16 @@ assert('Process.times and reaped children') do
   # confirms it is not yet counted while unreaped, and that reaping it
   # through waitpid makes cutime + cstime increase strictly.
   skip "this build has no Float" unless ProcessTestUtil.float?
-  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
 
   baseline = Process.times
-  io = ProcessTestUtil.spawn('i=0; while [ "$i" -lt 200000 ]; do i=$((i+1)); done; exit 0')
-  skip "IO.popen is not available" unless io
+  pid = Process.spawn('i=0; while [ "$i" -lt 200000 ]; do i=$((i+1)); done; exit 0')
 
-  io.read
   before = Process.times
   assert_equal baseline.cutime, before.cutime
   assert_equal baseline.cstime, before.cstime
 
-  Process.waitpid(io.pid)
-  io.close
+  Process.waitpid(pid)
   after = Process.times
 
   assert_kind_of Float, after.cutime
