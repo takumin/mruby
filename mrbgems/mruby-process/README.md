@@ -390,7 +390,9 @@ constrains; this list is a map.
   returns and the only thing a status needs to store.
 - Unsupported operations fail through `errno` (`ENOSYS`) rather than by the
   method being absent, so a program is told at the call site what this
-  platform will not do.
+  platform will not do. The one exception is process creation itself, which
+  a port declares or does not in its `process_hal_features.h`, and whose
+  absence leaves `Process.spawn` undefined (`include/process_hal.h`).
 - `Process::Status.new` is undefined, as in CRuby, and nothing else builds one
   either: a status comes from a wait (`src/status.c`).
 - A `Process::Status` is frozen once built (`mrb_process_status_new` in
@@ -470,12 +472,17 @@ constrains; this list is a map.
 
 ## Build configuration
 
-`MRB_NO_PROCESS_SPAWN` builds the gem without process creation. `Process.spawn`
-is then not defined at all, rather than defined and always failing, so a
-program can ask `Process.respond_to?(:spawn)` before it commits to a plan that
-needs a child. `process_hal.h` sets it for iOS, where a process may not spawn
-another, so that platform needs no configuring to be told the truth. Everything
-else, `Process.pid` and signals and `Process::Status`, is unaffected.
+Whether this build can create a process is the port's to say. The port
+publishes it as `MRB_HAL_PROCESS_HAS_SPAWN` in a `process_hal_features.h`
+beside its sources, which `process_hal.h` reads before it declares anything;
+the POSIX port leaves the macro out on iOS, where a process may not spawn
+another, so that platform needs no configuring to be told the truth.
+`MRB_NO_PROCESS_SPAWN` is a build's veto: a configuration that defines it gets
+the gem without process creation whatever the port could do. Either way
+`Process.spawn` is then not defined at all, rather than defined and always
+failing, so a program can ask `Process.respond_to?(:spawn)` before it commits
+to a plan that needs a child. Everything else, `Process.pid` and signals and
+`Process::Status`, is unaffected.
 
 `IO.popen` follows: with no `Process.spawn` to build on, it raises
 `NotImplementedError`. A build without this gem at all has no `IO.popen`
@@ -485,10 +492,15 @@ that cannot work.
 ## Adding a port
 
 Create `ports/<name>/process_hal.c` implementing every function in
-`include/process_hal.h`, then build with `conf.ports :<name>, :posix` so gems
-without a `<name>` port fall back. A port that cannot do something should set
-`errno` to `ENOSYS` — or `ENOTSUP` for a redirection it cannot express — and
-return the documented failure value rather than pretending to succeed.
+`include/process_hal.h`, and `ports/<name>/process_hal_features.h` saying
+which of the guarded ones it implements; then build with `conf.ports :<name>,
+:posix` so gems without a `<name>` port fall back. A capability the port does
+not declare has no prototype, no implementation and no method, so a port that
+cannot create a process at all leaves `MRB_HAL_PROCESS_HAS_SPAWN` out rather
+than writing a `mrb_hal_process_spawn()` that refuses. A port that cannot do
+something narrower should set `errno` to `ENOSYS` — or `ENOTSUP` for a
+redirection it cannot express — and return the documented failure value rather
+than pretending to succeed.
 
 A port that creates a process by forking has one more rule to keep. Between
 `fork()` and `exec()` a child may call only what is async-signal-safe, and

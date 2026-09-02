@@ -290,7 +290,7 @@ mrb_hal_process_ppid(mrb_state *mrb)
  * Spawning
  */
 
-#ifndef MRB_NO_PROCESS_SPAWN
+#ifdef MRB_HAL_PROCESS_HAS_SPAWN
 
 /*
  * What the child will execute, worked out before the fork
@@ -1155,19 +1155,7 @@ error:
   return -1;
 }
 
-#else /* MRB_NO_PROCESS_SPAWN */
-
-int
-mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
-                      const mrb_process_spawn_params *params,
-                      mrb_hal_process_child **out)
-{
-  (void)mrb; (void)ctx; (void)params; (void)out;
-  errno = ENOSYS;
-  return -1;
-}
-
-#endif /* MRB_NO_PROCESS_SPAWN */
+#endif /* MRB_HAL_PROCESS_HAS_SPAWN */
 
 /*
  * Waiting

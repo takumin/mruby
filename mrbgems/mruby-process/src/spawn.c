@@ -22,7 +22,7 @@
 #include <errno.h>
 #include <string.h>
 
-#ifndef MRB_NO_PROCESS_SPAWN
+#ifdef MRB_HAL_PROCESS_HAS_SPAWN
 
 /* The three arrays the HAL reads.  They are freed together, including on the
    way out of a failure, because mrb_sys_fail() leaves by longjmp and takes
@@ -209,7 +209,7 @@ mrb_process_spawn_init(mrb_state *mrb, struct RClass *process)
                                 MRB_ARGS_REQ(6));
 }
 
-#else /* MRB_NO_PROCESS_SPAWN */
+#else /* !MRB_HAL_PROCESS_HAS_SPAWN */
 
 void
 mrb_process_spawn_init(mrb_state *mrb, struct RClass *process)
@@ -217,8 +217,9 @@ mrb_process_spawn_init(mrb_state *mrb, struct RClass *process)
   /* Without a way to create a process, Process.spawn is not defined at all:
      mrblib/process.rb defines it only where this primitive exists, so a
      program is told by the missing method rather than by a failure at the
-     point of no return. */
+     point of no return.  Whether there is a way is the port's answer, or a
+     build's veto of it; see process_hal.h. */
   (void)mrb; (void)process;
 }
 
-#endif /* MRB_NO_PROCESS_SPAWN */
+#endif /* MRB_HAL_PROCESS_HAS_SPAWN */
