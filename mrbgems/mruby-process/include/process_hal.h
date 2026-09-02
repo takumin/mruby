@@ -328,6 +328,12 @@ int mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo);
  * runs, and a signal blocked in the calling thread would stay blocked in
  * the command.  A platform without signals has nothing to do here.
  *
+ * The image a bare name stands for is looked up the way CRuby looks one
+ * up: on the PATH the child is given, and only a file that is not a
+ * directory and that this process may execute counts, so a name that
+ * stands for nothing runnable anywhere on it is ENOENT, and a name holding
+ * a directory separator is used as written.
+ *
  * @return 0 on success with *out holding a child registered in `ctx`,
  *         -1 on error (sets errno)
  */

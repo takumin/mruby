@@ -543,6 +543,31 @@ assert('Process.spawn with a redirection it cannot read') do
   assert_raise(ArgumentError) { Process.spawn("exit 0", 1 => :nonsense) }
 end
 
+assert('Process.spawn looks a bare name up as CRuby does') do
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
+
+  # execvp(3) tries every PATH directory and reports EACCES where what it
+  # found could not be run; CRuby looks first, counts only a file that is
+  # not a directory and may be executed, and reports ENOENT where nothing
+  # counted.  `..` is a directory every PATH element has, and a file that is
+  # merely there is not a command.
+  assert_raise(Errno::ENOENT) { Process.spawn("..") }
+  assert_raise(Errno::ENOENT) { Process.spawn({"PATH" => "/"}, "tmp") }
+
+  path = "/tmp/mruby-process-noexec-#{Process.pid}"
+  skip "nowhere to write a file" unless ProcessTestUtil.run("printf 'exit 7\\n' > #{path} && chmod 644 #{path}").success?
+  begin
+    assert_raise(Errno::ENOENT) do
+      Process.spawn({"PATH" => "/tmp"}, "mruby-process-noexec-#{Process.pid}")
+    end
+    # A name that is a path is not looked up at all, and what the kernel
+    # says about it is what is reported.
+    assert_raise(Errno::EACCES) { Process.spawn(path) }
+  ensure
+    ProcessTestUtil.unlink(path)
+  end
+end
+
 assert('Process.spawn with a redirection') do
   skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
 

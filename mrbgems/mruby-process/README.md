@@ -89,11 +89,15 @@ shell to complain and exit 127.
 Two or more arguments name the image and its arguments, and no shell is
 involved whatever they hold. A bare name is looked up on `PATH`; a name that
 is a path is run as written, and handed to the shell if it turns out not to
-be an executable image, as `execvp(3)` hands one over. The lookup asks
-`stat(2)` which directories have something of that name before any child is
-made, so a command costs one exec wherever it sits on the `PATH`, where
-`execvp(3)` would try an exec in every directory before it; whether what is
-there can be run is still the exec's to say.
+be an executable image, as `execvp(3)` hands one over. The lookup is CRuby's
+rather than `execvp(3)`'s: each `PATH` directory is asked, before any child
+is made, whether it holds something of that name that is not a directory and
+that this process may execute, and only what answers is tried. So a command
+costs one exec wherever it sits on the `PATH`, where `execvp(3)` would try an
+exec in every directory before it, and a name that stands for nothing
+runnable anywhere on it is `Errno::ENOENT`, where `execvp(3)` would say
+`EACCES` for the directories it stumbled over; `Process.spawn("..")` is the
+case in point.
 
 A command that cannot be run raises the `Errno` the attempt failed with,
 rather than leaving a child that exited 127 to be told apart from a command

@@ -382,6 +382,21 @@ count_elements(const char *s)
   return n;
 }
 
+/* Whether this process may execute `path`, asked with the identity the
+   exec would be made under.  access(2) answers for the real user, which is
+   the wrong one in a set-user-ID process; faccessat(2) with AT_EACCESS
+   answers for the effective user, and is what CRuby's eaccess() is on the
+   hosts that have it. */
+static int
+can_exec(const char *path)
+{
+#ifdef AT_EACCESS
+  return faccessat(AT_FDCWD, path, X_OK, AT_EACCESS) == 0;
+#else
+  return access(path, X_OK) == 0;
+#endif
+}
+
 /* Build the plan.  Returns 0, or -1 with errno set. */
 static int
 plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_plan *plan)
@@ -506,17 +521,21 @@ plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_p
   }
 
   /* execvp() tries each directory on the PATH with an exec and moves on
-     where nothing of that name was there.  Here that question is put to
-     stat() first, and only the names something answers for are tried: an
+     where nothing of that name was there.  Here the question is asked of
+     the directories first, and only the names that answer are tried: an
      exec that is a posix_spawn() creates a child for every name it tries,
      and a PATH that lists the directory the command is in last would cost
-     a child for each one before it.  What stat() cannot say, whether what
-     is there can be run and whether it is an executable image, stays with
-     the exec: a noexec mount, root and an ACL each decide that in the
-     kernel, and mode bits would not stand for their answer.  So a name
-     that is there is kept whatever it is, and the exec's EACCES and ENOEXEC
-     mean what they meant.  A name that is gone by the time the exec comes
-     is a race execvp() has too. */
+     a child for each one before it.  What counts as an answer is what
+     CRuby counts: a file that is not a directory, and that this process
+     may execute, which is the kernel's to say and is asked of it rather
+     than read off the mode bits, since a noexec mount, root and an ACL
+     each decide it there.  So `Process.spawn("..")` finds the directories
+     every PATH element has one of and none of them counts, and a name that
+     stands for nothing runnable anywhere is ENOENT, where execvp() would
+     have said EACCES for the same walk.  Whether what is there is an
+     executable image stays with the exec, and its ENOEXEC means what it
+     meant; a name that is gone by the time the exec comes is a race
+     execvp() has too. */
   {
     size_t n = 0;
     const char *p;
@@ -531,22 +550,21 @@ plan_build(mrb_state *mrb, const mrb_process_spawn_params *params, struct exec_p
       cand = (len == 0) ? str_join(mrb, ".", 1, '/', name, namelen)
                         : str_join(mrb, p, len, '/', name, namelen);
       if (cand == NULL) goto nomem;
-      if (stat(cand, &st) == -1 && (errno == ENOENT || errno == ENOTDIR)) {
-        mrb_free(mrb, cand);
-      }
-      else {
+      if (stat(cand, &st) == 0 && !S_ISDIR(st.st_mode) && can_exec(cand)) {
         plan->owned[nowned++] = cand;
         plan->owned[nowned] = NULL;
         plan->path[n++] = cand;
+      }
+      else {
+        mrb_free(mrb, cand);
       }
       if (sep == NULL) break;
       p = sep + 1;
     }
     plan->path[n] = NULL;
 
-    /* Nothing of that name anywhere on the PATH is what execvp() answers
-       ENOENT for, and it is answered here without a child having been made
-       to find it out. */
+    /* Nothing runnable of that name anywhere on the PATH, answered here
+       without a child having been made to find it out. */
     if (n == 0) {
       plan_free(mrb, plan);
       errno = ENOENT;
