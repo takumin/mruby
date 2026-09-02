@@ -160,12 +160,6 @@ class IO
     @__pid
   end
 
-  # Internal: remember the command this stream is a pipe to, so that #close
-  # can wait for it and #pid can name it.  IO.popen is the only caller.
-  def _pid=(pid)
-    @__pid = pid
-  end
-
   # Internal: the wait #close owes the command at the other end.  What can go
   # wrong is that the child has already been accounted for, by an explicit
   # `Process.waitpid(io.pid)` or by a `Process.wait` that drew it, and then

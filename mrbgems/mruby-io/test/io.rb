@@ -648,6 +648,65 @@ assert('IO.popen leaves the command\'s standard error alone') do
   end
 end
 
+assert('IO.popen with an Array command') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
+  skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
+  begin
+    # An Array is Process.spawn's argument list: no shell stands between
+    # this and the command, so `$X` reaches echo as written.
+    assert_equal "$X\n", IO.popen(["echo", "$X"]) { |i| i.read }
+    # An environment Hash and an options Hash sit where Process.spawn takes
+    # them, at either end of the Array, and the environment may lead the
+    # arguments instead.
+    assert_equal "1\n", IO.popen([{"MRUBY_POPEN_TEST" => "1"}, "sh", "-c", "echo $MRUBY_POPEN_TEST"]) { |i| i.read }
+    assert_equal "2\n", IO.popen({"MRUBY_POPEN_TEST" => "2"}, "sh -c 'echo $MRUBY_POPEN_TEST'") { |i| i.read }
+    assert_equal "/\n", IO.popen(["sh", "-c", "pwd", {chdir: "/"}]) { |i| i.read }
+    # And `[cmdname, argv0]` is what it is to Process.spawn.
+    assert_equal "mruby-argv0\n", IO.popen([["sh", "mruby-argv0"], "-c", 'echo "$0"']) { |i| i.read }
+  rescue NotImplementedError => e
+    skip e.message
+  end
+end
+
+assert('IO.popen takes the options Process.spawn takes') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
+  skip "no POSIX shell or `cat` to talk to here" if MRubyIOTestUtil.win?
+  begin
+    assert_equal "/\n", IO.popen("pwd", chdir: "/") { |i| i.read }
+    assert_equal "/\n", IO.popen("pwd", "r", chdir: "/") { |i| i.read }
+    # A String is a file to open, as it is for Process.spawn; the stream's
+    # own end of the pipe is the child's 1 here, so the file takes 2.
+    assert_equal "out\n", IO.popen("echo out; echo err 1>&2", err: "/dev/null") { |i| i.read }
+    # The mode may be given as an option instead, and not both ways.
+    IO.popen($cat, mode: "r+") do |io|
+      io.write "hello\n"
+      io.close_write
+      assert_equal "hello\n", io.read
+    end
+    assert_raise_with_message(ArgumentError, "mode specified twice") { IO.popen($cat, "r", mode: "r+") }
+    # What the stream's own end of the pipe is cannot be redirected as
+    # well, and the refusal is CRuby's.
+    assert_raise_with_message(ArgumentError, "fd 1 specified twice") { IO.popen("echo hi", "r", out: 2) }
+    assert_raise_with_message(ArgumentError, "fd 0 specified twice") { IO.popen($cat, "w", in: 0) }
+    # An option Process.spawn does not take is refused the way it refuses it.
+    assert_raise_with_message(ArgumentError, "wrong exec option symbol: foo") { IO.popen("echo hi", foo: 1) }
+    assert_raise(ArgumentError) { IO.popen("echo", "r", "x") }
+  rescue NotImplementedError => e
+    skip e.message
+  end
+end
+
+assert('IO.popen keeps its helpers to itself') do
+  skip "this build has no IO.popen" unless IO.respond_to?(:popen)
+  # CRuby's IO has no method starting with an underscore, and what takes
+  # popen's arguments apart here is not one either; the primitives a build
+  # has always shown, IO._pipe among them, stay.  Asked by calling, since
+  # mruby's respond_to? answers for private methods too.
+  assert_raise(NoMethodError) { IO._popen_open([]) }
+  assert_raise(NoMethodError) { IO._popen_mode("r") }
+  assert_raise(NoMethodError) { $stdin._pid = 1 }
+end
+
 assert('IO#close_write') do
   skip "this build has no IO.popen" unless IO.respond_to?(:popen)
   begin
