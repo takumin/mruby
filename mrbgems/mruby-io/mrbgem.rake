@@ -7,6 +7,10 @@ MRuby::Gem::Specification.new('mruby-io') do |spec|
   spec.add_test_dependency 'mruby-time', core: 'mruby-time'
   spec.add_test_dependency 'mruby-errno', core: 'mruby-errno'
 
+  # Asking whether global_variables lists $? needs the gem that defines
+  # Kernel#global_variables in the first place.
+  spec.add_test_dependency 'mruby-metaprog', core: 'mruby-metaprog'
+
   if spec.for_windows?
     spec.linker.libraries << "ws2_32"
   end

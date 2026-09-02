@@ -1723,8 +1723,40 @@ mrb_gv_set(mrb_state *mrb, mrb_sym sym, mrb_value v)
   }
   const struct gv_virtual *vt = gv_put(mrb, mrb->globals, sym, v);
   if (vt) {
+    /* the NameError is raised here rather than in a setter because the
+       setter type does not receive the variable's name; the dispatch is
+       the one place that still holds `sym` */
+    if (!vt->set) {
+      mrb_name_error(mrb, sym, "%n is a read-only variable", sym);
+    }
     vt->set(mrb, v);
   }
+}
+
+/* Reads one state-scoped special-variable slot. See <mruby/internal.h>. */
+mrb_value
+mrb_vm_statevar_get(mrb_state *mrb, enum mrb_statevar_index key)
+{
+  if (!mrb->statevars) return mrb_nil_value();
+  return mrb->statevars[key];
+}
+
+/* Writes one state-scoped special-variable slot. No write barrier: the
+ * array is a root, rescanned at both the start and the final marking of an
+ * incremental cycle, the way `mrb->exc` is. */
+void
+mrb_vm_statevar_set(mrb_state *mrb, enum mrb_statevar_index key, mrb_value v)
+{
+  if (!mrb->statevars) {
+    if (mrb_nil_p(v)) return;
+    /* nil is not all-zero bits under every boxing, so no calloc */
+    mrb_value *slots = (mrb_value*)mrb_malloc(mrb, sizeof(mrb_value) * MRB_STATEVAR_MAX);
+    for (int i = 0; i < MRB_STATEVAR_MAX; i++) {
+      slots[i] = mrb_nil_value();
+    }
+    mrb->statevars = slots;
+  }
+  mrb->statevars[key] = v;
 }
 
 /*

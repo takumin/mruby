@@ -133,9 +133,15 @@ io_set_process_status(mrb_state *mrb, pid_t pid, int status)
   else {
     v = mrb_fixnum_value(WEXITSTATUS(status));
   }
-  mrb_gv_set(mrb, mrb_intern_lit(mrb, "$?"), v);
+  mrb_vm_statevar_set(mrb, MRB_STATEVAR_LASTSTATUS, v);
 }
 #endif
+
+static mrb_value
+last_status_gv_get(mrb_state *mrb)
+{
+  return mrb_vm_statevar_get(mrb, MRB_STATEVAR_LASTSTATUS);
+}
 
 static mrb_noreturn void
 mode_error(mrb_state *mrb, const char *mode)
@@ -2450,4 +2456,11 @@ mrb_init_io(mrb_state *mrb)
   mrb_define_const_id(mrb, io, MRB_SYM(SEEK_SET), mrb_fixnum_value(MRB_IO_SEEK_SET));
   mrb_define_const_id(mrb, io, MRB_SYM(SEEK_CUR), mrb_fixnum_value(MRB_IO_SEEK_CUR));
   mrb_define_const_id(mrb, io, MRB_SYM(SEEK_END), mrb_fixnum_value(MRB_IO_SEEK_END));
+
+  /* Unconditionally, MRB_NO_IO_POPEN or not: CRuby's `$?` is defined from
+     startup, before any child exists to give it a value. Registering it
+     again over mruby-process's identical registration is harmless (the
+     sentinel is replaced, the orphan collected). */
+  mrb_gv_define_virtual(mrb, mrb_intern_lit(mrb, "$?"),
+                        last_status_gv_get, NULL);
 }
