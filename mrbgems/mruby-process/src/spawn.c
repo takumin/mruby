@@ -6,15 +6,17 @@
 ** The C half of Process.spawn.  CRuby's argument shape is `[env,]
 ** command..., [options]`, and taking that apart in C would pile Hash, Array
 ** and IO case analysis in here; mrblib/process.rb does it instead and hands
-** this down flat integer and string arrays.  What is left is the part that
-** has to happen in C: validating the strings, marshalling them into the
-** structs the HAL takes, and owning the child the port created, so that the
-** wait it now owes has something owing it.
+** this down flat arrays and a Hash of the options it has already read.
+** What is left is the part that has to happen in C: validating the
+** strings, marshalling everything into the structs the HAL takes, and
+** owning the child the port created, so that the wait it now owes has
+** something owing it.
 */
 
 #include <mruby.h>
 #include <mruby/array.h>
 #include <mruby/error.h>
+#include <mruby/hash.h>
 #include <mruby/string.h>
 #include "process_hal.h"
 #include "process_internal.h"
@@ -24,9 +26,9 @@
 
 #ifdef MRB_HAL_PROCESS_HAS_SPAWN
 
-/* The three arrays the HAL reads.  They are freed together, including on the
-   way out of a failure, because mrb_sys_fail() leaves by longjmp and takes
-   any chance to free them with it. */
+/* The arrays the HAL reads.  They are freed together, including on the way
+   out of a failure, because mrb_sys_fail() leaves by longjmp and takes any
+   chance to free them with it. */
 struct spawn_bufs {
   const char **argv;
   mrb_process_env_entry *env;
@@ -39,22 +41,24 @@ bufs_free(mrb_state *mrb, struct spawn_bufs *bufs)
   mrb_free(mrb, bufs->argv);
   mrb_free(mrb, bufs->env);
   mrb_free(mrb, bufs->redirects);
-  bufs->argv = NULL;
-  bufs->env = NULL;
-  bufs->redirects = NULL;
+  memset(bufs, 0, sizeof(*bufs));
 }
 
 /* A string the operating system can take: really a String, and without an
    embedded NUL, which mrb_string_value_cstr() is what checks. */
 static const char*
-element_cstr(mrb_state *mrb, mrb_value ary, mrb_int idx)
+value_cstr(mrb_state *mrb, mrb_value v)
 {
-  mrb_value v = mrb_ary_ref(mrb, ary, idx);
-
   if (!mrb_string_p(v)) {
     mrb_raisef(mrb, E_TYPE_ERROR, "no implicit conversion of %Y into String", v);
   }
   return mrb_string_value_cstr(mrb, &v);
+}
+
+static const char*
+element_cstr(mrb_state *mrb, mrb_value ary, mrb_int idx)
+{
+  return value_cstr(mrb, mrb_ary_ref(mrb, ary, idx));
 }
 
 static mrb_int
@@ -64,18 +68,65 @@ element_int(mrb_state *mrb, mrb_value ary, mrb_int idx)
 }
 
 /*
- * call-seq:
- *   Process.__spawn(kind, argv, env, redirects, flags, chdir) -> pid
+ * The options Hash
  *
- * The primitive Process.spawn is written on.  Everything here is already
- * flat: +argv+ is an array of Strings, +env+ a [name, value_or_nil, ...]
- * array, +redirects+ a [child_fd, kind, source_fd, ...] array read in order.
+ * Every key is one mrblib/process.rb has already recognised, so what is
+ * checked here is the value's shape.
+ */
+
+static mrb_value
+opt_get(mrb_state *mrb, mrb_value opts, mrb_sym key)
+{
+  return mrb_hash_fetch(mrb, opts, mrb_symbol_value(key), mrb_nil_value());
+}
+
+static mrb_bool
+opt_bool(mrb_state *mrb, mrb_value opts, mrb_sym key)
+{
+  return mrb_test(opt_get(mrb, opts, key));
+}
+
+static const char*
+opt_cstr(mrb_state *mrb, mrb_value opts, mrb_sym key)
+{
+  mrb_value v = opt_get(mrb, opts, key);
+
+  if (mrb_nil_p(v)) return NULL;
+  return value_cstr(mrb, v);
+}
+
+/* What a redirection table entry is, from the Symbol the Ruby side wrote:
+   `:parent` duplicates a descriptor of this process's, `:child` one the
+   table has set so far, `:close` closes. */
+static mrb_process_redirect_kind
+redirect_kind(mrb_state *mrb, mrb_value v)
+{
+  if (mrb_symbol_p(v)) {
+    mrb_sym s = mrb_symbol(v);
+    if (s == MRB_SYM(parent)) return MRB_PROCESS_REDIR_PARENT;
+    if (s == MRB_SYM(child))  return MRB_PROCESS_REDIR_CHILD;
+    if (s == MRB_SYM(close))  return MRB_PROCESS_REDIR_CLOSE;
+  }
+  mrb_raisef(mrb, E_ARGUMENT_ERROR, "unknown redirection kind %!v", v);
+  return MRB_PROCESS_REDIR_CLOSE; /* not reached */
+}
+
+/*
+ * call-seq:
+ *   Process.__spawn(argv, env, redirects, options) -> pid
+ *
+ * The primitive Process.spawn is written on.  +argv+ is an Array of
+ * Strings, +env+ a [name, value_or_nil, ...] Array, +redirects+ a
+ * [child_fd, kind, source_fd, ...] Array read in order, and +options+ a
+ * Hash holding what the caller's option Hash was read into: `:shell`,
+ * `:chdir`, `:close_others` and `:unsetenv_others`, each present only
+ * where the caller gave it.
  */
 static mrb_value
 process_s___spawn(mrb_state *mrb, mrb_value self)
 {
-  mrb_value argv_ary, env_ary, table_ary, chdir;
-  mrb_int kind, flags, argc, envc, tablec, i;
+  mrb_value argv_ary, env_ary, table_ary, opts;
+  mrb_int argc, envc, tablec, i;
   mrb_process_spawn_params params;
   struct spawn_bufs bufs = { NULL, NULL, NULL };
   mrb_hal_process_child *child;
@@ -83,15 +134,12 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
   mrb_process_record *record;
   int err;
 
-  mrb_get_args(mrb, "iAAAiS!", &kind, &argv_ary, &env_ary, &table_ary, &flags, &chdir);
+  mrb_get_args(mrb, "AAAH", &argv_ary, &env_ary, &table_ary, &opts);
 
   argc = RARRAY_LEN(argv_ary);
   envc = RARRAY_LEN(env_ary);
   tablec = RARRAY_LEN(table_ary);
 
-  if (kind != MRB_PROCESS_SPAWN_ARGV && kind != MRB_PROCESS_SPAWN_SHELL) {
-    mrb_raisef(mrb, E_ARGUMENT_ERROR, "unknown spawn kind %i", kind);
-  }
   if (argc < 1) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "no command given");
   }
@@ -117,11 +165,8 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
     if (!mrb_nil_p(value)) element_cstr(mrb, env_ary, i + 1);
   }
   for (i = 0; i < tablec; i += 3) {
-    mrb_int rkind = element_int(mrb, table_ary, i + 1);
-    if (rkind != MRB_PROCESS_REDIR_PARENT && rkind != MRB_PROCESS_REDIR_CHILD &&
-        rkind != MRB_PROCESS_REDIR_CLOSE) {
-      mrb_raisef(mrb, E_ARGUMENT_ERROR, "unknown redirection kind %i", rkind);
-    }
+    mrb_process_redirect_kind rkind = redirect_kind(mrb, mrb_ary_ref(mrb, table_ary, i + 1));
+
     if (element_int(mrb, table_ary, i) < 0) {
       mrb_raise(mrb, E_ARGUMENT_ERROR, "wrong exec redirect: negative descriptor");
     }
@@ -138,7 +183,13 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
       mrb_process_int_arg(mrb, source, "descriptor");
     }
   }
-  if (!mrb_nil_p(chdir)) mrb_string_value_cstr(mrb, &chdir);
+
+  memset(&params, 0, sizeof(params));
+  params.kind = opt_bool(mrb, opts, MRB_SYM(shell)) ? MRB_PROCESS_SPAWN_SHELL
+                                                    : MRB_PROCESS_SPAWN_ARGV;
+  params.chdir = opt_cstr(mrb, opts, MRB_SYM(chdir));
+  if (opt_bool(mrb, opts, MRB_SYM(close_others))) params.flags |= MRB_PROCESS_SPAWN_CLOSE_OTHERS;
+  if (opt_bool(mrb, opts, MRB_SYM(unsetenv_others))) params.flags |= MRB_PROCESS_SPAWN_UNSETENV_OTHERS;
 
   bufs.argv = (const char**)mrb_malloc_simple(mrb, sizeof(char*) * (size_t)(argc + 1));
   if (envc > 0) {
@@ -167,19 +218,15 @@ process_s___spawn(mrb_state *mrb, mrb_value self)
   for (i = 0; i < tablec; i += 3) {
     mrb_process_redirect *r = &bufs.redirects[i / 3];
     r->child_fd = element_int(mrb, table_ary, i);
-    r->kind = (mrb_process_redirect_kind)element_int(mrb, table_ary, i + 1);
-    r->source_fd = element_int(mrb, table_ary, i + 2);
+    r->kind = redirect_kind(mrb, mrb_ary_ref(mrb, table_ary, i + 1));
+    r->source_fd = (r->kind == MRB_PROCESS_REDIR_CLOSE) ? -1 : element_int(mrb, table_ary, i + 2);
   }
 
-  params.kind = (mrb_process_spawn_kind)kind;
   params.argv = bufs.argv;
   params.env = bufs.env;
   params.nenv = (size_t)(envc / 2);
   params.redirects = bufs.redirects;
   params.nredirects = (size_t)(tablec / 3);
-  params.chdir = mrb_nil_p(chdir) ? NULL : RSTRING_PTR(chdir);
-  params.flags = (unsigned int)flags &
-                 (MRB_PROCESS_SPAWN_CLOSE_OTHERS | MRB_PROCESS_SPAWN_UNSETENV_OTHERS);
 
   /* The record is reserved before the child exists, because that is the step
      that can fail: once the OS has created a process, nothing here may raise
@@ -206,7 +253,7 @@ void
 mrb_process_spawn_init(mrb_state *mrb, struct RClass *process)
 {
   mrb_define_module_function_id(mrb, process, MRB_SYM(__spawn), process_s___spawn,
-                                MRB_ARGS_REQ(6));
+                                MRB_ARGS_REQ(4));
 }
 
 #else /* !MRB_HAL_PROCESS_HAS_SPAWN */
