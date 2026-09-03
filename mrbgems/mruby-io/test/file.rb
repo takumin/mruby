@@ -411,6 +411,44 @@ assert('File.chmod') do
   end
 end
 
+assert('File.umask') do
+  path = "#{$mrbtest_io_wfname}.umask-test"
+  probe = "#{$mrbtest_io_wfname}.umask-probe"
+  old = File.umask
+  begin
+    # A caller that overrides permissions, root on POSIX, writes to a file
+    # whatever its bits say, so a read-only file is asked first whether it
+    # refuses this one; the second half means nothing where it does not.
+    File.open(probe, 'w') {}
+    File.chmod(0400, probe)
+    enforced = begin
+      File.open(probe, 'w') {}
+      false
+    rescue Errno::EACCES
+      true
+    end
+
+    # 0022 keeps the owner's write bit, so the file it made opens for writing
+    File.umask(0022)
+    File.open(path, 'w') {}
+    assert_nothing_raised { File.open(path, 'w') {} }
+    File.delete(path)
+
+    if enforced
+      # 0222 takes it from everyone, so the file it made refuses to
+      File.umask(0222)
+      File.open(path, 'w') {}
+      assert_raise(Errno::EACCES) { File.open(path, 'w') {} }
+    end
+  ensure
+    File.umask(old)
+    [probe, path].each do |f|
+      File.chmod(0600, f) rescue nil
+      File.delete(f) rescue nil
+    end
+  end
+end
+
 assert('File.open with "x" mode') do
   File.unlink $mrbtest_io_wfname rescue nil
   assert_nothing_raised do
