@@ -469,7 +469,11 @@ cdump_irep_struct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE *fp
       if (cdump_irep_struct(c, irep->reps[i], flags, fp, name, max+i, init_syms_code, mp) != MRC_DUMP_OK)
         return MRC_DUMP_INVALID_ARGUMENT;
     }
-    fprintf(fp,   "static const mrb_irep *%s_reps_%d[%d] = {\n", name, n, len);
+    /* `const` on the pointers as well as on what they point at: `mrb_irep`
+       declares `reps` as a pointer to const pointers, and without the second
+       one the array is writable data rather than read-only, which on a target
+       that runs from flash is RAM it never needs. */
+    fprintf(fp,   "static const mrb_irep *const %s_reps_%d[%d] = {\n", name, n, len);
     for (i=0,len=irep->rlen; i<len; i++) {
       fprintf(fp,   "  &%s_irep_%d,\n", name, max+i);
     }
