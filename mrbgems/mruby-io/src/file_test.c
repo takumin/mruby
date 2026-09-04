@@ -10,14 +10,13 @@
 #include <mruby/error.h>
 #include <mruby/internal.h>
 #include "io_hal.h"
+#include "io_internal.h"
 
 #include <sys/types.h>
 
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-
-extern struct mrb_data_type mrb_io_type;
 
 static int
 mrb_stat0(mrb_state *mrb, mrb_value obj, mrb_io_stat *st, int do_lstat)

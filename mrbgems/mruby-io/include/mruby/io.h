@@ -18,7 +18,11 @@ MRB_BEGIN_DECL
    pread/pwrite were standardized in POSIX.1-2001, hence the _POSIX_VERSION
    check. The UNIX-family guard is kept because some Windows toolchains
    (e.g. MinGW) expose _POSIX_VERSION via <unistd.h> without providing
-   pread/pwrite. MRB_WITH_IO_PREAD_PWRITE forces them on regardless. */
+   pread/pwrite. MRB_WITH_IO_PREAD_PWRITE forces them on regardless.
+   The two methods call the platform functions directly rather than going
+   through the IO HAL: the HAL has no positional entry point, and emulating
+   them with seek + read/write would be slower and non-atomic for no gain on
+   the only platforms that compile them. */
 #if defined(MRB_NO_IO_PREAD_PWRITE) || defined(MRB_WITHOUT_IO_PREAD_PWRITE)
 # undef MRB_USE_IO_PREAD_PWRITE
 #elif !defined(MRB_USE_IO_PREAD_PWRITE)
