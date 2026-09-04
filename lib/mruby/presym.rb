@@ -75,12 +75,23 @@ module MRuby
     HASH_MASK = (1 << HASH_BITS) - 1
 
     # Reading a name back from an ID means finding its entry, where the old
-    # dense numbering could index straight to it. An ID is a hash, so IDs
-    # spread evenly over the range and the top `BUCKET_BITS` of one narrow the
-    # search to the handful of entries sharing them: at the sizes this tree
-    # reaches, about six, which the search settles in three steps. Widening
-    # the index further buys a few percent for kilobytes, so it stays here.
-    BUCKET_BITS = 8
+    # dense numbering could index straight to it. The set of IDs is settled
+    # once the scan is done, so the entry each one lands on can be settled
+    # then too: `perfect_hash` places every ID in a slot of its own, and the
+    # lookup is a shift, a load, an xor and a mask. Nothing is searched and
+    # nothing is compared but the ID the slot turns out to hold.
+    #
+    # The placement is the CHD construction: bucket the IDs by their high
+    # bits, take the crowded buckets first, and give each one the smallest
+    # displacement that drops its IDs on free slots. `BUCKET_DIVISOR` sets how
+    # many IDs share a bucket on average -- around four is where the search
+    # for a displacement stays short and the table of them stays small.
+    BUCKET_DIVISOR = 4
+
+    # How far the slot table may be grown past the next power of two when a
+    # placement cannot be found. Growth has never been needed at this tree's
+    # sizes; it is here so that no symbol set can fail to build.
+    SLOT_GROWTH_MAX = 4
 
     # FNV-1a over the name's bytes, XOR-folded down to `HASH_BITS`. ID 0 is
     # reserved for "no such symbol", so a name that folds to it takes 1 and
@@ -159,43 +170,50 @@ module MRuby
       end
     end
 
-    # The tables are read only by `src/symbol.c`. They are ordered by ID, so a
-    # lookup narrows to a bucket and searches inside it. Names live in one
-    # pool with an offset each, rather than in an array of pointers with a
-    # length each: that drops one relocation and eight bytes per symbol, which
-    # more than pays for the ID column the hash scheme adds.
+    # The tables are read only by `src/symbol.c`, and they are laid out by
+    # slot, so that `presym_slot()` indexes straight into them. An empty slot
+    # holds `MRB_PRESYM_NO_ID`, which no ID equals, so one comparison both
+    # confirms the entry and rejects a name that was never stored.
+    #
+    # Names live in one pool with an offset each, rather than in an array of
+    # pointers with a length each: that drops one relocation and eight bytes
+    # per symbol, which pays for most of what the slot table costs.
     def write_table_header(presyms, ids)
-      by_id = presyms.sort_by{|sym| ids[sym]}
+      ph = presyms.empty? ? nil : perfect_hash(ids)
+      slots = ph ? ph[:slots] : [nil]
       offsets = []
       pos = 0
-      by_id.each do |sym|
+      slots.each do |sym|
         offsets << pos
-        pos += sym.bytesize + 1  # each name is NUL-terminated
+        pos += sym.bytesize + 1 if sym  # each name is NUL-terminated
       end
       offsets << pos
       offset_type = pos <= 0xffff ? "uint16_t" : "uint32_t"
-      index_type = by_id.size <= 0xffff ? "uint16_t" : "uint32_t"
-      buckets = bucket_index(by_id, ids)
+      disp = ph ? ph[:disp] : [0]
+      disp_type = disp.max <= 0xff ? "uint8_t" : "uint16_t"
 
       _pp "GEN", table_header_path.relative_path
       File.open(table_header_path, "w:binary") do |f|
         f.puts "#define MRB_PRESYM_HASH_BITS #{HASH_BITS}"
-        f.puts "#define MRB_PRESYM_BUCKET_BITS #{BUCKET_BITS}"
-        f.puts "#define MRB_PRESYM_COUNT #{by_id.size}"
-        f.puts "#define MRB_PRESYM_LEN_MAX #{by_id.map(&:bytesize).max || 0}"
+        f.puts "#define MRB_PRESYM_SLOT_BITS #{ph ? ph[:slot_bits] : 0}"
+        f.puts "#define MRB_PRESYM_BUCKET_BITS #{ph ? ph[:bucket_bits] : 0}"
+        f.puts "#define MRB_PRESYM_COUNT #{presyms.size}"
+        f.puts "#define MRB_PRESYM_SLOTS #{slots.size}"
+        f.puts "#define MRB_PRESYM_LEN_MAX #{presyms.map(&:bytesize).max || 0}"
+        f.puts "#define MRB_PRESYM_NO_ID 0xffffffff"
         f.puts
-        # PicoRuby builds the VM core as a gem, so its mrbc build scans zero
-        # presyms. An empty array is invalid C, so leave one unread element.
-        f.puts "static const uint32_t presym_id_table[] = {"
-        if by_id.empty?
-          f.puts "  0"
-        else
-          by_id.each{|sym| f.puts "  #{ids[sym]},\t/* #{sym} */"}
-        end
+        f.puts "static const #{disp_type} presym_disp_table[] = {"
+        disp.each_slice(16){|slice| f.puts "  #{slice.join(', ')},"}
         f.puts "};"
         f.puts
-        f.puts "static const #{index_type} presym_bucket_table[] = {"
-        buckets.each_slice(16){|slice| f.puts "  #{slice.join(', ')},"}
+        f.puts "static const uint32_t presym_id_table[] = {"
+        slots.each do |sym|
+          if sym
+            f.puts "  #{ids[sym]},\t/* #{sym} */"
+          else
+            f.puts "  MRB_PRESYM_NO_ID,"
+          end
+        end
         f.puts "};"
         f.puts
         f.puts "static const #{offset_type} presym_offset_table[] = {"
@@ -203,14 +221,17 @@ module MRuby
         f.puts "};"
         f.puts
         f.puts "static const char presym_name_pool[] ="
-        if by_id.empty?
+        # PicoRuby builds the VM core as a gem, so its mrbc build scans zero
+        # presyms. An empty initializer is invalid C, so write an empty name.
+        named = slots.compact
+        if named.empty?
           f.puts %|  ""|
         else
           # The NUL is written as its own literal so that it cannot be read
           # as part of an escape sequence closing the name, whatever
           # `c_escape` left at the end. Adjacent literals concatenate, and
           # only the last one brings a NUL of its own.
-          by_id.each{|sym| f.puts %|  "#{c_escape(sym)}" "\\0"|}
+          named.each{|sym| f.puts %|  "#{c_escape(sym)}" "\\0"|}
         end
         f.puts "  ;"
       end
@@ -238,26 +259,56 @@ module MRuby
 
     private
 
-    # `buckets[k]` is the index of the first entry whose ID reaches
-    # `k << (HASH_BITS - BUCKET_BITS)`, so bucket `k` holds the entries
-    # `buckets[k]...buckets[k+1]` and an ID outside them lands on the bound
-    # the search wanted anyway.
-    def bucket_index(by_id, ids)
-      shift = HASH_BITS - BUCKET_BITS
-      buckets = []
-      k = 0
-      by_id.each_with_index do |sym, i|
-        b = ids[sym] >> shift
-        while k <= b
-          buckets << i
-          k += 1
+    # Places every ID in a slot of its own and answers the table that says
+    # where: `slot_bits`, `bucket_bits`, the displacement per bucket, and the
+    # slots themselves, each holding a symbol or nil. `src/symbol.c` recomputes
+    # the same slot with `presym_slot()`.
+    #
+    # Two IDs in one bucket have to reach different slots for any displacement,
+    # since a displacement moves a whole bucket at once. Folding the ID down
+    # before the xor is what gives them the chance to: a bucket is a run of
+    # high bits, so without the fold two IDs sharing one could differ only
+    # above the slot mask, where nothing would tell them apart.
+    def perfect_hash(ids)
+      count = ids.size
+      slot_bits0 = [[Math.log2([count, 2].max).ceil, 1].max, HASH_BITS].min
+      (slot_bits0..[slot_bits0 + SLOT_GROWTH_MAX, HASH_BITS].min).each do |slot_bits|
+        bucket_candidates =
+          ([slot_bits - Math.log2(BUCKET_DIVISOR).to_i, slot_bits - 1, slot_bits] +
+           (1...slot_bits).to_a.reverse).map{|b| b.clamp(1, slot_bits)}.uniq
+        bucket_candidates.each do |bucket_bits|
+          placed = place_ids(ids, slot_bits, bucket_bits)
+          return placed if placed
         end
       end
-      while k <= (1 << BUCKET_BITS)
-        buckets << by_id.size
-        k += 1
+      raise "no presym slot placement found for #{count} symbols"
+    end
+
+    # The CHD placement itself, or nil when this shape has no room for one.
+    def place_ids(ids, slot_bits, bucket_bits)
+      mask = (1 << slot_bits) - 1
+      shift = HASH_BITS - bucket_bits
+      buckets = Hash.new{|h, k| h[k] = []}
+      ids.each{|sym, id| buckets[id >> shift] << sym}
+      slots = Array.new(1 << slot_bits)
+      disp = Array.new(1 << bucket_bits, 0)
+      # Crowded buckets first: they have the fewest displacements left to them
+      # once the table has filled up, so they are the ones that fail late.
+      buckets.keys.sort_by{|b| [-buckets[b].size, b]}.each do |b|
+        group = buckets[b]
+        d = (0...(1 << slot_bits)).find do |cand|
+          taken = group.map{|sym| (fold_id(ids[sym], slot_bits) ^ cand) & mask}
+          taken.uniq.size == taken.size && taken.none?{|i| slots[i]}
+        end
+        return nil unless d
+        group.each{|sym| slots[(fold_id(ids[sym], slot_bits) ^ d) & mask] = sym}
+        disp[b] = d
       end
-      buckets
+      {slot_bits: slot_bits, bucket_bits: bucket_bits, disp: disp, slots: slots}
+    end
+
+    def fold_id(id, slot_bits)
+      id ^ (id >> slot_bits)
     end
 
     def c_escape(sym)

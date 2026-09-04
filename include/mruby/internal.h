@@ -301,9 +301,11 @@ mrb_bool mrb_proc_eql(mrb_state *mrb, mrb_value self, mrb_value other);
 /* symbol */
 
 /* Preallocated symbols. Their IDs are hashes of their names, so they lie
-   scattered over [1, MRB_PRESYM_MAX) and cannot be walked by counting. */
+   scattered over [1, MRB_PRESYM_MAX) and are held in a table with room to
+   spare: walk `slot` from 0 to mrb_presym_slots() and skip the empty ones. */
 mrb_sym mrb_presym_count(void);
-mrb_sym mrb_presym_at(mrb_sym idx);
+mrb_sym mrb_presym_slots(void);
+mrb_sym mrb_presym_at(mrb_sym slot);
 
 /* range */
 #ifdef MRUBY_RANGE_H

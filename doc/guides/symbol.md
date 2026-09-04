@@ -96,6 +96,20 @@ than a build error.
 Preallocated IDs run over `[1, MRB_PRESYM_MAX)` and runtime symbols start at
 `MRB_PRESYM_MAX`, so `sym < MRB_PRESYM_MAX` tells the two apart. Only a
 fraction of that range is ever occupied; the rest is what leaves each name a
-place of its own. Nothing outside `src/symbol.c` should read an ID as an index:
-they are scattered, and `mrb_presym_count()` and `mrb_presym_at()` are there
-for code that has to walk them.
+place of its own.
+
+### Reading a name back
+
+Scattered IDs cannot index a table the way dense ones could, but the set of
+them is settled once the scan is done, so where each one belongs can be settled
+then too. The generator places every ID in a slot of its own, by the CHD
+construction: the IDs are bucketed by their high bits, the crowded buckets are
+taken first, and each bucket is given the smallest displacement that drops its
+IDs on slots still free. `presym_slot()` recomputes that placement with a
+shift, a load, an xor and a mask, and the slot it answers holds the ID or holds
+none. Nothing is searched.
+
+Nothing outside `src/symbol.c` should read an ID as an index: they are
+scattered, and the slots outnumber them. `mrb_presym_count()` reports how many
+symbols there are, and code that has to walk them steps `slot` from 0 to
+`mrb_presym_slots()`, reading `mrb_presym_at(slot)` and skipping the empties.

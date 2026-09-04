@@ -19,10 +19,11 @@
 #include <mruby/internal.h>
 
 #ifndef MRB_PRESYM_SCANNING
-/* MRB_PRESYM_{HASH_BITS,BUCKET_BITS,COUNT,LEN_MAX}            */
-/* const uint32_t presym_id_table[]      (ascending)           */
-/* const uintN_t  presym_bucket_table[]  (1<<BUCKET_BITS)+1    */
-/* const uintN_t  presym_offset_table[]  (MRB_PRESYM_COUNT+1)  */
+/* MRB_PRESYM_{HASH_BITS,SLOT_BITS,BUCKET_BITS,COUNT,SLOTS,   */
+/*             LEN_MAX,NO_ID}                                  */
+/* const uintN_t  presym_disp_table[]    1<<BUCKET_BITS        */
+/* const uint32_t presym_id_table[]      MRB_PRESYM_SLOTS      */
+/* const uintN_t  presym_offset_table[]  MRB_PRESYM_SLOTS+1    */
 /* const char presym_name_pool[]                               */
 # include <mruby/presym/table.h>
 
@@ -46,29 +47,23 @@ presym_hash(const char *name, size_t len)
   return h == 0 ? 1 : (mrb_sym)h;
 }
 
-/* Index of the first entry whose ID is not below `id` (MRB_PRESYM_COUNT if
-   there is none). The entries are ordered by ID, and an ID is a hash, so its
-   top MRB_PRESYM_BUCKET_BITS pick out the few entries it can be among, and
-   searching those beats searching the whole table. An ID that is in none of
-   them leaves `lo` on the bound the caller asked for. */
+/* The slot holding `id`, if any holds it. The generator settled that when it
+   wrote the tables, so there is nothing to search: the ID's high bits name a
+   bucket, the bucket names a displacement, and the displacement moves the ID
+   onto a slot no other ID was given. What the slot actually holds still has
+   to be read, since an ID no symbol was given lands on a slot all the same. */
 static mrb_sym
-presym_lower_bound(mrb_sym id)
+presym_slot(mrb_sym id)
 {
-  mrb_sym bucket = id >> (MRB_PRESYM_BITS - MRB_PRESYM_BUCKET_BITS);
-  mrb_sym lo = presym_bucket_table[bucket], hi = presym_bucket_table[bucket+1];
-  while (lo < hi) {
-    mrb_sym mid = lo + (hi - lo) / 2;
-    if (presym_id_table[mid] < id) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
+  mrb_sym disp = presym_disp_table[id >> (MRB_PRESYM_BITS - MRB_PRESYM_BUCKET_BITS)];
+  return ((id ^ (id >> MRB_PRESYM_SLOT_BITS)) ^ disp) & (MRB_PRESYM_SLOTS - 1);
 }
 
 static size_t
-presym_name_len(mrb_sym idx)
+presym_name_len(mrb_sym slot)
 {
   /* the NUL each name is stored with is not part of it */
-  return (size_t)(presym_offset_table[idx+1] - presym_offset_table[idx] - 1);
+  return (size_t)(presym_offset_table[slot+1] - presym_offset_table[slot] - 1);
 }
 
 static mrb_sym
@@ -78,16 +73,16 @@ presym_find(const char *name, size_t len)
 
   /* A name whose hash was taken got the next free ID, so the answer may sit
      one or more IDs above its hash. Those IDs are consecutive by
-     construction, and the tables are ordered by ID, so walking forward while
-     the IDs stay consecutive covers every place the generator could have put
-     the name; the first gap means it was never stored. */
-  mrb_sym id = presym_hash(name, len);
-  for (mrb_sym i = presym_lower_bound(id);
-       i < MRB_PRESYM_COUNT && presym_id_table[i] == id;
-       i++, id++) {
-    if (presym_name_len(i) == len &&
-        memcmp(name, presym_name_pool + presym_offset_table[i], len) == 0) {
-      return presym_id_table[i];
+     construction, so walking up from the hash covers every place the
+     generator could have put the name, and the first ID no symbol holds means
+     it was never stored. The walk ends on its first step unless two names
+     really did collide. */
+  for (mrb_sym id = presym_hash(name, len); id < MRB_PRESYM_MAX; id++) {
+    mrb_sym slot = presym_slot(id);
+    if (presym_id_table[slot] != id) return 0;
+    if (presym_name_len(slot) == len &&
+        memcmp(name, presym_name_pool + presym_offset_table[slot], len) == 0) {
+      return id;
     }
   }
   return 0;
@@ -97,27 +92,34 @@ static const char*
 presym_sym2name(mrb_sym sym, mrb_int *lenp)
 {
   if (sym >= MRB_PRESYM_MAX) return NULL;
-  mrb_sym idx = presym_lower_bound(sym);
-  if (idx >= MRB_PRESYM_COUNT || presym_id_table[idx] != sym) return NULL;
-  if (lenp) *lenp = (mrb_int)presym_name_len(idx);
-  return presym_name_pool + presym_offset_table[idx];
+  mrb_sym slot = presym_slot(sym);
+  if (presym_id_table[slot] != sym) return NULL;
+  if (lenp) *lenp = (mrb_int)presym_name_len(slot);
+  return presym_name_pool + presym_offset_table[slot];
 }
 
-/* Number of preallocated symbols; the IDs are scattered over the presym
-   range, so `gc.c` and `mruby-symbol-ext` read them through here. */
+/* Number of preallocated symbols, for `gc_stat`. */
 mrb_sym
 mrb_presym_count(void)
 {
   return MRB_PRESYM_COUNT;
 }
 
-/* The `idx`-th presym ID in ascending order, or 0 once `idx` runs past the
-   last one. */
+/* How far `mrb_presym_at` runs. The slots outnumber the symbols, since each
+   one is placed where its own ID puts it. */
 mrb_sym
-mrb_presym_at(mrb_sym idx)
+mrb_presym_slots(void)
 {
-  if (idx >= MRB_PRESYM_COUNT) return 0;
-  return presym_id_table[idx];
+  return MRB_PRESYM_SLOTS;
+}
+
+/* The presym ID at `slot`, or 0 where no symbol was placed. */
+mrb_sym
+mrb_presym_at(mrb_sym slot)
+{
+  if (slot >= MRB_PRESYM_SLOTS) return 0;
+  mrb_sym id = presym_id_table[slot];
+  return id == MRB_PRESYM_NO_ID ? 0 : id;
 }
 #endif
 
