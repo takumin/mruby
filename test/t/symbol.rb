@@ -75,3 +75,15 @@ assert('Symbol#to_s and Symbol#name outlive symbol GC') do
   assert_equal name, str
   assert_equal name, frozen
 end
+
+assert('Symbol, the end of the runtime symbol table') do
+  # A symbol interned at runtime is named by its table index plus the presym
+  # count, and the values from 2**20 up carry their own name in their bits.
+  # An index that walked into those would give a symbol a name already spoken
+  # for, so interning stops at the end of the table instead. SymbolLimit.probe
+  # moves that end within reach for the length of the call.
+  interned, message = SymbolLimit.probe(8)
+
+  assert_equal 8, interned
+  assert_equal 'symbol index overflow', message
+end

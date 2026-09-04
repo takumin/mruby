@@ -131,12 +131,17 @@ struct mrb_sym_hash_table {
   mrb_sym buckets[256];     /* hash buckets */
 };
 
+/* The first symbol value that carries its name in its own bits.  Up to four
+   packed characters sit above it, so every value from here up is read back by
+   sym_inline_unpack() instead of being looked up in mrb->symtbl. */
+#define SYMBOL_INLINE_MIN (1<<20)
+
 #ifdef MRB_USE_ALL_SYMBOLS
 # define SYMBOL_INLINE_P(sym) FALSE
 # define sym_inline_pack(name, len) 0
 # define sym_inline_unpack(sym, buf, lenp) NULL
 #else
-# define SYMBOL_INLINE_P(sym) ((sym) >= (1<<20))
+# define SYMBOL_INLINE_P(sym) ((sym) >= SYMBOL_INLINE_MIN)
 
 static const char pack_table[] = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
@@ -179,6 +184,26 @@ sym_inline_unpack(mrb_sym sym, char *buf, mrb_int *lenp)
   return buf;
 }
 #endif
+
+/* Highest value a symbol interned at runtime may take.  Such a symbol's value
+   is its mrb->symtbl index plus MRB_PRESYM_MAX, and a build that keeps inline
+   symbols reads every value from SYMBOL_INLINE_MIN up as one of those, so the
+   indices have to stop below it.  MRB_USE_ALL_SYMBOLS packs no name into a
+   value and leaves the whole mrb_sym range to the table. */
+#ifdef MRB_USE_ALL_SYMBOLS
+# define SYMBOL_VALUE_MAX UINT32_MAX
+#else
+# define SYMBOL_VALUE_MAX (SYMBOL_INLINE_MIN - 1)
+#endif
+
+#ifndef MRB_PRESYM_SCANNING  /* the scanning pass has no presym table yet */
+# if MRB_PRESYM_MAX >= SYMBOL_VALUE_MAX
+#  error MRB_PRESYM_MAX leaves no value for symbols interned at runtime
+# endif
+#endif
+
+/* Highest index mrb->symidx may reach; mrb->symidx_max starts here. */
+#define SYMBOL_IDX_MAX ((mrb_sym)(SYMBOL_VALUE_MAX - MRB_PRESYM_MAX))
 
 /* Check if using hash table mode */
 static inline mrb_bool
@@ -334,6 +359,14 @@ sym_intern_common(mrb_state *mrb, const char *name, size_t len, mrb_bool lit)
 {
   mrb_sym sym;
 
+  if (mrb->symidx >= mrb->symidx_max) {
+    /* The next index would give a symbol a value that is not the table's to
+       give: an inline symbol's, or one past what mrb_sym holds.  Symbol GC
+       leaves a tombstone where it frees a symbol and never hands the index
+       back, so what arrives here is every name this state has interned, not
+       how many it holds at once. */
+    mrb_raise(mrb, E_RUNTIME_ERROR, "symbol index overflow");
+  }
   sym = mrb->symidx + 1;
   if (mrb->symcapa <= sym) {
     size_t symcapa = mrb->symcapa;
@@ -998,6 +1031,7 @@ mrb_init_symtbl(mrb_state *mrb)
   /* Initialize in linear mode - hash table allocated on demand */
   mrb->symhash = NULL;
   mrb->sym_pool = NULL;
+  mrb->symidx_max = SYMBOL_IDX_MAX;
 }
 
 /**********************************************************************

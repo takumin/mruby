@@ -402,6 +402,7 @@ struct mrb_state {
 #endif
 
   mrb_sym symidx;
+  mrb_sym symidx_max;                     /* highest index `symidx` may take */
   const char **symtbl;
   uint8_t *sym_flags;                     /* per-symbol flags (SYM_FL_*) */
   size_t symcapa;
