@@ -65,6 +65,7 @@ load "#{MRUBY_ROOT}/tasks/size.rake"
 load "#{MRUBY_ROOT}/tasks/define_log.rake"
 load "#{MRUBY_ROOT}/tasks/unicode.rake"
 load "#{MRUBY_ROOT}/tasks/difftest.rake"
+load "#{MRUBY_ROOT}/tasks/rom_coverage.rake"
 
 ##############################
 # generic build targets, rules
