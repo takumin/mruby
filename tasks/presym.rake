@@ -30,11 +30,12 @@ MRuby.each_target do |build|
 
   presym_task = file presym.list_path => ppps do
     presyms = presym.scan(ppps)
+    ids = presym.assign_ids(presyms)
     current_presyms = presym.read_list if File.exist?(presym.list_path)
     if presyms != current_presyms
       mkdir_p presym.header_dir
       %w[id table].each do |type|
-        presym.send("write_#{type}_header", presyms)
+        presym.send("write_#{type}_header", presyms, ids)
       end
       presym.write_list(presyms)
     elsif !presym.headers_exist?
@@ -46,7 +47,7 @@ MRuby.each_target do |build|
       mkdir_p presym.header_dir
       %w[id table].each do |type|
         next if File.exist?(presym.send("#{type}_header_path"))
-        presym.send("write_#{type}_header", presyms)
+        presym.send("write_#{type}_header", presyms, ids)
       end
     end
   end

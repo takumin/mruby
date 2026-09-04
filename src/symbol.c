@@ -19,27 +19,75 @@
 #include <mruby/internal.h>
 
 #ifndef MRB_PRESYM_SCANNING
-/* const uint16_t presym_length_table[]   */
-/* const char * const presym_name_table[] */
+/* MRB_PRESYM_{HASH_BITS,BUCKET_BITS,COUNT,LEN_MAX}            */
+/* const uint32_t presym_id_table[]      (ascending)           */
+/* const uintN_t  presym_bucket_table[]  (1<<BUCKET_BITS)+1    */
+/* const uintN_t  presym_offset_table[]  (MRB_PRESYM_COUNT+1)  */
+/* const char presym_name_pool[]                               */
 # include <mruby/presym/table.h>
+
+#if MRB_PRESYM_HASH_BITS != MRB_PRESYM_BITS
+# error presym table was generated for another hash width; rebuild the presym headers
 #endif
+
+/*
+ * A presym ID is FNV-1a over the name, XOR-folded to MRB_PRESYM_BITS bits.
+ * This has to answer exactly what `MRuby::Presym.name_hash` in
+ * `lib/mruby/presym.rb` answered when the tables were written.
+ */
+static mrb_sym
+presym_hash(const char *name, size_t len)
+{
+  uint32_t h = 0x811c9dc5;
+  for (size_t i = 0; i < len; i++) {
+    h = (h ^ (uint8_t)name[i]) * 0x01000193;
+  }
+  h = ((h >> MRB_PRESYM_BITS) ^ h) & (MRB_PRESYM_MAX - 1);
+  return h == 0 ? 1 : (mrb_sym)h;
+}
+
+/* Index of the first entry whose ID is not below `id` (MRB_PRESYM_COUNT if
+   there is none). The entries are ordered by ID, and an ID is a hash, so its
+   top MRB_PRESYM_BUCKET_BITS pick out the few entries it can be among, and
+   searching those beats searching the whole table. An ID that is in none of
+   them leaves `lo` on the bound the caller asked for. */
+static mrb_sym
+presym_lower_bound(mrb_sym id)
+{
+  mrb_sym bucket = id >> (MRB_PRESYM_BITS - MRB_PRESYM_BUCKET_BITS);
+  mrb_sym lo = presym_bucket_table[bucket], hi = presym_bucket_table[bucket+1];
+  while (lo < hi) {
+    mrb_sym mid = lo + (hi - lo) / 2;
+    if (presym_id_table[mid] < id) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+static size_t
+presym_name_len(mrb_sym idx)
+{
+  /* the NUL each name is stored with is not part of it */
+  return (size_t)(presym_offset_table[idx+1] - presym_offset_table[idx] - 1);
+}
 
 static mrb_sym
 presym_find(const char *name, size_t len)
 {
-  if (presym_length_table[MRB_PRESYM_MAX-1] < len) return 0;
+  if (len > MRB_PRESYM_LEN_MAX) return 0;
 
-  mrb_sym presym_size = MRB_PRESYM_MAX;
-  for (mrb_sym start = 0; presym_size != 0; presym_size/=2) {
-    mrb_sym idx = start+presym_size/2;
-    int cmp = (int)len-(int)presym_length_table[idx];
-    if (cmp == 0) {
-      cmp = memcmp(name, presym_name_table[idx], len);
-      if (cmp == 0) return idx+1;
-    }
-    if (0 < cmp) {
-      start = ++idx;
-      --presym_size;
+  /* A name whose hash was taken got the next free ID, so the answer may sit
+     one or more IDs above its hash. Those IDs are consecutive by
+     construction, and the tables are ordered by ID, so walking forward while
+     the IDs stay consecutive covers every place the generator could have put
+     the name; the first gap means it was never stored. */
+  mrb_sym id = presym_hash(name, len);
+  for (mrb_sym i = presym_lower_bound(id);
+       i < MRB_PRESYM_COUNT && presym_id_table[i] == id;
+       i++, id++) {
+    if (presym_name_len(i) == len &&
+        memcmp(name, presym_name_pool + presym_offset_table[i], len) == 0) {
+      return presym_id_table[i];
     }
   }
   return 0;
@@ -48,10 +96,30 @@ presym_find(const char *name, size_t len)
 static const char*
 presym_sym2name(mrb_sym sym, mrb_int *lenp)
 {
-  if (sym > MRB_PRESYM_MAX) return NULL;
-  if (lenp) *lenp = presym_length_table[sym-1];
-  return presym_name_table[sym-1];
+  if (sym >= MRB_PRESYM_MAX) return NULL;
+  mrb_sym idx = presym_lower_bound(sym);
+  if (idx >= MRB_PRESYM_COUNT || presym_id_table[idx] != sym) return NULL;
+  if (lenp) *lenp = (mrb_int)presym_name_len(idx);
+  return presym_name_pool + presym_offset_table[idx];
 }
+
+/* Number of preallocated symbols; the IDs are scattered over the presym
+   range, so `gc.c` and `mruby-symbol-ext` read them through here. */
+mrb_sym
+mrb_presym_count(void)
+{
+  return MRB_PRESYM_COUNT;
+}
+
+/* The `idx`-th presym ID in ascending order, or 0 once `idx` runs past the
+   last one. */
+mrb_sym
+mrb_presym_at(mrb_sym idx)
+{
+  if (idx >= MRB_PRESYM_COUNT) return 0;
+  return presym_id_table[idx];
+}
+#endif
 
 /* ------------------------------------------------------ */
 

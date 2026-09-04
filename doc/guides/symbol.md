@@ -77,3 +77,25 @@ These macros are converted to static symbol IDs at compile time.
 The `_2` suffix variants (e.g., `MRB_SYM_2`) are kept for backward
 compatibility only; they accept an explicit `mrb_state*` parameter
 but ignore it. New code should use the standard macros above.
+
+### How the IDs are picked
+
+The build scans the sources for these macros and writes the IDs it found into
+`build/<name>/include/mruby/presym/id.h`, which `mruby.h` includes. An ID is a
+hash of the symbol's name folded into `MRB_PRESYM_BITS` bits, so it depends on
+the name and on nothing else the scan turned up: adding a symbol adds one
+`#define` and leaves every other symbol where it was. A translation unit that
+names none of the new symbols preprocesses to the bytes it did before, which
+is what lets `ccache` and `sccache` hand back the object they already have.
+
+Two names can fold to the same ID. The generator gives the second one the next
+free ID, and `presym_find()` in `src/symbol.c` walks the run of consecutive IDs
+that a displaced name could have reached, so a clash costs a comparison rather
+than a build error.
+
+Preallocated IDs run over `[1, MRB_PRESYM_MAX)` and runtime symbols start at
+`MRB_PRESYM_MAX`, so `sym < MRB_PRESYM_MAX` tells the two apart. Only a
+fraction of that range is ever occupied; the rest is what leaves each name a
+place of its own. Nothing outside `src/symbol.c` should read an ID as an index:
+they are scattered, and `mrb_presym_count()` and `mrb_presym_at()` are there
+for code that has to walk them.
