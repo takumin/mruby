@@ -260,6 +260,10 @@ MRB_API void mrb_vm_ci_env_clear(mrb_state *mrb, mrb_callinfo *ci);
 
 void mrb_vm_ci_proc_set(mrb_callinfo *ci, const struct RProc *p);
 struct RClass * mrb_vm_ci_target_class(const mrb_callinfo *ci);
+/* The class a running frame belongs to, for the lexical lookups that read it.
+   Its proc carries it, except for a proc built into the binary, which is
+   `const` and cannot: there the callinfo holds the defining class instead. */
+struct RClass * mrb_vm_frame_class(const mrb_callinfo *ci);
 void mrb_vm_ci_target_class_set(mrb_callinfo *ci, struct RClass *tc);
 struct REnv * mrb_vm_ci_env(const mrb_callinfo *ci);
 void mrb_vm_ci_env_set(mrb_callinfo *ci, struct REnv *e);

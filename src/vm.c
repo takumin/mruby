@@ -325,6 +325,26 @@ mrb_vm_ci_target_class(const mrb_callinfo *ci)
   return CI_TARGET_CLASS(ci);
 }
 
+/* The class the running frame belongs to, for the lexical lookups that read it
+   (a constant, a class variable, a `class` or `def` written in the body).
+
+   Normally it is the frame's proc that carries it. A proc built into the
+   binary cannot: it is `const`, so mrb_define_method_raw() has nowhere to
+   write the defining class the way it writes one into a proc on the heap. The
+   lookup that reached the call left that same class in the callinfo, so that
+   is what stands in for it there. Only there: every other proc keeps
+   answering from itself, so that a frame whose callinfo carries an
+   environment different from its proc's is read as it was before. */
+struct RClass*
+mrb_vm_frame_class(const mrb_callinfo *ci)
+{
+  const struct RProc *p = ci->proc;
+
+  if (!p) return NULL;
+  if (p->gc_color == MRB_GC_RED) return CI_TARGET_CLASS(ci);
+  return MRB_PROC_TARGET_CLASS(p);
+}
+
 void
 mrb_vm_ci_target_class_set(mrb_callinfo *ci, struct RClass *tc)
 {
@@ -2982,7 +3002,15 @@ vm_call_proc(mrb_state *mrb, const struct RProc *p, mrb_int nargs,
   if (MRB_PROC_ENV_P(p)) {
     ci->mid = MRB_PROC_ENV(p)->mid;
   }
-  ci->u.target_class = MRB_PROC_TARGET_CLASS(p);
+  /* A proc built into the binary carries no target class of its own: it is
+     `const`, so mrb_define_method_raw() has nowhere to write the defining
+     class the way it writes one into a proc on the heap (see the MRB_GC_RED
+     branch there).  The lookup that reached this call already left that same
+     class in the callinfo, so leaving it alone is what keeps `super` and a
+     `def` in the body reading the class the method was defined in. */
+  if (p->gc_color != MRB_GC_RED) {
+    ci->u.target_class = MRB_PROC_TARGET_CLASS(p);
+  }
   CI_PROC_SET(ci, p);
 
   if (MRB_PROC_CFUNC_P(p)) {
@@ -3372,7 +3400,7 @@ RETRY_TRY_BLOCK:
 
     CASE(OP_SETCONST, BB) {
       ci = mrb->c->ci;
-      struct RClass *c = MRB_PROC_TARGET_CLASS(ci->proc);
+      struct RClass *c = mrb_vm_frame_class(ci);
       if (!c) c = mrb->object_class;
       mrb_const_set(mrb, mrb_obj_value(c), irep->syms[b], regs[a]);
       ci = mrb->c->ci;
@@ -4547,7 +4575,7 @@ RETRY_TRY_BLOCK:
       mrb_value super = regs[a+1];
 
       if (mrb_nil_p(base)) {
-        baseclass = MRB_PROC_TARGET_CLASS(ci->proc);
+        baseclass = mrb_vm_frame_class(ci);
         if (!baseclass) baseclass = mrb->object_class;
         base = mrb_obj_value(baseclass);
       }
@@ -4564,7 +4592,7 @@ RETRY_TRY_BLOCK:
       mrb_value base = regs[a];
 
       if (mrb_nil_p(base)) {
-        baseclass = MRB_PROC_TARGET_CLASS(ci->proc);
+        baseclass = mrb_vm_frame_class(ci);
         if (!baseclass) baseclass = mrb->object_class;
         base = mrb_obj_value(baseclass);
       }

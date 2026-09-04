@@ -737,7 +737,7 @@ mrb_f_defined_const(mrb_state *mrb, mrb_value self)
   /* resolve in the caller's lexical scope (ci[-1]), not this helper's */
   mrb_callinfo *ci = &mrb->c->ci[-1];
   if (ci >= mrb->c->cibase && ci->proc &&
-      mrb_vm_const_defined_p(mrb, ci->proc, sym)) {
+      mrb_vm_const_defined_p(mrb, ci, sym)) {
     return mrb_str_new_lit(mrb, "constant");
   }
   return mrb_nil_value();
@@ -768,7 +768,7 @@ mrb_f_defined_cvar(mrb_state *mrb, mrb_value self)
   /* class-variable scope follows the caller's lexical class (ci[-1]) */
   mrb_callinfo *ci = &mrb->c->ci[-1];
   if (ci >= mrb->c->cibase && ci->proc &&
-      mrb_vm_cv_defined_p(mrb, ci->proc, sym)) {
+      mrb_vm_cv_defined_p(mrb, ci, sym)) {
     return mrb_str_new_lit(mrb, "class variable");
   }
   return mrb_nil_value();
@@ -798,7 +798,7 @@ mrb_f_defined_const_path(mrb_state *mrb, mrb_value self)
   /* resolve the parent constant in the caller's lexical scope (ci[-1]) */
   mrb_callinfo *ci = &mrb->c->ci[-1];
   if (ci < mrb->c->cibase || ci->proc == NULL) return mrb_nil_value();
-  mrb_value pv = mrb_vm_const_get_noraise(mrb, ci->proc, parent);
+  mrb_value pv = mrb_vm_const_get_noraise(mrb, ci, parent);
   if (mrb_undef_p(pv)) return mrb_nil_value();
   enum mrb_vtype t = mrb_type(pv);
   if (t != MRB_TT_CLASS && t != MRB_TT_MODULE && t != MRB_TT_SCLASS) {

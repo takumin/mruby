@@ -1214,50 +1214,65 @@ mrb_cv_defined(mrb_state *mrb, mrb_value mod, mrb_sym sym)
   return mrb_mod_cv_defined(mrb, mrb_class_ptr(mod), sym);
 }
 
+/* The class a class variable in the running frame belongs to.
+
+   The frame's own class comes from the callinfo rather than from its proc: a
+   proc built into the binary is `const` and carries none, and the lookup that
+   reached the call left the defining class there, which is the class
+   mrb_define_method_raw() writes into a proc on the heap. The two are the
+   same value for every other proc.
+
+   A singleton class is not where a class variable lives, so the walk steps out
+   of one: over the enclosing scopes while the proc chain has them, and to the
+   attached class once it does not, which is where a proc carrying no chain of
+   its own has to look. */
+static struct RClass*
+vm_cvar_class(mrb_state *mrb, const mrb_callinfo *ci)
+{
+  const struct RProc *p = ci->proc;
+  struct RClass *c = mrb_vm_frame_class(ci);
+
+  for (;;) {
+    if (c && c->tt != MRB_TT_SCLASS) return c;
+    if (!p || !p->upper) break;
+    p = p->upper;
+    c = MRB_PROC_TARGET_CLASS(p);
+  }
+  while (c && c->tt == MRB_TT_SCLASS) {
+    mrb_value attached;
+    struct RClass *a;
+    if (!iv_get(mrb, class_iv_ptr(c), MRB_SYM(__attached__), &attached) ||
+        mrb_immediate_p(attached)) {
+      break;
+    }
+    a = mrb_class_ptr(attached);
+    if (a->tt != MRB_TT_CLASS && a->tt != MRB_TT_MODULE && a->tt != MRB_TT_SCLASS) {
+      break;
+    }
+    c = a;
+  }
+  return c ? c : mrb->object_class;
+}
+
 mrb_value
 mrb_vm_cv_get(mrb_state *mrb, mrb_sym sym)
 {
-  struct RClass *c;
-
-  const struct RProc *p = mrb->c->ci->proc;
-
-  for (;;) {
-    c = MRB_PROC_TARGET_CLASS(p);
-    if (c && c->tt != MRB_TT_SCLASS) break;
-    p = p->upper;
-  }
-  return mrb_mod_cv_get(mrb, c, sym);
+  return mrb_mod_cv_get(mrb, vm_cvar_class(mrb, mrb->c->ci), sym);
 }
 
 /* Non-raising class-variable lookup for `defined?(@@v)`. Resolves the class
-   from the given lexical scope's proc (the caller's, via ci[-1]), mirroring
-   mrb_vm_cv_get's class selection. */
+   from the given lexical scope's callinfo (the caller's, via ci[-1]),
+   mirroring mrb_vm_cv_get's class selection. */
 mrb_bool
-mrb_vm_cv_defined_p(mrb_state *mrb, const struct RProc *proc, mrb_sym sym)
+mrb_vm_cv_defined_p(mrb_state *mrb, const mrb_callinfo *ci, mrb_sym sym)
 {
-  struct RClass *c;
-
-  for (;;) {
-    c = MRB_PROC_TARGET_CLASS(proc);
-    if (c && c->tt != MRB_TT_SCLASS) break;
-    proc = proc->upper;
-    if (!proc) { c = mrb->object_class; break; }
-  }
-  return mrb_mod_cv_defined(mrb, c, sym);
+  return mrb_mod_cv_defined(mrb, vm_cvar_class(mrb, ci), sym);
 }
 
 void
 mrb_vm_cv_set(mrb_state *mrb, mrb_sym sym, mrb_value v)
 {
-  struct RClass *c;
-  const struct RProc *p = mrb->c->ci->proc;
-
-  for (;;) {
-    c = MRB_PROC_TARGET_CLASS(p);
-    if (c && c->tt != MRB_TT_SCLASS) break;
-    p = p->upper;
-  }
-  mrb_mod_cv_set(mrb, c, sym, v);
+  mrb_mod_cv_set(mrb, vm_cvar_class(mrb, mrb->c->ci), sym, v);
 }
 
 static void
@@ -1352,20 +1367,32 @@ mrb_const_get(mrb_state *mrb, mrb_value mod, mrb_sym sym)
 mrb_value
 mrb_vm_const_get(mrb_state *mrb, mrb_sym sym)
 {
-  const struct RProc *proc = mrb->c->ci->proc;
-  struct RClass *c = MRB_PROC_TARGET_CLASS(proc), *c2;
+  const mrb_callinfo *ci = mrb->c->ci;
+  const struct RProc *proc = ci->proc;
+  /* The frame's own class the way vm_cvar_class() takes it; the enclosing
+     scopes still come from the proc chain. A proc built into the binary has
+     no chain to walk, and the definitions that become one are written at the
+     top level of their file, where the scope outside the class or module is
+     `Object`: `rom_frame` is what puts that step back. Without it a method on
+     a module would stop at the module, whose ancestors do not reach Object
+     the way a class's do. */
+  mrb_bool rom_frame = proc && proc->gc_color == MRB_GC_RED;
+  struct RClass *c = mrb_vm_frame_class(ci), *c2;
   mrb_value v;
 
   if (!c) c = mrb->object_class;
   if (iv_get(mrb, class_iv_ptr(c), sym, &v)) {
     return v;
   }
-  for (proc = proc->upper; proc; proc = proc->upper) {
+  for (proc = proc ? proc->upper : NULL; proc; proc = proc->upper) {
     c2 = MRB_PROC_TARGET_CLASS(proc);
     if (!c2) c2 = mrb->object_class;
     if (iv_get(mrb, class_iv_ptr(c2), sym, &v)) {
       return v;
     }
+  }
+  if (rom_frame && iv_get(mrb, class_iv_ptr(mrb->object_class), sym, &v)) {
+    return v;
   }
   if (c->tt == MRB_TT_SCLASS) {
     v = const_get_nohook(mrb, c, sym, TRUE);
@@ -1386,22 +1413,25 @@ mrb_vm_const_get(mrb_state *mrb, mrb_sym sym)
 }
 
 /* Non-raising lexical constant lookup for `defined?`. Mirrors the search
-   order of mrb_vm_const_get but takes the lexical scope's proc as an argument
-   (the caller's, via ci[-1]) and returns the value or undef, without invoking
-   const_missing or raising. */
+   order of mrb_vm_const_get but takes the lexical scope's callinfo as an
+   argument (the caller's, via ci[-1]) and returns the value or undef, without
+   invoking const_missing or raising. */
 mrb_value
-mrb_vm_const_get_noraise(mrb_state *mrb, const struct RProc *proc, mrb_sym sym)
+mrb_vm_const_get_noraise(mrb_state *mrb, const mrb_callinfo *ci, mrb_sym sym)
 {
-  struct RClass *c = MRB_PROC_TARGET_CLASS(proc), *c2;
+  const struct RProc *proc = ci->proc;
+  mrb_bool rom_frame = proc && proc->gc_color == MRB_GC_RED;
+  struct RClass *c = mrb_vm_frame_class(ci), *c2;
   mrb_value v;
 
   if (!c) c = mrb->object_class;
   if (iv_get(mrb, class_iv_ptr(c), sym, &v)) return v;
-  for (proc = proc->upper; proc; proc = proc->upper) {
+  for (proc = proc ? proc->upper : NULL; proc; proc = proc->upper) {
     c2 = MRB_PROC_TARGET_CLASS(proc);
     if (!c2) c2 = mrb->object_class;
     if (iv_get(mrb, class_iv_ptr(c2), sym, &v)) return v;
   }
+  if (rom_frame && iv_get(mrb, class_iv_ptr(mrb->object_class), sym, &v)) return v;
   if (c->tt == MRB_TT_SCLASS) {
     v = const_get_nohook(mrb, c, sym, TRUE);
     if (!mrb_undef_p(v)) return v;
@@ -1419,9 +1449,9 @@ mrb_vm_const_get_noraise(mrb_state *mrb, const struct RProc *proc, mrb_sym sym)
 }
 
 mrb_bool
-mrb_vm_const_defined_p(mrb_state *mrb, const struct RProc *proc, mrb_sym sym)
+mrb_vm_const_defined_p(mrb_state *mrb, const mrb_callinfo *ci, mrb_sym sym)
 {
-  return !mrb_undef_p(mrb_vm_const_get_noraise(mrb, proc, sym));
+  return !mrb_undef_p(mrb_vm_const_get_noraise(mrb, ci, sym));
 }
 
 /*
