@@ -348,8 +348,14 @@ mrb_obj_hash_code(mrb_state *mrb, mrb_value key)
     break;
   case MRB_TT_TRUE:
   case MRB_TT_FALSE:
-  case MRB_TT_SYMBOL:
     hash_code = U32(mrb_fixnum(key));
+    break;
+  case MRB_TT_SYMBOL:
+    /* a symbol is not where `mrb_fixnum()` reads it: word boxing (the default)
+       keeps the symbol above the fixnum shift, so truncating to 32 bits gives
+       the same code for every symbol and a symbol-keyed table degenerates into
+       a single probe chain */
+    hash_code = U32(mrb_symbol(key));
     break;
   case MRB_TT_INTEGER:
     if (mrb_fixnum_p(key)) {
