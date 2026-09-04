@@ -51,12 +51,19 @@ presym_hash(const char *name, size_t len)
    wrote the tables, so there is nothing to search: the ID's high bits name a
    bucket, the bucket names a displacement, and the displacement moves the ID
    onto a slot no other ID was given. What the slot actually holds still has
-   to be read, since an ID no symbol was given lands on a slot all the same. */
+   to be read, since an ID no symbol was given lands on a slot all the same.
+
+   The slot count is whatever the generator found smallest and is not a power
+   of two, so the masked value can land past the end. It lands at most one
+   count past it, the mask being the next power of two, and the subtraction
+   brings it back. Where the count is a power of two the subtraction is
+   unreachable and the compiler drops it. */
 static mrb_sym
 presym_slot(mrb_sym id)
 {
   mrb_sym disp = presym_disp_table[id >> (MRB_PRESYM_BITS - MRB_PRESYM_BUCKET_BITS)];
-  return ((id ^ (id >> MRB_PRESYM_SLOT_BITS)) ^ disp) & (MRB_PRESYM_SLOTS - 1);
+  mrb_sym x = ((id ^ (id >> MRB_PRESYM_SLOT_BITS)) ^ disp) & ((1U << MRB_PRESYM_SLOT_BITS) - 1);
+  return x < MRB_PRESYM_SLOTS ? x : x - MRB_PRESYM_SLOTS;
 }
 
 static size_t

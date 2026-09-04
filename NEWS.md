@@ -177,8 +177,8 @@ any of those needs updating.
   searched. `MRB_PRESYM_MAX` is now the size of the ID range and not the number
   of symbols; `mrb_presym_count()`, `mrb_presym_slots()` and `mrb_presym_at()`
   report what it used to. The name table that went with the old numbering is
-  gone too, so `libmruby` loses about 2.7KB and one relocation per
-  preallocated symbol
+  gone too, so `libmruby` loses about 4KB and one relocation per preallocated
+  symbol
 - A generated output another configuration left behind is rebuilt ([#7236](https://github.com/mruby/mruby/pull/7236))
 - CI gained 32-bit x86 ([2fd16f3](https://github.com/mruby/mruby/commit/2fd16f3)),
   32-bit Arm ([5ee3bfc](https://github.com/mruby/mruby/commit/5ee3bfc)) and

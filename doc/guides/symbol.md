@@ -106,8 +106,17 @@ then too. The generator places every ID in a slot of its own, by the CHD
 construction: the IDs are bucketed by their high bits, the crowded buckets are
 taken first, and each bucket is given the smallest displacement that drops its
 IDs on slots still free. `presym_slot()` recomputes that placement with a
-shift, a load, an xor and a mask, and the slot it answers holds the ID or holds
-none. Nothing is searched.
+shift, a load, an xor, a mask and a conditional subtract, and the slot it
+answers holds the ID or holds none. Nothing is searched.
+
+The slot count is not rounded up to a power of two. It would cost six bytes
+for every slot left empty, which a symbol count just past a power of two would
+pay two thousand times over, so the generator measures the shapes instead and
+keeps the one whose tables come out smallest: packing tight leaves fewer empty
+slots but needs larger displacements to fill, and a displacement past 255
+doubles the width of the table holding them. A count that is not a power of
+two is what the conditional subtract is for, the masked value landing at most
+one count past the end.
 
 Nothing outside `src/symbol.c` should read an ID as an index: they are
 scattered, and the slots outnumber them. `mrb_presym_count()` reports how many

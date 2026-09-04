@@ -78,18 +78,34 @@ module MRuby
     # dense numbering could index straight to it. The set of IDs is settled
     # once the scan is done, so the entry each one lands on can be settled
     # then too: `perfect_hash` places every ID in a slot of its own, and the
-    # lookup is a shift, a load, an xor and a mask. Nothing is searched and
-    # nothing is compared but the ID the slot turns out to hold.
+    # lookup is a shift, a load, an xor, a mask and a conditional subtract.
+    # Nothing is searched and nothing is compared but the ID the slot holds.
     #
     # The placement is the CHD construction: bucket the IDs by their high
     # bits, take the crowded buckets first, and give each one the smallest
-    # displacement that drops its IDs on free slots. `BUCKET_DIVISOR` sets how
-    # many IDs share a bucket on average -- around four is where the search
-    # for a displacement stays short and the table of them stays small.
-    BUCKET_DIVISOR = 4
+    # displacement that drops its IDs on free slots.
+    #
+    # The slot count is not tied to a power of two. Rounding it up to one
+    # would leave a table of 2049 symbols with 2047 slots empty, and an empty
+    # slot still costs the six bytes of an ID and an offset. Any count works
+    # instead, since a value masked to the next power of two is at most twice
+    # the count and one conditional subtract brings it back inside.
+    #
+    # Which count to pick is measured rather than assumed: packing tight
+    # spends fewer bytes on empty slots but needs larger displacements to
+    # fill, and a displacement past 255 doubles the width of the table holding
+    # them. `perfect_hash` tries these ratios of the symbol count against a
+    # range of bucket counts and keeps the shape whose tables are smallest.
+    SLOT_RATIOS = [1.00, 1.02, 1.05, 1.10, 1.20].freeze
 
-    # How far the slot table may be grown past the next power of two when a
-    # placement cannot be found. Growth has never been needed at this tree's
+    # `BUCKET_DIVISOR` sets how many IDs share a bucket to begin with. Around
+    # four is where the search for a displacement stays short and the table of
+    # displacements stays small; the shapes either side of it are tried too.
+    BUCKET_DIVISOR = 4
+    BUCKET_BITS_SPREAD = 2
+
+    # How far the slot table may be grown past the widest ratio when no
+    # placement is found at all. Growth has never been needed at this tree's
     # sizes; it is here so that no symbol set can fail to build.
     SLOT_GROWTH_MAX = 4
 
@@ -179,13 +195,14 @@ module MRuby
     # pointers with a length each: that drops one relocation and eight bytes
     # per symbol, which pays for most of what the slot table costs.
     def write_table_header(presyms, ids)
-      ph = presyms.empty? ? nil : perfect_hash(ids)
+      name_bytes = presyms.sum{|sym| sym.bytesize + 1}  # each name is NUL-terminated
+      ph = presyms.empty? ? nil : perfect_hash(ids, name_bytes)
       slots = ph ? ph[:slots] : [nil]
       offsets = []
       pos = 0
       slots.each do |sym|
         offsets << pos
-        pos += sym.bytesize + 1 if sym  # each name is NUL-terminated
+        pos += sym.bytesize + 1 if sym
       end
       offsets << pos
       offset_type = pos <= 0xffff ? "uint16_t" : "uint32_t"
@@ -259,56 +276,99 @@ module MRuby
 
     private
 
-    # Places every ID in a slot of its own and answers the table that says
-    # where: `slot_bits`, `bucket_bits`, the displacement per bucket, and the
-    # slots themselves, each holding a symbol or nil. `src/symbol.c` recomputes
-    # the same slot with `presym_slot()`.
+    # Places every ID in a slot of its own and answers the shape that says
+    # where: the slot count and the bits it is masked to, the bucket count,
+    # the displacement per bucket, and the slots themselves, each holding a
+    # symbol or nil. `src/symbol.c` recomputes the same slot in
+    # `presym_slot()`, and `table.h` carries every number it needs.
     #
-    # Two IDs in one bucket have to reach different slots for any displacement,
-    # since a displacement moves a whole bucket at once. Folding the ID down
-    # before the xor is what gives them the chance to: a bucket is a run of
-    # high bits, so without the fold two IDs sharing one could differ only
-    # above the slot mask, where nothing would tell them apart.
-    def perfect_hash(ids)
+    # `name_bytes` is what the names themselves take, so that shapes are
+    # ranked by the tables they actually produce.
+    def perfect_hash(ids, name_bytes)
       count = ids.size
-      slot_bits0 = [[Math.log2([count, 2].max).ceil, 1].max, HASH_BITS].min
-      (slot_bits0..[slot_bits0 + SLOT_GROWTH_MAX, HASH_BITS].min).each do |slot_bits|
-        bucket_candidates =
-          ([slot_bits - Math.log2(BUCKET_DIVISOR).to_i, slot_bits - 1, slot_bits] +
-           (1...slot_bits).to_a.reverse).map{|b| b.clamp(1, slot_bits)}.uniq
-        bucket_candidates.each do |bucket_bits|
-          placed = place_ids(ids, slot_bits, bucket_bits)
-          return placed if placed
+      offset_width = name_bytes <= 0xffff ? 2 : 4
+      best = nil
+      slot_counts(count).each do |slot_count|
+        bucket_bits_candidates(slot_count).each do |bucket_bits|
+          placed = place_ids(ids, slot_count, bucket_bits)
+          next unless placed
+          placed[:bytes] = slot_count * 4 + (slot_count + 1) * offset_width +
+                           (1 << bucket_bits) * (placed[:max_disp] <= 0xff ? 1 : 2)
+          best = placed if best.nil? || placed[:bytes] < best[:bytes]
         end
+        # Every ratio is measured, not just the first that fits: a looser
+        # table spends more on empty slots but settles for smaller
+        # displacements, and which of the two wins is not decided in advance.
+        # The doubling ladder past the ratios is only a way out when none of
+        # them can be placed, so it stops as soon as one is.
+        break if best && slot_count > [(count * SLOT_RATIOS.last).ceil,
+                                       1 << [Math.log2([count, 2].max).ceil, 1].max].max
       end
+      return best if best
       raise "no presym slot placement found for #{count} symbols"
     end
 
+    # Slot counts to try, tightest first, then a doubling ladder for a symbol
+    # set that somehow defeats every ratio.
+    #
+    # The next power of two is tried as well, whatever ratio of the count it
+    # happens to be. A table that size needs no subtraction to stay inside it,
+    # and it leaves the displacements so much room that the table holding them
+    # can be the narrower one; where that wins, the ratios would have missed
+    # it, and this keeps the shape chosen no worse than a power of two.
+    def slot_counts(count)
+      counts = SLOT_RATIOS.map{|r| [(count * r).ceil, 1].max}
+      counts << (1 << [Math.log2([count, 2].max).ceil, 1].max)
+      widest = counts.max
+      SLOT_GROWTH_MAX.times{|i| counts << widest * (2 ** (i + 1))}
+      counts.uniq.sort.select{|c| c <= (1 << HASH_BITS)}
+    end
+
+    def bucket_bits_candidates(slot_count)
+      middle = [Math.log2([slot_count / BUCKET_DIVISOR, 1].max).round, 1].max
+      lo = [middle - BUCKET_BITS_SPREAD, 1].max
+      hi = [middle + BUCKET_BITS_SPREAD, HASH_BITS].min
+      (lo..hi).to_a
+    end
+
     # The CHD placement itself, or nil when this shape has no room for one.
-    def place_ids(ids, slot_bits, bucket_bits)
-      mask = (1 << slot_bits) - 1
+    #
+    # Two IDs in one bucket have to reach different slots whatever the
+    # displacement, since a displacement moves a whole bucket at once. Folding
+    # the ID down before the xor is what gives them the chance to: a bucket is
+    # a run of high bits, so without the fold two IDs sharing one could differ
+    # only above the slot mask, where nothing would tell them apart.
+    def place_ids(ids, slot_count, bucket_bits)
+      slot_bits = [Math.log2(slot_count).ceil, 1].max
       shift = HASH_BITS - bucket_bits
+      return nil if shift < 0
       buckets = Hash.new{|h, k| h[k] = []}
       ids.each{|sym, id| buckets[id >> shift] << sym}
-      slots = Array.new(1 << slot_bits)
+      slots = Array.new(slot_count)
       disp = Array.new(1 << bucket_bits, 0)
+      max_disp = 0
       # Crowded buckets first: they have the fewest displacements left to them
       # once the table has filled up, so they are the ones that fail late.
       buckets.keys.sort_by{|b| [-buckets[b].size, b]}.each do |b|
         group = buckets[b]
         d = (0...(1 << slot_bits)).find do |cand|
-          taken = group.map{|sym| (fold_id(ids[sym], slot_bits) ^ cand) & mask}
+          taken = group.map{|sym| slot_of(ids[sym], cand, slot_bits, slot_count)}
           taken.uniq.size == taken.size && taken.none?{|i| slots[i]}
         end
         return nil unless d
-        group.each{|sym| slots[(fold_id(ids[sym], slot_bits) ^ d) & mask] = sym}
+        group.each{|sym| slots[slot_of(ids[sym], d, slot_bits, slot_count)] = sym}
         disp[b] = d
+        max_disp = d if d > max_disp
       end
-      {slot_bits: slot_bits, bucket_bits: bucket_bits, disp: disp, slots: slots}
+      {slot_count: slot_count, slot_bits: slot_bits, bucket_bits: bucket_bits,
+       disp: disp, slots: slots, max_disp: max_disp}
     end
 
-    def fold_id(id, slot_bits)
-      id ^ (id >> slot_bits)
+    # The masked value is below twice the slot count, since the mask is the
+    # next power of two, so one subtraction brings it inside.
+    def slot_of(id, disp, slot_bits, slot_count)
+      x = ((id ^ (id >> slot_bits)) ^ disp) & ((1 << slot_bits) - 1)
+      x < slot_count ? x : x - slot_count
     end
 
     def c_escape(sym)
