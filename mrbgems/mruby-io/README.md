@@ -169,6 +169,30 @@ Add the line below to your build configuration.
 | File#size                   |          |          |
 | File#truncate               |          |          |
 
+## Source layout
+
+`IO` is one class, but not one source. Each file under `src/` owns one part of
+a stream, and `include/io_internal.h` declares the handful of things they say
+to each other; the rest of what each file does stays private to it.
+
+- `io.c`: the descriptors a stream holds, the mode it was opened with, and
+  every method that opens one, gives one up, or asks it anything but for bytes
+- `io_read.c`: the read buffer, every method that reads through it, and the
+  unbuffered `IO#sysread` and `IO#pread`
+- `io_write.c`: every method that writes, all of them straight through to the
+  descriptor
+- `io_select.c`: `IO.select`
+- `io_popen.c`: `IO.popen` and the child a popen stream carries
+- `file.c`: the `File` class
+- `file_test.c`: the `FileTest` predicates
+
+`mrb_init_io()` defines the class and the methods `io.c` implements, then calls
+the `mrb_io_*_init()` of each of the other four, so every method is registered
+by the file that implements it.
+
+Under all of them is `include/io_hal.h`, where a call on the host goes unless a
+comment at the call site says why it does not.
+
 ## Porting Note
 
 If your (non Windows) platform does not support `getpwnam(3)` for some reason, define `MRB_IO_NO_PWNAM`.
