@@ -41,7 +41,8 @@ struct mrc_args {
   mrc_bool remove_lv    : 1;
   mrc_bool no_ext_ops   : 1;
   mrc_bool no_optimize  : 1;
-  uint8_t flags         : 2;
+  /* wide enough for every MRC_DUMP_* the options below can set */
+  uint8_t flags         : 3;
 };
 
 void *
@@ -118,6 +119,7 @@ usage(const char *name)
   "-B<symbol>   binary <symbol> output in C language format",
   "-S           dump C struct (requires -B)",
   "-s           define <symbol> as static variable",
+  "-R           define what a class body can spare from a read-only method table\n               (requires -S; the dump writes <symbol>_init_rom() to install it)",
   "--remove-lv  remove local variables",
   "--no-ext-ops prohibit using OP_EXTs",
   "--no-optimize disable peephole optimization",
@@ -219,6 +221,9 @@ parse_args(mrc_ccontext *c, int argc, char **argv, struct mrc_args *args)
         break;
       case 's':
         args->flags |= MRC_DUMP_STATIC;
+        break;
+      case 'R':
+        args->flags |= MRC_DUMP_ROM_METHODS;
         break;
       case 'E':
       case 'e':

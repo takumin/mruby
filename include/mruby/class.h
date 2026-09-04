@@ -132,6 +132,13 @@ typedef struct mrb_mt_tbl {
 /* ROM table entry: 3rd param is MRB_ARGS_*() optionally OR'd with MRB_MT_PRIVATE. */
 #define MRB_MT_ENTRY(fn, sym, flags) \
   { { (fn) }, (sym), (flags) | MRB_MT_FUNC }
+
+/* The same for a method whose body is a proc rather than a C function, as a
+   dumped `mrblib` defines them. The function pointer is the union's first
+   member, so this one has to name the member it means; the C dump already
+   emits a designated initializer for the pool of a float. */
+#define MRB_MT_PROC_ENTRY(pr, sym, flags) \
+  { { .proc = (pr) }, (sym), (flags) }
 #define MRB_MT_ASPEC(flags) ((mrb_aspec)((flags) & 0xffffff))
 
 /* "removed" tombstone: MRB_MT_FUNC flag set with NULL function pointer.

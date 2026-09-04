@@ -8,6 +8,11 @@ MRC_BEGIN_DECL
 
 #define MRC_DUMP_DEBUG_INFO 1
 #define MRC_DUMP_STATIC 2
+/* Hand the definitions a class body can spare over to a read-only method
+   table, installed by the `<initname>_init_rom()` the dump then writes. The
+   caller has to run it after whatever defines the classes the bodies reopen
+   and before the proc, so it is asked for rather than always done. */
+#define MRC_DUMP_ROM_METHODS 4
 
 #ifndef MRC_NO_STDIO
 int mrc_dump_irep_cfunc(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE *fp, const char *initname);

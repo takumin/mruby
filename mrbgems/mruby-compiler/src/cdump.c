@@ -11,6 +11,7 @@
 #include "../include/mrc_dump.h"
 #include "../include/mrc_debug.h"
 #include "../include/mrc_irep_pool_type.h"
+#include "../include/mrc_opcode.h"
 
 #ifndef MRC_NO_STDIO
 
@@ -455,18 +456,441 @@ cdump_debug(mrc_ccontext *c, const char *name, int n, mrc_irep_debug_info *info,
   return MRC_DUMP_OK;
 }
 
+
+/* ---- Read-only method tables -------------------------------------------
+   A method written in Ruby costs an RProc in the object heap for as long as
+   the state lives, even though the irep behind it is dumped as `static const`
+   right here. Where the build can say which class a `def` lands on, the proc
+   and the method table entry can be `static const` too, and the class gets
+   them from a read-only layer (mrb_mt_init_rom()) instead of from OP_TDEF.
+
+   The build can say it when the `def` sits in the body of a class or module
+   opened at the top level of the unit, under no outer constant, with a
+   superclass that is a constant or absent, and the body holds no branch that
+   could make the definition conditional. A body that also opens a nested
+   scope keeps its own definitions; the nested one runs as it did.
+
+   What is left in the body still runs: `include`, `alias`, a visibility call
+   naming its methods, everything. The definitions it no longer performs are
+   replaced in place by the value they left behind (OP_LOADSYM of the method
+   name, padded to the same width), so nothing about the body's length, its
+   jump targets or its result changes.
+
+   A body calling `private` with no arguments is left alone entirely: that
+   call sets the visibility of the definitions that follow it, which a table
+   written before the body runs cannot know. */
+
+/* instruction sizes, the way codegen.c builds them */
+#undef Z
+#undef S
+#undef W
+#define Z 1
+#define S 3
+#define W 4
+#define OPCODE(_,x) x,
+static const uint8_t rom_insn_size[] = {
+#define B 2
+#define BB 3
+#define BBB 4
+#define BS 4
+#define BSS 6
+#include "mrc_ops.h"
+#undef B
+#undef BB
+#undef BBB
+#undef BS
+#undef BSS
+};
+static const uint8_t rom_insn_size1[] = {
+#define B 3
+#define BB 4
+#define BBB 5
+#define BS 5
+#define BSS 7
+#include "mrc_ops.h"
+#undef B
+#undef BB
+#undef BBB
+#undef BS
+#undef BSS
+};
+static const uint8_t rom_insn_size2[] = {
+#define B 2
+#define BB 3
+#define BBB 4
+#define BS 4
+#define BSS 6
+#include "mrc_ops.h"
+#undef B
+#undef BB
+#undef BBB
+#undef BS
+#undef BSS
+};
+static const uint8_t rom_insn_size3[] = {
+#define B 3
+#define BB 5
+#define BBB 6
+#define BS 5
+#define BSS 7
+#include "mrc_ops.h"
+#undef B
+#undef BB
+#undef BBB
+#undef BS
+#undef BSS
+};
+#undef OPCODE
+#undef Z
+#undef S
+#undef W
+
+static uint32_t
+rom_insn_len(const mrc_code *pc)
+{
+  switch (pc[0]) {
+  case OP_EXT1: return (uint32_t)rom_insn_size1[pc[1]] + 1;
+  case OP_EXT2: return (uint32_t)rom_insn_size2[pc[1]] + 1;
+  case OP_EXT3: return (uint32_t)rom_insn_size3[pc[1]] + 1;
+  default: return rom_insn_size[pc[0]];
+  }
+}
+
+#define ROM_MAX_METHODS 192
+#define ROM_MAX_GROUPS 96
+#define ROM_SYM_EXPR_MAX 128
+
+typedef struct rom_method {
+  mrc_sym name;
+  uint32_t pos;                 /* where the definition sits in the body */
+  int rep;                      /* the body's rep holding the method */
+  mrc_bool singleton;
+} rom_method;
+
+typedef struct rom_group {
+  const mrc_irep *body;
+  mrc_sym cname;
+  mrc_sym super;                /* 0 where the source names none */
+  mrc_bool module;
+  int nmethods;
+  rom_method methods[ROM_MAX_METHODS];
+} rom_group;
+
+typedef struct rom_plan {
+  int ngroups;
+  rom_group groups[ROM_MAX_GROUPS];
+} rom_plan;
+
+/* The symbol as a compile-time constant, or FALSE where it has no such
+   spelling and the dump interns it at startup instead. A read-only table
+   holds only the former. */
+static mrc_bool
+rom_sym_expr(mrc_ccontext *c, mrc_sym sym, char *buf, size_t size)
+{
+  const pm_constant_t *constant;
+  const char *name, *op_name;
+  mrc_int len;
+
+  if (sym == 0) return FALSE;
+  constant = pm_constant_pool_id_to_constant(&c->p->constant_pool, sym);
+  name = (const char *)constant->start;
+  len = (mrc_int)constant->length;
+  if (len == 0 || (size_t)len + 16 > size) return FALSE;
+
+  if (sym_name_word_p(name, len)) {
+    snprintf(buf, size, "MRB_SYM(%.*s)", (int)len, name);
+  }
+  else if (sym_name_with_equal_p(name, len)) {
+    snprintf(buf, size, "MRB_SYM_E(%.*s)", (int)(len-1), name);
+  }
+  else if (sym_name_with_question_mark_p(name, len)) {
+    snprintf(buf, size, "MRB_SYM_Q(%.*s)", (int)(len-1), name);
+  }
+  else if (sym_name_with_bang_p(name, len)) {
+    snprintf(buf, size, "MRB_SYM_B(%.*s)", (int)(len-1), name);
+  }
+  else if ((op_name = sym_operator_name(name, len)) != NULL) {
+    snprintf(buf, size, "MRB_OPSYM(%s)", op_name);
+  }
+  else {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static mrc_bool
+rom_sym_named_p(mrc_ccontext *c, mrc_sym sym, const char *name)
+{
+  const pm_constant_t *constant;
+  size_t len = strlen(name);
+
+  if (sym == 0) return FALSE;
+  constant = pm_constant_pool_id_to_constant(&c->p->constant_pool, sym);
+  return constant->length == len &&
+         memcmp(constant->start, name, len) == 0;
+}
+
+/* `private` and its neighbours with no argument: the call sets the visibility
+   of what is defined after it. */
+static mrc_bool
+rom_visibility_scope_p(mrc_ccontext *c, const mrc_irep *irep, const mrc_code *pc)
+{
+  mrc_sym mid;
+
+  switch (pc[0]) {
+  case OP_SEND0: case OP_SSEND0:
+    mid = irep->syms[pc[2]];
+    break;
+  case OP_SEND: case OP_SSEND:
+    if (pc[3] != 0) return FALSE;
+    mid = irep->syms[pc[2]];
+    break;
+  default:
+    return FALSE;
+  }
+  return rom_sym_named_p(c, mid, "private") ||
+         rom_sym_named_p(c, mid, "public") ||
+         rom_sym_named_p(c, mid, "protected") ||
+         rom_sym_named_p(c, mid, "module_function");
+}
+
+static mrc_bool
+rom_branch_p(uint8_t op)
+{
+  switch (op) {
+  case OP_JMP: case OP_JMPIF: case OP_JMPNOT: case OP_JMPNIL:
+  case OP_JMPUW: case OP_EXCEPT: case OP_RESCUE:
+    return TRUE;
+  default:
+    return FALSE;
+  }
+}
+
+/* Collects the definitions a class or module body hands over, or FALSE when
+   the body keeps them all. */
+static mrc_bool
+rom_scan_body(mrc_ccontext *c, const mrc_irep *body, rom_group *g)
+{
+  const mrc_code *pc = body->iseq, *end = body->iseq + body->ilen;
+  const mrc_code *prev = NULL;
+  char buf[ROM_SYM_EXPR_MAX];
+
+  g->nmethods = 0;
+  while (pc < end) {
+    uint8_t op = *pc;
+
+    if (rom_branch_p(op) || rom_visibility_scope_p(c, body, pc)) return FALSE;
+    if (op == OP_DEF) return FALSE;   /* the receiver is a register, not self */
+    if (op == OP_TDEF || op == OP_SDEF) {
+      rom_method *m;
+      int i;
+
+      /* `def obj.name` puts the singleton of something else in the register */
+      if (op == OP_SDEF && (prev == NULL || prev[0] != OP_LOADSELF || prev[1] != pc[1])) {
+        return FALSE;
+      }
+      if (g->nmethods >= ROM_MAX_METHODS) return FALSE;
+      m = &g->methods[g->nmethods];
+      m->name = body->syms[pc[2]];
+      m->rep = pc[3];
+      m->singleton = (op == OP_SDEF);
+      m->pos = (uint32_t)(pc - body->iseq);
+      if (m->rep >= body->rlen) return FALSE;
+      if (!rom_sym_expr(c, m->name, buf, sizeof(buf))) return FALSE;
+      /* the same name twice would leave two entries in one table */
+      for (i = 0; i < g->nmethods; i++) {
+        if (g->methods[i].name == m->name && g->methods[i].singleton == m->singleton) {
+          return FALSE;
+        }
+      }
+      g->nmethods++;
+    }
+    prev = pc;
+    pc += rom_insn_len(pc);
+  }
+  return g->nmethods > 0;
+}
+
+/* What a register holds, to the one precision the tests below need. */
+enum { ROM_R_OTHER, ROM_R_NIL, ROM_R_CONST };
+
+static void
+rom_scan_top(mrc_ccontext *c, const mrc_irep *top, rom_plan *plan)
+{
+  uint8_t kind[256];
+  mrc_sym cname[256];
+  const mrc_code *pc = top->iseq, *end = top->iseq + top->ilen;
+  mrc_sym pending_name = 0, pending_super = 0;
+  mrc_bool pending_ok = FALSE, pending_module = FALSE;
+  char buf[ROM_SYM_EXPR_MAX];
+
+  memset(kind, ROM_R_OTHER, sizeof(kind));
+  memset(cname, 0, sizeof(cname));
+  plan->ngroups = 0;
+
+  while (pc < end) {
+    uint8_t op = *pc;
+
+    switch (op) {
+    case OP_LOADNIL:
+      kind[pc[1]] = ROM_R_NIL;
+      break;
+    case OP_GETCONST:
+      kind[pc[1]] = ROM_R_CONST;
+      cname[pc[1]] = top->syms[pc[2]];
+      break;
+    case OP_CLASS:
+    case OP_MODULE:
+      pending_module = (op == OP_MODULE);
+      pending_name = top->syms[pc[2]];
+      pending_super = 0;
+      /* only a body opened directly under the file's own scope: an outer
+         constant would have to be resolved here to name the class */
+      pending_ok = (kind[pc[1]] == ROM_R_NIL) &&
+                   rom_sym_expr(c, pending_name, buf, sizeof(buf));
+      if (pending_ok && !pending_module) {
+        if (kind[pc[1]+1] == ROM_R_CONST) {
+          pending_super = cname[pc[1]+1];
+          pending_ok = rom_sym_expr(c, pending_super, buf, sizeof(buf));
+        }
+        else if (kind[pc[1]+1] != ROM_R_NIL) {
+          pending_ok = FALSE;
+        }
+      }
+      kind[pc[1]] = ROM_R_CONST;
+      cname[pc[1]] = pending_name;
+      break;
+    case OP_EXEC:
+      if (pending_ok && plan->ngroups < ROM_MAX_GROUPS && pc[2] < top->rlen) {
+        rom_group *g = &plan->groups[plan->ngroups];
+        g->body = top->reps[pc[2]];
+        g->cname = pending_name;
+        g->super = pending_super;
+        g->module = pending_module;
+        if (rom_scan_body(c, g->body, g)) plan->ngroups++;
+      }
+      pending_ok = FALSE;
+      kind[pc[1]] = ROM_R_OTHER;
+      break;
+    default:
+      if (op != OP_EXT1 && op != OP_EXT2 && op != OP_EXT3 && rom_insn_size[op] >= 2) {
+        kind[pc[1]] = ROM_R_OTHER;
+      }
+      break;
+    }
+    pc += rom_insn_len(pc);
+  }
+}
+
+static const rom_group*
+rom_group_of(const rom_plan *plan, const mrc_irep *irep)
+{
+  int i;
+
+  if (plan == NULL) return NULL;
+  for (i = 0; i < plan->ngroups; i++) {
+    if (plan->groups[i].body == irep) return &plan->groups[i];
+  }
+  return NULL;
+}
+
 static int
-cdump_irep_struct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE *fp, const char *name, int n, mrc_string *init_syms_code, int *mp)
+rom_group_index(const rom_plan *plan, const rom_group *g)
+{
+  return (int)(g - plan->groups);
+}
+
+/* The procs and the tables of one group, and the code that installs them. */
+static void
+rom_dump_group(mrc_ccontext *c, const rom_plan *plan, const rom_group *g,
+               const char *name, int max, mrc_string *rom_code, FILE *fp)
+{
+  int gi = rom_group_index(plan, g);
+  char buf[ROM_SYM_EXPR_MAX], line[512];
+  int i, kinds;
+
+  for (i = 0; i < g->nmethods; i++) {
+    fprintf(fp, "mrb_alignas(8)\n"
+                "static const struct RProc %s_romproc_%d_%d = {\n"
+                "  NULL,MRB_TT_PROC,MRB_GC_RED,MRB_OBJ_IS_FROZEN,\n"
+                "  MRB_PROC_SCOPE|MRB_PROC_STRICT,{&%s_irep_%d},NULL,{NULL}\n"
+                "};\n",
+            name, gi, i, name, max + g->methods[i].rep);
+  }
+
+  for (kinds = 0; kinds < 2; kinds++) {
+    mrc_bool singleton = (kinds == 1);
+    int count = 0;
+
+    for (i = 0; i < g->nmethods; i++) {
+      if (g->methods[i].singleton != singleton) continue;
+      if (count == 0) {
+        fprintf(fp, "static const mrb_mt_entry %s_rom%s_%d[] = {\n",
+                name, singleton ? "s" : "", gi);
+      }
+      rom_sym_expr(c, g->methods[i].name, buf, sizeof(buf));
+      fprintf(fp, "  MRB_MT_PROC_ENTRY(&%s_romproc_%d_%d, %s, MRB_METHOD_PUBLIC_FL),\n",
+              name, gi, i, buf);
+      count++;
+    }
+    if (count > 0) fputs("};\n", fp);
+  }
+
+  mrc_str_cat_lit(c, rom_code, "  {\n    struct RClass *c = ");
+  rom_sym_expr(c, g->cname, buf, sizeof(buf));
+  if (g->module) {
+    snprintf(line, sizeof(line),
+             "mrb_vm_define_module(mrb, mrb_obj_value(mrb->object_class), %s);\n", buf);
+  }
+  else if (g->super == 0) {
+    snprintf(line, sizeof(line),
+             "mrb_vm_define_class(mrb, mrb_obj_value(mrb->object_class), mrb_nil_value(), %s);\n",
+             buf);
+  }
+  else {
+    char sbuf[ROM_SYM_EXPR_MAX];
+    rom_sym_expr(c, g->super, sbuf, sizeof(sbuf));
+    snprintf(line, sizeof(line),
+             "mrb_vm_define_class(mrb, mrb_obj_value(mrb->object_class),\n"
+             "      mrb_obj_value(mrb_class_get_id(mrb, %s)), %s);\n", sbuf, buf);
+  }
+  mrc_str_cat_cstr(c, rom_code, line);
+
+  for (kinds = 0; kinds < 2; kinds++) {
+    mrc_bool singleton = (kinds == 1);
+    int count = 0;
+
+    for (i = 0; i < g->nmethods; i++) {
+      if (g->methods[i].singleton == singleton) count++;
+    }
+    if (count == 0) continue;
+    if (singleton) {
+      snprintf(line, sizeof(line),
+               "    mrb_mt_init_rom(mrb, mrb_singleton_class_ptr(mrb, mrb_obj_value(c)),\n"
+               "                    %s_roms_%d, %d);\n", name, gi, count);
+    }
+    else {
+      snprintf(line, sizeof(line),
+               "    mrb_mt_init_rom(mrb, c, %s_rom_%d, %d);\n", name, gi, count);
+    }
+    mrc_str_cat_cstr(c, rom_code, line);
+  }
+  mrc_str_cat_lit(c, rom_code, "  }\n");
+}
+
+static int
+cdump_irep_struct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE *fp, const char *name, int n, mrc_string *init_syms_code, int *mp, const rom_plan *plan, mrc_string *rom_code)
 {
   int i, len;
   int max = *mp;
   int debug_available = 0;
+  const rom_group *group = rom_group_of(plan, irep);
 
   /* dump reps */
   if (0 < irep->rlen) {
     for (i=0,len=irep->rlen; i<len; i++) {
       *mp += len;
-      if (cdump_irep_struct(c, irep->reps[i], flags, fp, name, max+i, init_syms_code, mp) != MRC_DUMP_OK)
+      if (cdump_irep_struct(c, irep->reps[i], flags, fp, name, max+i, init_syms_code, mp, plan, rom_code) != MRC_DUMP_OK)
         return MRC_DUMP_INVALID_ARGUMENT;
     }
     /* `const` on the pointers as well as on what they point at: `mrb_irep`
@@ -497,8 +921,21 @@ cdump_irep_struct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE *fp
   len=irep->ilen+sizeof(struct mrc_irep_catch_handler)*irep->clen;
   fprintf(fp,   "static const mrb_code %s_iseq_%d[%d] = {", name, n, len);
   for (i=0; i<len; i++) {
+    mrc_code byte = irep->iseq[i];
+    if (group) {
+      /* OP_TDEF and OP_SDEF are four bytes and both leave the method name in
+         R[a]; OP_LOADSYM writing the same name from the same symbol index is
+         three, so one OP_NOP pads it back. The body keeps its length, its
+         jump targets and its result, and performs no definition. */
+      int k;
+      for (k = 0; k < group->nmethods; k++) {
+        uint32_t pos = group->methods[k].pos;
+        if ((uint32_t)i == pos) byte = OP_LOADSYM;
+        else if ((uint32_t)i == pos+3) byte = OP_NOP;
+      }
+    }
     if (i%20 == 0) fputs("\n", fp);
-    fprintf(fp, "0x%02x,", irep->iseq[i]);
+    fprintf(fp, "0x%02x,", byte);
   }
   fputs("};\n", fp);
   /* dump lv */
@@ -549,6 +986,10 @@ cdump_irep_struct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE *fp
   }
   fprintf(fp,   "  %d,%d,%d,%d,0\n};\n", irep->ilen, irep->plen, irep->slen, irep->rlen);
 
+  if (group) {
+    rom_dump_group(c, plan, group, name, max, rom_code, fp);
+  }
+
   return MRC_DUMP_OK;
 }
 
@@ -570,9 +1011,23 @@ mrc_dump_irep_cstruct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE
   fputs("#define mrb_DEFINE_SYMS_VAR(name, len, syms, qualifier) \\\n", fp);
   fputs("  static qualifier mrb_sym name[len] = mrb_BRACED syms\n", fp);
   fputs("\n", fp);
+
+  /* Which definitions the classes here hand over to a read-only table. The
+     headers those tables need are only pulled in where there are any. */
+  rom_plan *plan = (rom_plan *)mrc_malloc(c, sizeof(rom_plan));
+  if (plan == NULL) return MRC_DUMP_GENERAL_FAILURE;
+  plan->ngroups = 0;
+  if (flags & MRC_DUMP_ROM_METHODS) rom_scan_top(c, irep, plan);
+  if (0 < plan->ngroups) {
+    fputs("#include <mruby/class.h>\n"
+          "#include <mruby/internal.h>\n"
+          "\n", fp);
+  }
+
   mrc_string *init_syms_code = mrc_str_new_capa(c, 1);
+  mrc_string *rom_code = mrc_str_new_capa(c, 1);
   int max = 1;
-  int n = cdump_irep_struct(c, irep, flags, fp, initname, 0, init_syms_code, &max);
+  int n = cdump_irep_struct(c, irep, flags, fp, initname, 0, init_syms_code, &max, plan, rom_code);
   if (n != MRC_DUMP_OK) return n;
   fprintf(fp,
           "%s\n"
@@ -588,7 +1043,20 @@ mrc_dump_irep_cstruct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE
   fputs("{\n", fp);
   fputs(MRC_STRING_PTR(init_syms_code), fp);
   fputs("}\n", fp);
+  if (flags & MRC_DUMP_ROM_METHODS) {
+    /* Its own function because of when it has to run: after whatever defines
+       the classes these bodies reopen, and before the proc, so that a body
+       finds its own methods already there when it aliases one or names one in
+       a visibility call. */
+    fputs("static void\n", fp);
+    fprintf(fp, "%s_init_rom(mrb_state *mrb)\n", initname);
+    fputs("{\n", fp);
+    fputs(MRC_STRING_PTR(rom_code), fp);
+    fputs("}\n", fp);
+  }
   mrc_str_free(c, init_syms_code);
+  mrc_str_free(c, rom_code);
+  mrc_free(c, plan);
   return MRC_DUMP_OK;
 }
 #endif /* MRC_NO_STDIO */

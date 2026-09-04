@@ -859,7 +859,7 @@ module MRuby
       @compile_options = "-B%{funcname} -o-"
     end
 
-    def run(out, infiles, funcname, cdump: true, static: false)
+    def run(out, infiles, funcname, cdump: true, static: false, rom: false)
       @command ||= @build.mrbcfile
       infiles = [infiles].flatten
       infiles.each_with_index do |f, i|
@@ -868,6 +868,7 @@ module MRuby
       opt = @compile_options % {funcname: funcname}
       opt << " -S" if cdump
       opt << " -s" if static
+      opt << " -R" if rom
       # Have mrbc write to a private tempfile (-o) instead of stdout (-o-)
       # to avoid pipe-inheritance races with parallel rake on Windows MinGW,
       # where unrelated _pp build-progress lines from sibling workers can

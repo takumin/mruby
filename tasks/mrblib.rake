@@ -15,11 +15,14 @@ MRuby.each_target do
     f.puts %Q[ *   This file was generated!]
     f.puts %Q[ *   All manual changes will get lost.]
     f.puts %Q[ */]
-    mrbc.run f, rbfiles, "mrblib_proc", cdump: true, static: true
+    mrbc.run f, rbfiles, "mrblib_proc", cdump: true, static: true, rom: true
     f.puts %Q[void]
     f.puts %Q[mrb_init_mrblib(mrb_state *mrb)]
     f.puts %Q[{]
     f.puts %Q[  mrblib_proc_init_syms(mrb);]
+    # The classes these tables reopen are the core's own, so they are all here
+    # by now; the bodies then find their own methods when they alias one.
+    f.puts %Q[  mrblib_proc_init_rom(mrb);]
     f.puts %Q[  mrb_load_proc(mrb, mrblib_proc);]
     f.puts %Q[}]
   end

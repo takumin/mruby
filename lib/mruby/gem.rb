@@ -276,7 +276,7 @@ module MRuby
       def generate_gem_init(f)
         print_gem_init_header f
         unless rbfiles.empty?
-          opts = {cdump: cdump?, static: true}
+          opts = {cdump: cdump?, static: true, rom: cdump?}
           if cdump?
             build.mrbc.run f, rbfiles, "gem_mrblib_#{funcname}_proc", **opts
           else
@@ -291,6 +291,10 @@ module MRuby
         f.puts %Q[  mrb_#{funcname}_gem_init(mrb);] if objs != [objfile("#{build_dir}/gem_init")]
         unless rbfiles.empty?
           if cdump?
+            # After the gem's own C init, since a class body here may reopen a
+            # class that init defines, and before the proc, so that the body
+            # finds its own methods when it aliases one.
+            f.puts %Q[  gem_mrblib_#{funcname}_proc_init_rom(mrb);]
             f.puts %Q[  mrb_load_proc(mrb, gem_mrblib_#{funcname}_proc);]
           else
             f.puts %Q[  mrb_load_irep(mrb, gem_mrblib_irep_#{funcname});]
