@@ -666,6 +666,25 @@ rom_branch_p(uint8_t op)
   }
 }
 
+/* Whether an exception raised at `pos` unwinds to a handler in the same body,
+   which leaves what follows `pos` unreached. */
+static mrc_bool
+rom_rescued_p(const mrc_irep *irep, uint32_t pos)
+{
+  const struct mrc_irep_catch_handler *e;
+  int i;
+
+  if (irep->clen == 0) return FALSE;
+  e = (const struct mrc_irep_catch_handler*)(irep->iseq + irep->ilen);
+  for (i = 0; i < irep->clen; i++, e++) {
+    uint32_t begin = mrc_irep_catch_handler_unpack(e->begin);
+    uint32_t end = mrc_irep_catch_handler_unpack(e->end);
+
+    if (begin <= pos && pos < end) return TRUE;
+  }
+  return FALSE;
+}
+
 /* Collects the definitions a class or module body hands over, or FALSE when
    the body keeps them all. */
 static mrc_bool
@@ -681,6 +700,8 @@ rom_scan_body(mrc_ccontext *c, const mrc_irep *body, rom_group *g)
 
     if (rom_branch_p(op) || rom_visibility_scope_p(c, body, pc)) return FALSE;
     if (op == OP_DEF) return FALSE;   /* the receiver is a register, not self */
+    /* a definition an ensure protects is one a raise before it can skip */
+    if (rom_rescued_p(body, (uint32_t)(pc - body->iseq))) return FALSE;
     if (op == OP_TDEF || op == OP_SDEF) {
       rom_method *m;
       int i;
@@ -722,6 +743,7 @@ rom_scan_top(mrc_ccontext *c, const mrc_irep *top, rom_plan *plan)
   const mrc_code *pc = top->iseq, *end = top->iseq + top->ilen;
   mrc_sym pending_name = 0, pending_super = 0;
   mrc_bool pending_ok = FALSE, pending_module = FALSE;
+  uint32_t guarded_to = 0;      /* a branch already seen can skip up to here */
   char buf[ROM_SYM_EXPR_MAX];
 
   memset(kind, ROM_R_OTHER, sizeof(kind));
@@ -730,8 +752,38 @@ rom_scan_top(mrc_ccontext *c, const mrc_irep *top, rom_plan *plan)
 
   while (pc < end) {
     uint8_t op = *pc;
+    uint32_t len = rom_insn_len(pc);
+    uint32_t next = (uint32_t)(pc - top->iseq) + len;
+
+    /* An extended instruction keeps its operands where the model below does
+       not read them, and a jump among them keeps its offset there too. */
+    if (op == OP_EXT1 || op == OP_EXT2 || op == OP_EXT3) {
+      if (rom_branch_p(pc[1])) return;
+      memset(kind, ROM_R_OTHER, sizeof(kind));
+      pc += len;
+      continue;
+    }
 
     switch (op) {
+    case OP_JMP:
+    case OP_JMPIF:
+    case OP_JMPNOT:
+    case OP_JMPNIL: {
+      /* the operand is a signed offset from the end of the instruction */
+      const mrc_code *s = (op == OP_JMP) ? pc + 1 : pc + 2;
+      int32_t target = (int32_t)next + (int16_t)PEEK_S(s);
+
+      /* what a backward jump reaches runs more than once */
+      if (target <= (int32_t)next) return;
+      if ((uint32_t)target > guarded_to) guarded_to = (uint32_t)target;
+      /* the registers a skipped arm writes are not what arrives here */
+      memset(kind, ROM_R_OTHER, sizeof(kind));
+      break;
+    }
+    case OP_JMPUW:
+    case OP_EXCEPT:
+    case OP_RESCUE:
+      return;                   /* unwinding arrives where this scan cannot */
     case OP_LOADNIL:
       kind[pc[1]] = ROM_R_NIL;
       break;
@@ -761,6 +813,14 @@ rom_scan_top(mrc_ccontext *c, const mrc_irep *top, rom_plan *plan)
       cname[pc[1]] = pending_name;
       break;
     case OP_EXEC:
+      /* A body a branch can skip is not the build's to install: `class Float
+         ... end if Object.const_defined?(:Float)` would otherwise give a build
+         with no Float one anyway.  A body under a rescue is skippable too,
+         since what raises before it leaves the rest of the region unrun. */
+      if ((uint32_t)(pc - top->iseq) < guarded_to ||
+          rom_rescued_p(top, (uint32_t)(pc - top->iseq))) {
+        pending_ok = FALSE;
+      }
       if (pending_ok && plan->ngroups < ROM_MAX_GROUPS && pc[2] < top->rlen) {
         rom_group *g = &plan->groups[plan->ngroups];
         g->body = top->reps[pc[2]];
@@ -778,7 +838,7 @@ rom_scan_top(mrc_ccontext *c, const mrc_irep *top, rom_plan *plan)
       }
       break;
     }
-    pc += rom_insn_len(pc);
+    pc += len;
   }
 }
 
