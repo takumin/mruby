@@ -144,9 +144,16 @@ ROM_PROC(lexical_proc, lexical_irep);
 ROM_PROC(cvar_proc, cvar_irep);
 ROM_PROC(dconst_proc, dconst_irep);
 ROM_PROC(dcvar_proc, dcvar_irep);
+/* the same body again, installed on the singleton class: `def self.name`
+   reads the constants of the class the singleton is attached to */
+ROM_PROC(s_lexical_proc, lexical_irep);
 
 static mrb_mt_entry base_entries[] = {
   ROM_PROC_ENTRY(base_greet_proc),      /* greet */
+};
+
+static mrb_mt_entry child_s_entries[] = {
+  ROM_PROC_ENTRY(s_lexical_proc),       /* lexical */
 };
 
 static mrb_mt_entry child_entries[] = {
@@ -174,6 +181,7 @@ mrb_init_test_rom_proc(mrb_state *mrb)
   dcvar_syms[1] = mrb_intern_lit(mrb, "__defined_cvar?");
 
   base_entries[0].key = mrb_intern_lit(mrb, "greet");
+  child_s_entries[0].key = mrb_intern_lit(mrb, "lexical");
   for (int i = 0; i < (int)(sizeof(child_entries)/sizeof(child_entries[0])); i++) {
     child_entries[i].key = mrb_intern_cstr(mrb, child_names[i]);
   }
@@ -183,6 +191,8 @@ mrb_init_test_rom_proc(mrb_state *mrb)
 
   child = mrb_define_class(mrb, "RomProcChild", base);
   MRB_MT_INIT_ROM(mrb, child, child_entries);
+  MRB_MT_INIT_ROM(mrb, mrb_singleton_class_ptr(mrb, mrb_obj_value(child)),
+                  child_s_entries);
 
   /* what the class body would have run beside the definitions */
   mrb_define_const_id(mrb, child, lexical_syms[0],

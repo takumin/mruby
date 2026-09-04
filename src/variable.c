@@ -1214,6 +1214,42 @@ mrb_cv_defined(mrb_state *mrb, mrb_value mod, mrb_sym sym)
   return mrb_mod_cv_defined(mrb, mrb_class_ptr(mod), sym);
 }
 
+/* The class or module a singleton class is attached to, or NULL where the
+   chain names none. `def self.name` is written in that class's body, so it is
+   the scope outside a singleton method. */
+static struct RClass*
+sclass_attached(mrb_state *mrb, struct RClass *c)
+{
+  while (c && c->tt == MRB_TT_SCLASS) {
+    mrb_value attached;
+
+    if (!iv_get(mrb, class_iv_ptr(c), MRB_SYM(__attached__), &attached) ||
+        mrb_immediate_p(attached)) {
+      return NULL;
+    }
+    c = mrb_class_ptr(attached);
+    if (c->tt != MRB_TT_CLASS && c->tt != MRB_TT_MODULE && c->tt != MRB_TT_SCLASS) {
+      return NULL;
+    }
+  }
+  return c;
+}
+
+/* The scopes a definition built ahead of time stands in, past the class it was
+   defined in: the class a singleton class is attached to, and `Object`, since
+   such a definition is written at the top level of its file. A proc on the
+   heap reaches both by walking `upper`; a `const` proc has no chain to walk. */
+static mrb_bool
+rom_frame_const(mrb_state *mrb, struct RClass *c, mrb_sym sym, mrb_value *vp)
+{
+  struct RClass *attached = sclass_attached(mrb, c);
+
+  if (attached && attached != c && iv_get(mrb, class_iv_ptr(attached), sym, vp)) {
+    return TRUE;
+  }
+  return iv_get(mrb, class_iv_ptr(mrb->object_class), sym, vp);
+}
+
 /* The class a class variable in the running frame belongs to.
 
    The frame's own class comes from the callinfo rather than from its proc: a
@@ -1238,19 +1274,7 @@ vm_cvar_class(mrb_state *mrb, const mrb_callinfo *ci)
     p = p->upper;
     c = MRB_PROC_TARGET_CLASS(p);
   }
-  while (c && c->tt == MRB_TT_SCLASS) {
-    mrb_value attached;
-    struct RClass *a;
-    if (!iv_get(mrb, class_iv_ptr(c), MRB_SYM(__attached__), &attached) ||
-        mrb_immediate_p(attached)) {
-      break;
-    }
-    a = mrb_class_ptr(attached);
-    if (a->tt != MRB_TT_CLASS && a->tt != MRB_TT_MODULE && a->tt != MRB_TT_SCLASS) {
-      break;
-    }
-    c = a;
-  }
+  c = sclass_attached(mrb, c);
   return c ? c : mrb->object_class;
 }
 
@@ -1391,7 +1415,7 @@ mrb_vm_const_get(mrb_state *mrb, mrb_sym sym)
       return v;
     }
   }
-  if (rom_frame && iv_get(mrb, class_iv_ptr(mrb->object_class), sym, &v)) {
+  if (rom_frame && rom_frame_const(mrb, c, sym, &v)) {
     return v;
   }
   if (c->tt == MRB_TT_SCLASS) {
@@ -1431,7 +1455,7 @@ mrb_vm_const_get_noraise(mrb_state *mrb, const mrb_callinfo *ci, mrb_sym sym)
     if (!c2) c2 = mrb->object_class;
     if (iv_get(mrb, class_iv_ptr(c2), sym, &v)) return v;
   }
-  if (rom_frame && iv_get(mrb, class_iv_ptr(mrb->object_class), sym, &v)) return v;
+  if (rom_frame && rom_frame_const(mrb, c, sym, &v)) return v;
   if (c->tt == MRB_TT_SCLASS) {
     v = const_get_nohook(mrb, c, sym, TRUE);
     if (!mrb_undef_p(v)) return v;

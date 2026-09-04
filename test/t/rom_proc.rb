@@ -35,6 +35,12 @@ assert('a class variable read and written from a ROM proc') do
   assert_equal "class variable", RomProcChild.new.defined_cvar
 end
 
+assert('a singleton method from a ROM proc reads the constants beside it') do
+  # the scope outside `def self.name` is the class the singleton is attached
+  # to, which a proc carrying no chain of its own has to be told about
+  assert_equal "lexical", RomProcChild.lexical
+end
+
 assert('a method from a ROM proc answers for the class that holds it') do
   assert_true RomProcChild.new.respond_to?(:lexical)
   assert_false RomProcBase.new.respond_to?(:lexical)
