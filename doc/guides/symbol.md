@@ -94,7 +94,9 @@ answer none of it from cache.
 
 Adding a symbol therefore needs `presym.list` extended. Run
 
-    rake presym:update
+```console
+rake presym:update
+```
 
 with a configuration that builds every gem the symbol reaches, and commit the
 result together with the code that introduced it. CI runs `rake presym:check`,
