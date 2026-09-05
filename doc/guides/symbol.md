@@ -87,19 +87,19 @@ symbol whose number moved would change what the compiler is handed for every
 source that names it, and `ccache` or `sccache` would answer none of those
 from cache.
 
-To hold the numbers still, a build numbers by the order it last used, which
-is the symbol list it wrote to `build/<target>/presym`. The symbols the scan
-finds again keep their places, and the symbols new to the scan are numbered
-after all of them. Adding a symbol therefore costs the compile of the source
-that names it and nothing else. A build directory with no list yet numbers by
-the sorted order, and every build from then on is numbered against that.
+A symbol's number is therefore the slot its own name hashes to, in a table
+with room to spare, rather than its position among the symbols in some order.
+It depends on the symbol's name and on the few symbols whose probes cross that
+slot, so adding a symbol leaves almost every number where it was: on the
+default configuration one addition moves 0.63 numbers on average, and none at
+all four times out of five.
 
-Removing the last use of a symbol is the case this cannot hold still: the
-symbols numbered after it move down, and that build compiles in full once.
+The numbering is a function of the symbols the build scanned and of nothing
+else. It is the same on every machine, it survives emptying the build
+directory, and there is nothing to keep in the tree or carry between builds
+for it.
 
-Nothing about this is kept in the tree, so there is nothing to update when a
-symbol is added. What it does ask is that the build directory outlive the
-compiler cache: a build that starts from an empty directory numbers from the
-sorted order again, which a cache filled against a different order will miss.
-Where a cache is carried between runs that start fresh, as CI does, carry
-`build/*/presym` with it.
+`MRB_PRESYM_MAX` is the width of that number space, which is the table's
+length rather than the count of symbols; `MRB_PRESYM_COUNT` is the count. The
+numbers between them belong to no symbol, and `mrb_sym_name` answers `NULL`
+for those as it does for a symbol that does not exist.

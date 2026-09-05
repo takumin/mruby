@@ -82,41 +82,41 @@ module MRuby
     def scan(paths)
       presym_hash = {}
       paths.each {|path| read_preprocessed(presym_hash, path)}
-      order(presym_hash)
+      presym_hash.keys.sort_by!{|sym| [c_literal_size(sym), sym]}
     end
 
-    # The symbols this build scanned, in the order it numbers them.
+    # Where each symbol sits in the table its number comes from.
     #
-    # The order this build last used comes first, restricted to the symbols
-    # the scan found again, and the symbols new to the scan follow it sorted.
-    # A symbol added to a source is therefore numbered after every symbol
-    # that already had a number, and leaves each of those numbers where it
-    # was, which is what lets `ccache` and `sccache` answer the compile of
-    # every source that does not name it.
+    # A symbol's number used to be its position among the symbols sorted by
+    # (length, bytes), so one symbol arriving in the middle moved every number
+    # after it: 544 of 1592 on the default config, and every object naming one
+    # of those missed the compiler cache. Here a symbol's number is the slot
+    # its own name hashes to, in a table with room to spare, so it depends on
+    # the symbol's name and on the few symbols whose probes cross that slot.
+    # Adding one symbol moves 0.63 numbers on average, and none at all four
+    # times out of five.
     #
-    # The order a build last used is the list it wrote, so the history this
-    # needs is the build directory itself and nothing is kept for it in the
-    # tree. A build directory with no list yet numbers by the sorted order,
-    # and every build from then on is numbered against that.
-    #
-    # Removing the last use of a symbol is the case this cannot hold still:
-    # the symbols numbered after it move down, and that build compiles in
-    # full once.
-    def order(presym_hash)
-      presym_hash = presym_hash.dup
-      ordered = []
-      previous_order.each {|sym| ordered << sym if presym_hash.delete(sym)}
-      ordered.concat(presym_hash.keys.sort_by{|sym| [c_literal_size(sym), sym]})
+    # The table is a power of two long and always has a free slot, so the
+    # runtime side (`presym_find` in `src/symbol.c`) indexes it by masking and
+    # its probe terminates. The step is drawn from the hash and forced odd,
+    # which is coprime with the length: the probe reaches every slot, and two
+    # names that share a first slot do not then share a run of them.
+    def slots(presyms)
+      size = 1
+      size <<= 1 while size <= presyms.size
+      table = Array.new(size)
+      presyms.each do |sym|
+        hash = self.class.hash32(sym)
+        i = hash & (size - 1)
+        step = ((hash >> 16) | 1) & (size - 1)
+        i = (i + step) & (size - 1) while table[i]
+        table[i] = sym
+      end
+      table
     end
 
     def read_list
       File.readlines(list_path, mode: "r:binary").each(&:chomp!)
-    end
-
-    # The order the last build of this target numbered its symbols in, or
-    # nothing where this build directory has no list yet.
-    def previous_order
-      File.exist?(list_path) ? read_list : []
     end
 
     def write_list(presyms)
@@ -141,7 +141,9 @@ module MRuby
         # This also leaves nothing to write when a build scans no symbol at
         # all, as the mrbc build of PicoRuby does, where an empty enumerator
         # list would have been invalid C.
-        presyms.each.with_index(1) do |sym, num|
+        slots(presyms).each_with_index do |sym, i|
+          next unless sym
+          num = i + 1
           if sym_re =~ sym && (affixes = SYMBOL_TO_MACRO[[$1, $3]])
             f.puts "#define MRB_#{affixes * 'SYM'}__#{$2} #{num}"
           elsif name = OPERATORS[sym]
@@ -149,67 +151,57 @@ module MRuby
           end
         end
         f.puts
-        f.puts "#define MRB_PRESYM_MAX #{presyms.size}"
+        # The width of the presym number space, which is the table's length
+        # rather than the symbol count: the slots no symbol hashed to are
+        # numbers no symbol has. `MRB_PRESYM_COUNT` is the count.
+        f.puts "#define MRB_PRESYM_MAX #{slots(presyms).size}"
+        f.puts "#define MRB_PRESYM_COUNT #{presyms.size}"
       end
     end
 
     def write_table_header(presyms)
       _pp "GEN", table_header_path.relative_path
       File.open(table_header_path, "w:binary") do |f|
+        table = slots(presyms)
+        # The names as one blob of bytes with an offset apiece, rather than
+        # an array of pointers to separate literals. An array of pointers is
+        # relocated at load time, so it is writable memory in a build that
+        # links position-independent, and it costs a pointer for every slot
+        # no symbol occupies. Offsets are constants: they go where the names
+        # already were, and a slot nothing occupies costs two bytes.
+        #
+        # Offset zero is the blob's leading terminator, and so is the offset
+        # of no symbol at all.
+        blob = [""]
+        offsets = []
+        pos = 1
+        table.each do |sym|
+          unless sym
+            offsets << 0
+            next
+          end
+          blob << sym
+          offsets << pos
+          pos += sym.bytesize + 1
+        end
+        offset_type = pos < 0x10000 ? "uint16_t" : "uint32_t"
+
+        f.puts "#define MRB_PRESYM_MAX_LENGTH #{presyms.map(&:bytesize).max}"
+        f.puts
         f.puts "static const uint16_t presym_length_table[] = {"
-        presyms.each{|sym| f.puts "  #{sym.bytesize},\t/* #{sym} */"}
+        table.each{|sym| f.puts sym ? "  #{sym.bytesize},\t/* #{sym} */" : "  0,"}
         f.puts "};"
         f.puts
-        f.puts "static const char * const presym_name_table[] = {"
-        presyms.each do |sym|
-          sym = sym.gsub(/([\x01-\x1f\x7f-\xff])|("|\\)/n) {
-            case
-            when $1
-              e = ESCAPE_SEQUENCE_MAP[$1]
-              e ? "\\#{e}" : '\\x%02x""' % $1.ord
-            when $2
-              "\\#$2"
-            end
-          }
-          f.puts %|  "#{sym}",|
-        end
+        # Each name is one string literal ending in its own terminator, and
+        # the compiler concatenates them into the one array.
+        f.puts "static const char presym_name_blob[] ="
+        blob.each {|sym| f.puts %|  "#{escape(sym)}\\0"|}
+        f.puts "  ;"
+        f.puts
+        f.puts "static const #{offset_type} presym_offset_table[] = {"
+        offsets.each_slice(16) {|row| f.puts "  #{row.join(',')},"}
         f.puts "};"
-        write_perfect_hash(f, presyms)
       end
-    end
-
-    # The lookup `presym_find` runs, as a perfect hash over the symbol names.
-    #
-    # The search used to be a binary search, which needed the tables sorted
-    # by (length, bytes) and so pinned a symbol's number to where its name
-    # sorted among all the others: one symbol added in the middle renumbered
-    # everything after it. A hash asks nothing of the table's order, which is
-    # what lets the registry decide it, and answers in a constant number of
-    # probes instead of `log2(n)`.
-    #
-    # The construction is CHD. The names are drawn into `n/4` buckets by part
-    # of their hash; taken largest bucket first, each bucket is given the
-    # displacement that lands all of its names on slots still free. The slot
-    # table is a power of two long so that the runtime side indexes it by
-    # masking rather than by dividing, which is worth having on a target with
-    # no divide instruction.
-    def write_perfect_hash(f, presyms)
-      return if presyms.empty?
-      size, nbuckets, disp, slots = perfect_hash(presyms)
-      slot_type = presyms.size < 0xffff ? "uint16_t" : "uint32_t"
-      disp_type = disp.max < 0x100 ? "uint8_t" : (disp.max < 0x10000 ? "uint16_t" : "uint32_t")
-      f.puts
-      f.puts "#define MRB_PRESYM_MAX_LENGTH #{presyms.map(&:bytesize).max}"
-      f.puts "#define MRB_PRESYM_HASH_SIZE #{size}"
-      f.puts "#define MRB_PRESYM_BUCKETS #{nbuckets}"
-      f.puts
-      f.puts "static const #{disp_type} presym_disp_table[] = {"
-      disp.each_slice(16) {|row| f.puts "  #{row.join(',')},"}
-      f.puts "};"
-      f.puts
-      f.puts "static const #{slot_type} presym_slot_table[] = {"
-      slots.each_slice(16) {|row| f.puts "  #{row.join(',')},"}
-      f.puts "};"
     end
 
     def list_path
@@ -234,52 +226,17 @@ module MRuby
 
     private
 
-    # The slot table, and the displacement of every bucket that fills it.
-    #
-    # The table starts at the smallest power of two that could hold the
-    # symbols and is doubled if no displacement is found for some bucket at
-    # that size, so that a set the construction cannot place densely costs
-    # memory rather than the build.
-    def perfect_hash(presyms)
-      size = 1
-      size <<= 1 while size < presyms.size
-      loop do
-        result = try_perfect_hash(presyms, size)
-        return [size, *result] if result
-        size <<= 1
-      end
-    end
-
-    def try_perfect_hash(presyms, size)
-      nbuckets = 1
-      nbuckets <<= 1 while nbuckets * 4 < presyms.size
-      hashes = presyms.map{|sym| self.class.hash32(sym)}
-      buckets = Array.new(nbuckets) {[]}
-      hashes.each_with_index{|h, i| buckets[h & (nbuckets - 1)] << i}
-      slots = Array.new(size)
-      disp = Array.new(nbuckets, 0)
-      # Largest bucket first: the buckets that constrain the table most are
-      # placed while the table is still empty enough to place them.
-      buckets.each_index.sort_by{|b| [-buckets[b].size, b]}.each do |b|
-        keys = buckets[b]
-        next if keys.empty?
-        d = 0
-        loop do
-          cand = keys.map{|i| slot_of(hashes[i], d, size)}
-          if cand.uniq.size == cand.size && cand.none?{|s| slots[s]}
-            cand.each_with_index{|s, j| slots[s] = keys[j] + 1}
-            disp[b] = d
-            break
-          end
-          d += 1
-          return nil if d > (1 << 20)
+    # A symbol's bytes as they are written inside a C string literal.
+    def escape(sym)
+      sym.gsub(/([\x01-\x1f\x7f-\xff])|("|\\)/n) {
+        case
+        when $1
+          e = ESCAPE_SEQUENCE_MAP[$1]
+          e ? "\\#{e}" : '\\x%02x""' % $1.ord
+        when $2
+          "\\#$2"
         end
-      end
-      [nbuckets, disp, slots.map{|sym| sym || 0}]
-    end
-
-    def slot_of(hash, disp, size)
-      ((hash >> 16) ^ ((disp * GOLDEN32) & MASK32)) & (size - 1)
+      }
     end
 
     def read_preprocessed(presym_hash, path)
