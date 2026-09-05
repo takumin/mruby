@@ -47,6 +47,13 @@ MRB_API mrb_value mrb_num_mul(mrb_state *mrb, mrb_value x, mrb_value y);
 MRB_API mrb_value mrb_uint64_value(mrb_state *mrb, uint64_t v);
 MRB_API mrb_value mrb_int64_value(mrb_state *mrb, int64_t v);
 
+/* The same for the widths a C library counts in, whose own width varies by
+   platform: a size_t is 32 bits where a time_t beside it is 64.  Spelled here
+   so that a caller passes what it holds and does not have to know which of the
+   two above that is today. */
+#define mrb_size_value(mrb, v)   mrb_uint64_value((mrb), (uint64_t)(v))
+#define mrb_ssize_value(mrb, v)  mrb_int64_value((mrb), (int64_t)(v))
+
 MRB_API mrb_value mrb_integer_to_str(mrb_state *mrb, mrb_value x, mrb_int base);
 MRB_API char *mrb_int_to_cstr(char *buf, size_t len, mrb_int n, mrb_int base);
 
