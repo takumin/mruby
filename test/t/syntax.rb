@@ -1632,6 +1632,50 @@ assert('defined? on constant paths (A::B)') do
   assert_equal 'constant', defined?(Float::INFINITY) if Object.const_defined?(:Float)
 end
 
+module DefinedDeepOuter
+  module Mid
+    Leaf = 1
+  end
+  NotAModule = 1
+
+  def self.from_lexical_scope;      defined?(Mid::Leaf); end
+  def self.from_lexical_scope_miss; defined?(Mid::Missing); end
+end
+
+class DefinedPathRaises
+  def self.boom; raise 'defined? evaluated a constant path root'; end
+end
+
+assert('defined? on a constant path of any depth') do
+  assert_equal 'constant', defined?(DefinedDeepOuter::Mid)
+  assert_equal 'constant', defined?(DefinedDeepOuter::Mid::Leaf)
+  assert_nil defined?(DefinedDeepOuter::Mid::Missing)
+  assert_nil defined?(DefinedDeepOuter::Missing::Leaf)
+  assert_nil defined?(NoSuchOuterAtAll::Mid::Leaf)
+
+  # the walk stops where a name resolves to something that is not a module
+  assert_nil defined?(DefinedDeepOuter::NotAModule::Leaf)
+  assert_nil defined?(DefinedDeepOuter::Mid::Leaf::Deeper)
+
+  # the first name resolves in the lexical scope of the code asking
+  assert_equal 'constant', DefinedDeepOuter.from_lexical_scope
+  assert_nil DefinedDeepOuter.from_lexical_scope_miss
+end
+
+assert('defined? on a constant path rooted at Object') do
+  assert_equal 'constant', defined?(::Object)
+  assert_equal 'constant', defined?(::DefinedDeepOuter)
+  assert_equal 'constant', defined?(::DefinedDeepOuter::Mid::Leaf)
+  assert_nil defined?(::NoSuchOuterAtAll)
+  assert_nil defined?(::DefinedDeepOuter::Missing)
+end
+
+assert('defined? does not evaluate a constant path') do
+  # a root that would have to be evaluated is not a path the compiler names,
+  # and the call it is built from stays unmade
+  assert_nil defined?(DefinedPathRaises.boom::Leaf)
+end
+
 assert('defined? on control flow, jumps and definitions') do
   lv = 1
 
