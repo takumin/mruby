@@ -1830,6 +1830,98 @@ assert('defined? evaluates each link of a receiver chain once') do
   assert_nil defined?(nil&.to_s&.no_such_method_at_all)
 end
 
+assert('defined? weighs the arguments of a call') do
+  lv = 1
+  assert_equal 'method', defined?(assert(lv))
+  assert_equal 'method', defined?(assert(1, 'two', :three))
+  assert_nil defined?(assert(no_such_thing_at_all))
+  assert_nil defined?(assert(1, no_such_thing_at_all))
+  assert_nil defined?(assert(no_such_thing_at_all, 1))
+  assert_nil defined?(assert(@no_such_ivar_at_all))
+  assert_nil defined?(assert($no_such_global_at_all))
+  assert_nil defined?(assert(NoSuchConstantAtAll))
+
+  # an argument is weighed to whatever depth it has
+  assert_nil defined?(assert(no_such_thing_at_all + 1))
+  assert_nil defined?(assert(assert(no_such_thing_at_all)))
+  assert_nil defined?(assert(no_such_thing_at_all.size))
+
+  # a call through a receiver has its arguments weighed too, safe
+  # navigation among them
+  assert_equal 'method', defined?(1.to_s(lv))
+  assert_nil defined?(1.to_s(no_such_thing_at_all))
+  assert_nil defined?(nil&.to_s(no_such_thing_at_all))
+
+  # nothing is evaluated for an argument that is not there, the receiver
+  # of the call least of all
+  before = DefinedRecvRaises.count
+  assert_nil defined?(DefinedRecvRaises.seen.to_s(no_such_thing_at_all))
+  assert_equal before, DefinedRecvRaises.count
+end
+
+def defined_anonymous_forwarding(*, **, &)
+  [defined?(assert(*)), defined?(assert(**)), defined?(assert(&))]
+end
+
+def defined_forwarding(...)
+  defined?(assert(...))
+end
+
+assert('defined? weighs the arguments of a call however they are passed') do
+  lv = 1
+  h = {k: 1}
+  assert_equal 'method', defined?(assert(*lv))
+  assert_nil defined?(assert(*no_such_thing_at_all))
+  assert_equal 'method', defined?(assert(k: lv))
+  assert_nil defined?(assert(k: no_such_thing_at_all))
+  assert_nil defined?(assert(no_such_thing_at_all => 1))
+  assert_equal 'method', defined?(assert(**h))
+  assert_nil defined?(assert(**no_such_thing_at_all))
+  assert_nil defined?(assert({a: no_such_thing_at_all}))
+  assert_nil defined?(assert([*no_such_thing_at_all]))
+
+  # what is forwarded by name alone holds nothing to weigh
+  assert_equal ['method', 'method', 'method'], defined_anonymous_forwarding(1)
+  assert_equal 'method', defined_forwarding(1)
+end
+
+assert('defined? leaves alone the parts of a call it does not weigh') do
+  assert_equal 'method', defined?(assert(&no_such_thing_at_all))
+  assert_equal 'method', defined?(assert(1..no_such_thing_at_all))
+
+  # a call carrying a block is an expression whatever its arguments are
+  assert_equal 'expression', defined?(assert(no_such_thing_at_all) { })
+  assert_equal 'expression', defined?(assert(*no_such_thing_at_all) { })
+end
+
+assert('defined? weighs the elements of an array literal') do
+  lv = 1
+  assert_equal 'expression', defined?([1, lv])
+  assert_equal 'expression', defined?([*lv])
+  assert_nil defined?([no_such_thing_at_all])
+  assert_nil defined?([1, no_such_thing_at_all])
+  assert_nil defined?([[no_such_thing_at_all]])
+  assert_nil defined?([*no_such_thing_at_all])
+  assert_nil defined?([1, {k: no_such_thing_at_all}])
+  assert_nil defined?(assert([[no_such_thing_at_all]]))
+end
+
+assert('defined? weighs the keys and values of a hash literal') do
+  lv = 1
+  h = {k: 1}
+  assert_equal 'expression', defined?({})
+  assert_equal 'expression', defined?({k: lv, lv => 1, **h, lv:})
+  assert_nil defined?({k: no_such_thing_at_all})
+  assert_nil defined?({no_such_thing_at_all => 1})
+  assert_nil defined?({**no_such_thing_at_all})
+  assert_nil defined?({no_such_thing_at_all:})
+  assert_nil defined?({k: [no_such_thing_at_all]})
+
+  # the ends of a range are not weighed, inside a literal or on their own
+  assert_equal 'expression', defined?({k: 1..no_such_thing_at_all})
+  assert_equal 'expression', defined?(1..no_such_thing_at_all)
+end
+
 assert('defined? on control flow, jumps and definitions') do
   lv = 1
 
