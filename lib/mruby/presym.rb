@@ -84,20 +84,25 @@ module MRuby
       sym_re = /\A(#{prefix_re})?([\w&&\D]\w*)(#{suffix_re})?\z/o
       _pp "GEN", id_header_path.relative_path
       File.open(id_header_path, "w:binary") do |f|
-        # PicoRuby builds the VM core as a gem, so its mrbc build scans
-        # zero presyms. An empty enum is invalid C, so skip the enum then.
-        unless presyms.empty?
-          f.puts "enum mruby_presym {"
-          presyms.each.with_index(1) do |sym, num|
-            if sym_re =~ sym && (affixes = SYMBOL_TO_MACRO[[$1, $3]])
-              f.puts "  MRB_#{affixes * 'SYM'}__#{$2} = #{num},"
-            elsif name = OPERATORS[sym]
-              f.puts "  MRB_OPSYM__#{name} = #{num},"
-            end
+        # One macro per symbol, rather than one enumerator list over all of
+        # them. An enumerator list is C text, so every source including this
+        # header carries all of it into its preprocessed form: a symbol added
+        # for one source would change what the compiler is handed for every
+        # other source, and `ccache` and `sccache`, which key a compile on
+        # exactly that, would miss on all of them. A macro no source expands
+        # leaves nothing behind to key on.
+        #
+        # This also leaves nothing to write when a build scans no symbol at
+        # all, as the mrbc build of PicoRuby does, where an empty enumerator
+        # list would have been invalid C.
+        presyms.each.with_index(1) do |sym, num|
+          if sym_re =~ sym && (affixes = SYMBOL_TO_MACRO[[$1, $3]])
+            f.puts "#define MRB_#{affixes * 'SYM'}__#{$2} #{num}"
+          elsif name = OPERATORS[sym]
+            f.puts "#define MRB_OPSYM__#{name} #{num}"
           end
-          f.puts "};"
-          f.puts
         end
+        f.puts
         f.puts "#define MRB_PRESYM_MAX #{presyms.size}"
       end
     end
