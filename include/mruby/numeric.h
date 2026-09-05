@@ -38,6 +38,15 @@ MRB_API mrb_value mrb_num_mul(mrb_state *mrb, mrb_value x, mrb_value y);
 #define mrb_num_plus(mrb, x, y) mrb_num_add(mrb, x, y)
 #define mrb_num_minus(mrb, x, y) mrb_num_sub(mrb, x, y)
 
+/* Answer with the Integer that holds a C integer of a width mrb_int may be
+   too narrow for: a time_t, a size_t, a count.  Inside mrb_int the answer is a
+   Fixnum, outside it a Bignum, and where the build carries no mruby-bigint
+   there is no Integer wide enough and the call raises RangeError.  Reach for
+   these rather than mrb_bint_* so a caller needs neither the gem's headers nor
+   an #ifdef of its own. */
+MRB_API mrb_value mrb_uint64_value(mrb_state *mrb, uint64_t v);
+MRB_API mrb_value mrb_int64_value(mrb_state *mrb, int64_t v);
+
 MRB_API mrb_value mrb_integer_to_str(mrb_state *mrb, mrb_value x, mrb_int base);
 MRB_API char *mrb_int_to_cstr(char *buf, size_t len, mrb_int n, mrb_int base);
 

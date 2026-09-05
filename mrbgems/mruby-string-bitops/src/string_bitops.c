@@ -10,6 +10,7 @@
  */
 #include <mruby.h>
 #include <mruby/string.h>
+#include <mruby/numeric.h>
 #include <mruby/internal.h>
 #include <string.h>
 #include <stdint.h>
@@ -407,14 +408,7 @@ mrb_str_bit_count(mrb_state *mrb, mrb_value str)
 
   mrb_get_args(mrb, "");
   count = bitop_count_bits((const unsigned char*)RSTRING_PTR(str), RSTRING_LEN(str));
-  if (count <= (uint64_t)MRB_INT_MAX) {
-    return mrb_int_value(mrb, (mrb_int)count);
-  }
-#ifdef MRB_USE_BIGINT
-  return mrb_bint_new_uint64(mrb, count);
-#else
-  mrb_raise(mrb, E_RANGE_ERROR, "bit count too big for Integer");
-#endif
+  return mrb_uint64_value(mrb, count);
 }
 
 /*

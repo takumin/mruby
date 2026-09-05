@@ -36,6 +36,49 @@ mrb_int_overflow(mrb_state *mrb, const char *reason)
 }
 
 /**
+ * Answer with the Integer that holds `v`, whatever width the caller counted
+ * it in.  A value inside `mrb_int` is a Fixnum, one outside it a Bignum, and
+ * where the build carries no mruby-bigint there is no Integer wide enough and
+ * this raises.
+ *
+ * A caller reaching for this has a C integer that mrb_int may be too narrow
+ * for: a `time_t`, a `size_t`, a count of bits.  Answering it here rather than
+ * at each of those keeps one `#ifdef MRB_USE_BIGINT` in the tree instead of
+ * one per caller, and keeps them agreeing on what an unrepresentable value is.
+ * They did not: a time past 2038 read back as a Float where a bit count of the
+ * same size raised, so `Time#to_i` answered with something that was not an
+ * integer.
+ */
+MRB_API mrb_value
+mrb_uint64_value(mrb_state *mrb, uint64_t v)
+{
+  if (v <= (uint64_t)MRB_INT_MAX) {
+    return mrb_int_value(mrb, (mrb_int)v);
+  }
+#ifdef MRB_USE_BIGINT
+  return mrb_bint_new_uint64(mrb, v);
+#else
+  mrb_int_overflow(mrb, "conversion");
+#endif
+}
+
+/**
+ * The signed counterpart of mrb_uint64_value().  See its comment.
+ */
+MRB_API mrb_value
+mrb_int64_value(mrb_state *mrb, int64_t v)
+{
+  if (v >= (int64_t)MRB_INT_MIN && v <= (int64_t)MRB_INT_MAX) {
+    return mrb_int_value(mrb, (mrb_int)v);
+  }
+#ifdef MRB_USE_BIGINT
+  return mrb_bint_new_int64(mrb, v);
+#else
+  mrb_int_overflow(mrb, "conversion");
+#endif
+}
+
+/**
  * This function is called to raise a ZeroDivisionError. It's marked
  * mrb_noreturn as it always raises an exception and does not return.
  *

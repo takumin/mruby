@@ -214,7 +214,16 @@ assert('Time#to_i wider than mrb_int') do
     skip "time_t is not wider than 32 bits"
   end
   assert_equal(-753, t.utc.year)
-  assert_equal(sec, t.to_i.to_f)
+  # A time outside mrb_int is a Bignum, and a build without mruby-bigint has
+  # no Integer for it and raises rather than answering with a Float: `to_i`
+  # gives back an integer or nothing.
+  i = begin
+    t.to_i
+  rescue RangeError
+    skip "no Integer here is wider than mrb_int"
+  end
+  assert_kind_of(Integer, i)
+  assert_equal(sec, i.to_f)
 end
 
 assert('Time#usec', '15.2.19.7.26') do

@@ -385,18 +385,14 @@ static mrb_value
 time_value_from_time_t(mrb_state *mrb, time_t t)
 {
   if (!fixable_time_t_p(t)) {
-#if defined(MRB_USE_BIGINT)
+    /* Past what mrb_int holds the answer is a Bignum, and where the build has
+       no mruby-bigint there is no Integer wide enough and this raises.  It
+       used to answer with a Float there instead, which made `Time#to_i` give
+       back something that was not an integer. */
     if (MRB_TIME_T_UINT) {
-      return mrb_bint_new_uint64(mrb, (uint64_t)t);
+      return mrb_uint64_value(mrb, (uint64_t)t);
     }
-    else {
-      return mrb_bint_new_int64(mrb, (int64_t)t);
-    }
-#elif !defined(MRB_NO_FLOAT)
-    return mrb_float_value(mrb, (mrb_float)t);
-#else
-    mrb_raise(mrb, E_RANGE_ERROR, "Time out of range");
-#endif
+    return mrb_int64_value(mrb, (int64_t)t);
   }
   return mrb_int_value(mrb, (mrb_int)t);
 }
