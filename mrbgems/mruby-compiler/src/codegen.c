@@ -6359,13 +6359,23 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         helper = MRC_SYM_2(defined_super_q);
         break;
       case PM_CALL_NODE:
+      {
+        pm_call_node_t *call = (pm_call_node_t *)value;
+        /* CRuby answers "expression" for a call carrying a literal block and
+           for a safe-navigation call, without asking whether the method is
+           there; a block passed as `&arg` keeps the call an ordinary one */
+        if ((call->block != NULL && nint(call->block) == PM_BLOCK_NODE) ||
+            (call->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
+          type = "expression";
+        }
         /* a bare method call on self (no explicit receiver, so no operand to
            evaluate); a call with a receiver would need to evaluate it */
-        if (((pm_call_node_t *)value)->receiver == NULL) {
+        else if (call->receiver == NULL) {
           helper = MRC_SYM_2(defined_method_q);
-          arg = ((pm_call_node_t *)value)->name;
+          arg = call->name;
         }
         break;
+      }
       default:
         break;
       }
