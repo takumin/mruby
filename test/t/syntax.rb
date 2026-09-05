@@ -1729,6 +1729,56 @@ assert('defined? answers nil where evaluating a receiver raises') do
   assert_equal before + 1, DefinedRecvRaises.count
 end
 
+assert('defined? weighs the arguments of a call') do
+  lv = 1
+  assert_equal 'method', defined?(assert(lv))
+  assert_equal 'method', defined?(assert(1, 'two', :three))
+  assert_nil defined?(assert(no_such_thing_at_all))
+  assert_nil defined?(assert(1, no_such_thing_at_all))
+  assert_nil defined?(assert(no_such_thing_at_all, 1))
+  assert_nil defined?(assert(@no_such_ivar_at_all))
+  assert_nil defined?(assert($no_such_global_at_all))
+  assert_nil defined?(assert(NoSuchConstantAtAll))
+
+  # an argument is weighed to whatever depth it has
+  assert_nil defined?(assert(no_such_thing_at_all + 1))
+  assert_nil defined?(assert(assert(no_such_thing_at_all)))
+  assert_nil defined?(assert(no_such_thing_at_all.size))
+
+  # a call through a receiver has its arguments weighed too
+  assert_equal 'method', defined?(1.to_s(lv))
+  assert_nil defined?(1.to_s(no_such_thing_at_all))
+
+  # nothing is evaluated for an argument that is not there, the receiver
+  # of the call least of all
+  before = DefinedRecvRaises.count
+  assert_nil defined?(DefinedRecvRaises.seen.to_s(no_such_thing_at_all))
+  assert_equal before, DefinedRecvRaises.count
+end
+
+assert('defined? leaves alone the parts of a call it does not weigh') do
+  assert_equal 'method', defined?(assert(*no_such_thing_at_all))
+  assert_equal 'method', defined?(assert(k: no_such_thing_at_all))
+  assert_equal 'method', defined?(assert(&no_such_thing_at_all))
+  assert_equal 'method', defined?(assert({a: no_such_thing_at_all}))
+  assert_equal 'method', defined?(assert(1..no_such_thing_at_all))
+
+  # a call carrying a block is an expression whatever its arguments are
+  assert_equal 'expression', defined?(assert(no_such_thing_at_all) { })
+end
+
+assert('defined? weighs the elements of an array literal') do
+  lv = 1
+  assert_equal 'expression', defined?([1, lv])
+  assert_nil defined?([no_such_thing_at_all])
+  assert_nil defined?([1, no_such_thing_at_all])
+  assert_nil defined?([[no_such_thing_at_all]])
+  assert_nil defined?(assert([[no_such_thing_at_all]]))
+
+  # a splat is not an element the walk looks into
+  assert_equal 'expression', defined?([*no_such_thing_at_all])
+end
+
 assert('defined? on control flow, jumps and definitions') do
   lv = 1
 
