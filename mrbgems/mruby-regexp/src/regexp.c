@@ -79,7 +79,7 @@ re_check_initialized(mrb_state *mrb, mrb_value re)
 typedef struct {
   mrb_value source;        /* source string */
   mrb_value regexp;        /* Regexp object (for named captures) */
-  int *captures;           /* capture positions [start0,end0,start1,end1,...] */
+  mrb_int *captures;       /* capture positions [start0,end0,start1,end1,...] */
   int num_captures;        /* number of capture groups (including 0) */
 } mrb_match_data;
 
@@ -421,7 +421,7 @@ re_search_binary(mrb_state *mrb, mrb_value re, mrb_value str, mrb_bool unread,
 /* Create MatchData from captures, and make it the match the globals
    describe. */
 static mrb_value
-create_matchdata(mrb_state *mrb, mrb_value regexp, mrb_value str, int *captures, int ncap)
+create_matchdata(mrb_state *mrb, mrb_value regexp, mrb_value str, mrb_int *captures, int ncap)
 {
   /* Snapshot the subject: MatchData reports the string as it was at match
      time, so later in-place changes to it must not be visible here. */
@@ -437,13 +437,13 @@ create_matchdata(mrb_state *mrb, mrb_value regexp, mrb_value str, int *captures,
      matchdata_free() takes, and after that what the object holds is everything
      the match asked for. */
   mrb_value obj = mrb_obj_value(mrb_data_object_alloc(mrb, md_class, NULL, &matchdata_type));
-  mrb_match_data *md = (mrb_match_data*)mrb_malloc(mrb, sizeof(mrb_match_data) + sizeof(int) * ncap);
+  mrb_match_data *md = (mrb_match_data*)mrb_malloc(mrb, sizeof(mrb_match_data) + sizeof(mrb_int) * ncap);
   DATA_PTR(obj) = md;
   md->source = str;
   md->regexp = regexp;
   md->num_captures = ncap / 2;
-  md->captures = (int*)(md + 1);
-  memcpy(md->captures, captures, sizeof(int) * ncap);
+  md->captures = (mrb_int*)(md + 1);
+  memcpy(md->captures, captures, sizeof(mrb_int) * ncap);
   /* Keep `source` and `regexp` GC-reachable via instance variables.
    * The mrb_values are also held in mrb_match_data, but C-allocated
    * structs are not scanned by the GC. */
@@ -498,8 +498,8 @@ exec_match(mrb_state *mrb, mrb_value self, mrb_value str, mrb_int pos,
   mrb_bool binary = re_search_binary(mrb, self, str, unread, &pat);
 
   int cap_size = pat->num_captures * 2;
-  int captures[RE_MAX_CAPTURES * 2];
-  memset(captures, -1, sizeof(int) * cap_size);
+  mrb_int captures[RE_MAX_CAPTURES * 2];
+  memset(captures, -1, sizeof(mrb_int) * cap_size);
   int ncap = mrb_re_exec(mrb, pat, RSTRING_PTR(str), RSTRING_LEN(str), pos,
                      captures, cap_size, binary);
   re_check_exec_error(mrb, ncap);
@@ -594,7 +594,7 @@ re_byte_rsearch(mrb_state *mrb, mrb_value re, mrb_value str, mrb_int limit)
   mrb_bool binary = re_search_binary(mrb, re, str, FALSE, &pat);
 
   int cap_size = pat->num_captures * 2;
-  int captures[RE_MAX_CAPTURES * 2];
+  mrb_int captures[RE_MAX_CAPTURES * 2];
   int ncap = mrb_re_rexec(mrb, pat, RSTRING_PTR(str), RSTRING_LEN(str), limit,
                           captures, cap_size, binary);
   re_check_exec_error(mrb, ncap);
@@ -1105,7 +1105,7 @@ regexp_union(mrb_state *mrb, mrb_value self)
    with. A NULL pattern names nothing, which is the answer for a match made
    without a pattern to compile: a literal String one. */
 static int
-re_name_to_group(const int *captures, int ncap, mrb_regexp_pattern *pat,
+re_name_to_group(const mrb_int *captures, int ncap, mrb_regexp_pattern *pat,
                  const char *name, mrb_int name_len)
 {
   /* A stored name never exceeds RE_MAX_NAME_LEN, so a longer request can
@@ -1166,8 +1166,8 @@ static mrb_value
 md_nth(mrb_state *mrb, mrb_match_data *md, mrb_int idx)
 {
   if (idx < 0 || idx >= md->num_captures) return mrb_nil_value();
-  int start = md->captures[idx * 2];
-  int end = md->captures[idx * 2 + 1];
+  mrb_int start = md->captures[idx * 2];
+  mrb_int end = md->captures[idx * 2 + 1];
   if (start < 0) return mrb_nil_value();
 
   return re_byte_substr(mrb, md->source, start, end - start);
@@ -1252,8 +1252,8 @@ matchdata_to_ary(mrb_state *mrb, mrb_value self, int from)
 
   mrb_value ary = mrb_ary_new_capa(mrb, md->num_captures - from);
   for (int i = from; i < md->num_captures; i++) {
-    int s = md->captures[i * 2];
-    int e = md->captures[i * 2 + 1];
+    mrb_int s = md->captures[i * 2];
+    mrb_int e = md->captures[i * 2 + 1];
     if (s < 0) {
       mrb_ary_push(mrb, ary, mrb_nil_value());
     }
@@ -1367,7 +1367,7 @@ matchdata_begin(mrb_state *mrb, mrb_value self)
   mrb_match_data *md = DATA_GET_PTR(mrb, self, &matchdata_type, mrb_match_data);
   if (!md) return mrb_nil_value();
   mrb_int idx = matchdata_group_arg(mrb, md, arg);
-  int pos = md->captures[idx * 2];
+  mrb_int pos = md->captures[idx * 2];
   if (pos < 0) return mrb_nil_value();
   return mrb_int_value(mrb, re_byte_to_char(mrb, md->source, pos));
 }
@@ -1381,7 +1381,7 @@ matchdata_end(mrb_state *mrb, mrb_value self)
   mrb_match_data *md = DATA_GET_PTR(mrb, self, &matchdata_type, mrb_match_data);
   if (!md) return mrb_nil_value();
   mrb_int idx = matchdata_group_arg(mrb, md, arg);
-  int pos = md->captures[idx * 2 + 1];
+  mrb_int pos = md->captures[idx * 2 + 1];
   if (pos < 0) return mrb_nil_value();
   return mrb_int_value(mrb, re_byte_to_char(mrb, md->source, pos));
 }
@@ -1404,9 +1404,9 @@ matchdata_offset(mrb_state *mrb, mrb_value self)
   mrb_match_data *md = DATA_GET_PTR(mrb, self, &matchdata_type, mrb_match_data);
   if (!md) return mrb_nil_value();
   mrb_int idx = matchdata_group_arg(mrb, md, arg);
-  int beg = md->captures[idx * 2];
+  mrb_int beg = md->captures[idx * 2];
   if (beg < 0) return mrb_assoc_new(mrb, mrb_nil_value(), mrb_nil_value());
-  int end = md->captures[idx * 2 + 1];
+  mrb_int end = md->captures[idx * 2 + 1];
   return mrb_assoc_new(mrb, mrb_int_value(mrb, re_byte_to_char(mrb, md->source, beg)),
                        mrb_int_value(mrb, re_byte_to_char(mrb, md->source, end)));
 }
@@ -1454,7 +1454,7 @@ matchdata_post(mrb_state *mrb, mrb_value self)
 {
   mrb_match_data *md = DATA_GET_PTR(mrb, self, &matchdata_type, mrb_match_data);
   if (!md || md->captures[1] < 0) return mrb_nil_value();
-  int pos = md->captures[1];
+  mrb_int pos = md->captures[1];
   return re_byte_substr(mrb, md->source, pos, RSTRING_LEN(md->source) - pos);
 }
 
@@ -1471,7 +1471,7 @@ matchdata_group(mrb_state *mrb, mrb_value self)
   mrb_get_args(mrb, "i", &n);
   mrb_match_data *md = DATA_GET_PTR(mrb, self, &matchdata_type, mrb_match_data);
   if (!md || n < 0 || n >= md->num_captures) return mrb_nil_value();
-  int s = md->captures[n*2];
+  mrb_int s = md->captures[n*2];
   if (s < 0) return mrb_nil_value();
   return re_byte_substr(mrb, md->source, s, md->captures[n*2+1] - s);
 }
@@ -1485,7 +1485,7 @@ matchdata_last_group(mrb_state *mrb, mrb_value self)
   mrb_match_data *md = DATA_GET_PTR(mrb, self, &matchdata_type, mrb_match_data);
   if (!md) return mrb_nil_value();
   for (int g = md->num_captures - 1; g >= 1; g--) {
-    int s = md->captures[g*2];
+    mrb_int s = md->captures[g*2];
     if (s >= 0) {
       return re_byte_substr(mrb, md->source, s, md->captures[g*2+1] - s);
     }
@@ -1532,8 +1532,8 @@ matchdata_named_captures(mrb_state *mrb, mrb_value self)
                                  pat->named_captures[i].name, pat->named_captures[i].name_len);
     mrb_value val = mrb_nil_value();
     if (group >= 0 && group < md->num_captures) {
-      int s = md->captures[group * 2];
-      int e = md->captures[group * 2 + 1];
+      mrb_int s = md->captures[group * 2];
+      mrb_int e = md->captures[group * 2 + 1];
       if (s >= 0) val = re_byte_substr(mrb, md->source, s, e - s);
     }
     mrb_hash_set(mrb, result, name, val);
@@ -1626,8 +1626,8 @@ matchdata_to_s(mrb_state *mrb, mrb_value self)
 {
   mrb_match_data *md = DATA_GET_PTR(mrb, self, &matchdata_type, mrb_match_data);
   if (!md || md->captures[0] < 0) return mrb_nil_value();
-  int s = md->captures[0];
-  int e = md->captures[1];
+  mrb_int s = md->captures[0];
+  mrb_int e = md->captures[1];
   return re_byte_substr(mrb, md->source, s, e - s);
 }
 
@@ -1682,7 +1682,7 @@ matchdata_inspect(mrb_state *mrb, mrb_value self)
       }
       mrb_str_cat_lit(mrb, result, ":");
     }
-    int s = md->captures[i * 2];
+    mrb_int s = md->captures[i * 2];
     if (s < 0) {
       mrb_str_cat_lit(mrb, result, "nil");
     }
@@ -1705,7 +1705,7 @@ matchdata_inspect(mrb_state *mrb, mrb_value self)
 static void
 apply_replacement(mrb_state *mrb, mrb_value result,
                   const char *rep, mrb_int rep_len,
-                  const char *str, mrb_int str_len, int *captures, int ncap,
+                  const char *str, mrb_int str_len, mrb_int *captures, int ncap,
                   mrb_regexp_pattern *pat)
 {
   mrb_int i = 0;
@@ -1766,7 +1766,7 @@ apply_replacement(mrb_state *mrb, mrb_value result,
       }
       if (ref) {
         if (g >= 0 && g < ncap && captures[g * 2] >= 0) {
-          int s = captures[g * 2], e = captures[g * 2 + 1];
+          mrb_int s = captures[g * 2], e = captures[g * 2 + 1];
           mrb_str_cat(mrb, result, str + s, e - s);
         }
       }
@@ -1850,23 +1850,23 @@ re_gsub_str(mrb_state *mrb, mrb_value re, mrb_value str, mrb_value replacement)
 
   int ncap = pat->num_captures;
   int cap_size = ncap * 2;
-  int captures[RE_MAX_CAPTURES * 2];
+  mrb_int captures[RE_MAX_CAPTURES * 2];
   mrb_value result = mrb_str_new_capa(mrb, slen);
   int ai = mrb_gc_arena_save(mrb);
 
   mrb_int pos = 0;
   int last_ncap = 0;
-  int last_captures[RE_MAX_CAPTURES * 2];
+  mrb_int last_captures[RE_MAX_CAPTURES * 2];
 
   while (pos <= slen) {
-    memset(captures, -1, sizeof(int) * cap_size);
+    memset(captures, -1, sizeof(mrb_int) * cap_size);
     int n = mrb_re_exec(mrb, pat, s, slen, pos, captures, cap_size, binary);
     re_check_exec_error(mrb, n);
     if (n == 0) break;
 
     /* save last match for $~ */
     last_ncap = cap_size;
-    memcpy(last_captures, captures, sizeof(int) * cap_size);
+    memcpy(last_captures, captures, sizeof(mrb_int) * cap_size);
 
     /* append pre-match */
     if (captures[0] > pos) {
@@ -1935,8 +1935,8 @@ re_sub_str(mrb_state *mrb, mrb_value re, mrb_value str, mrb_value replacement)
   mrb_int rep_len = RSTRING_LEN(replacement);
 
   int cap_size = pat->num_captures * 2;
-  int captures[RE_MAX_CAPTURES * 2];
-  memset(captures, -1, sizeof(int) * cap_size);
+  mrb_int captures[RE_MAX_CAPTURES * 2];
+  memset(captures, -1, sizeof(mrb_int) * cap_size);
 
   int n = mrb_re_exec(mrb, pat, s, slen, 0, captures, cap_size, binary);
   re_check_exec_error(mrb, n);
@@ -2026,9 +2026,9 @@ re_cat_bytes(mrb_state *mrb, mrb_value result, const char *p, mrb_int len, mrb_b
 static void
 re_lit_matchdata(mrb_state *mrb, mrb_value str, mrb_int beg, mrb_int end)
 {
-  int captures[2];
-  captures[0] = (int)beg;
-  captures[1] = (int)end;
+  mrb_int captures[2];
+  captures[0] = beg;
+  captures[1] = end;
   create_matchdata(mrb, mrb_nil_value(), str, captures, 2);
 }
 
@@ -2063,11 +2063,11 @@ re_gsub_lit(mrb_state *mrb, mrb_value lit, mrb_value str, mrb_value replacement,
   /* The loop leaves the last match's offsets here, which is the match `$~`
      reports below: nothing writes them after the search that ends the loop
      fails. */
-  int captures[2];
+  mrb_int captures[2];
 
   do {
-    captures[0] = (int)beg;
-    captures[1] = (int)(beg + plen);
+    captures[0] = beg;
+    captures[1] = beg + plen;
 
     if (beg > pos) re_cat_bytes(mrb, result, s + pos, beg - pos, binary);
     if (need_expand) {
@@ -2125,9 +2125,9 @@ re_sub_lit(mrb_state *mrb, mrb_value lit, mrb_value str, mrb_value replacement, 
   mrb_value result = mrb_str_new_capa(mrb, slen);
   if (beg > 0) re_cat_bytes(mrb, result, s, beg, binary);
   if (has_backslash(rep, rep_len)) {
-    int captures[2];
-    captures[0] = (int)beg;
-    captures[1] = (int)end;
+    mrb_int captures[2];
+    captures[0] = beg;
+    captures[1] = end;
     apply_replacement(mrb, result, rep, rep_len, s, slen, captures, 1, NULL);
   }
   else {
@@ -2200,7 +2200,7 @@ re_gsub_walk(mrb_state *mrb, mrb_value re, mrb_value str, mrb_bool literal,
   mrb_regexp_pattern *pat;
   mrb_bool binary = re_search_binary(mrb, re, str, literal, &pat);
   int cap_size = pat->num_captures * 2;
-  int captures[RE_MAX_CAPTURES * 2];
+  mrb_int captures[RE_MAX_CAPTURES * 2];
   mrb_value result = mrb_str_new_capa(mrb, RSTRING_LEN(str));
   /* The match the block was given last, and the offset it was found from:
      what the closing search below starts from, or stands in for. */
@@ -2215,7 +2215,7 @@ re_gsub_walk(mrb_state *mrb, mrb_value re, mrb_value str, mrb_bool literal,
   int ai = mrb_gc_arena_save(mrb);
 
   while (pos <= slen) {
-    memset(captures, -1, sizeof(int) * cap_size);
+    memset(captures, -1, sizeof(mrb_int) * cap_size);
     int n = mrb_re_exec(mrb, pat, s, slen, pos, captures, cap_size, binary);
     re_check_exec_error(mrb, n);
     if (n == 0) break;
@@ -2299,22 +2299,22 @@ re_scan_ary(mrb_state *mrb, mrb_value re, mrb_value str, mrb_bool literal)
   mrb_int slen = RSTRING_LEN(str);
   int ncap = pat->num_captures;
   int cap_size = ncap * 2;
-  int captures[RE_MAX_CAPTURES * 2];
+  mrb_int captures[RE_MAX_CAPTURES * 2];
 
   mrb_value ary = mrb_ary_new(mrb);
   int ai = mrb_gc_arena_save(mrb);
   mrb_int pos = 0;
   int last_ncap = 0;
-  int last_captures[RE_MAX_CAPTURES * 2];
+  mrb_int last_captures[RE_MAX_CAPTURES * 2];
 
   while (pos <= slen) {
-    memset(captures, -1, sizeof(int) * cap_size);
+    memset(captures, -1, sizeof(mrb_int) * cap_size);
     int n = mrb_re_exec(mrb, pat, s, slen, pos, captures, cap_size, binary);
     re_check_exec_error(mrb, n);
     if (n == 0) break;
 
     last_ncap = cap_size;
-    memcpy(last_captures, captures, sizeof(int) * cap_size);
+    memcpy(last_captures, captures, sizeof(mrb_int) * cap_size);
 
     if (ncap <= 1) {
       /* no capture groups: push the matched string */
@@ -2521,7 +2521,7 @@ str_aset(mrb_state *mrb, mrb_value str)
      replace. CRuby names the group's number even when the argument was a
      name; the number is not reachable from Ruby, so the message repeats the
      argument as it was given. */
-  int beg = md->captures[idx * 2];
+  mrb_int beg = md->captures[idx * 2];
   if (beg < 0) mrb_raisef(mrb, E_INDEX_ERROR, "regexp group %v not matched", group);
 
   /* Character offsets, which is the space the two-integer form of `[]=` works
@@ -3091,7 +3091,7 @@ str_split_m(mrb_state *mrb, mrb_value self)
     if (ms != me) search_pos = me;
 
     for (int i = 1; i < m->num_captures; i++) {
-      int cs = m->captures[i * 2];
+      mrb_int cs = m->captures[i * 2];
       if (cs >= 0) {
         mrb_ary_push(mrb, result, re_byte_substr(mrb, m->source, cs, m->captures[i * 2 + 1] - cs));
       }
@@ -3168,13 +3168,13 @@ str_slice_bang(mrb_state *mrb, mrb_value self)
     idx = matchdata_group_arg(mrb, m, group);
   }
 
-  int bs = m->captures[idx * 2];
+  mrb_int bs = m->captures[idx * 2];
   /* CRuby answers "" for a group that exists but did not take part in the
      match, and removes nothing. That falls out of rb_str_slice_bang()
      building the result from the group's -1 offset rather than out of a
      decision, but it is what the method answers. */
   if (bs < 0) return mrb_str_new(mrb, NULL, 0);
-  int be = m->captures[idx * 2 + 1];
+  mrb_int be = m->captures[idx * 2 + 1];
 
   /* Character offsets, the space the two-integer form of `[]=` works in.
      The removed piece comes from the MatchData, whose subject is a snapshot

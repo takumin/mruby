@@ -220,7 +220,7 @@ subject_fold(uint32_t c, mrb_bool binary)
    `b`: with Unicode folding a counterpart can be a different width (U+212A
    folds to 'k'), so the two spans can match while holding different numbers
    of bytes. */
-static int
+static mrb_int
 memcmp_ci(const char *a, const char *a_end, const char *b, const char *b_end,
           mrb_bool binary)
 {
@@ -234,7 +234,7 @@ memcmp_ci(const char *a, const char *a_end, const char *b, const char *b_end,
     a += alen;
     b += blen;
   }
-  return (int)(a - a0);
+  return (mrb_int)(a - a0);
 }
 
 /*
@@ -275,7 +275,7 @@ typedef struct {
   mrb_state *mrb;
   const mrb_regexp_pattern *pat;
   int ncap;               /* actual capture count (num_captures * 2) */
-  int *cap_pool;          /* flat: cap_pool[slot * ncap .. (slot+1) * ncap) */
+  mrb_int *cap_pool;      /* flat: cap_pool[slot * ncap .. (slot+1) * ncap) */
   int pool_next;          /* next free slot */
   int pool_capa;          /* total slots allocated */
   uint32_t *visited;      /* generation-based */
@@ -291,7 +291,7 @@ typedef struct {
                              stop adding/processing lower-priority threads */
   mrb_bool nomem;         /* the allocator refused the search a buffer it
                              needed: it stops and answers RE_NOMEM */
-  int *result_caps;       /* best match (ncap ints) */
+  mrb_int *result_caps;   /* best match (ncap positions) */
   re_pending *pend;       /* branches a closure left for later: pend_inline
                              until the nesting outgrows it, the heap after */
   uint32_t pend_top;      /* entries in use, the newest at the top */
@@ -315,8 +315,8 @@ pool_alloc(pike_state *s, int *slot)
 {
   if (s->pool_next >= s->pool_capa) {
     int new_capa = s->pool_capa * 2;
-    int *p = (int*)mrb_realloc_simple(s->mrb, s->cap_pool,
-                                      sizeof(int) * new_capa * s->ncap);
+    mrb_int *p = (mrb_int*)mrb_realloc_simple(s->mrb, s->cap_pool,
+                                      sizeof(mrb_int) * new_capa * s->ncap);
     if (!p) {
       s->nomem = TRUE;
       return FALSE;
@@ -337,7 +337,7 @@ pool_copy(pike_state *s, int src_slot, int *slot)
   if (!pool_alloc(s, &dst)) return FALSE;
   memcpy(&s->cap_pool[dst * s->ncap],
          &s->cap_pool[src_slot * s->ncap],
-         sizeof(int) * s->ncap);
+         sizeof(mrb_int) * s->ncap);
   *slot = dst;
   return TRUE;
 }
@@ -525,7 +525,7 @@ add_thread(pike_state *s, re_threadlist *list,
            and no position a group is recorded at is inside one. The rule used to
            be tested here, on the end of group 0 and then on every slot. */
         if (!s->match_only) {
-          CAP(s, cap_slot)[inst.offset] = (int)(sp - s->str);
+          CAP(s, cap_slot)[inst.offset] = (mrb_int)(sp - s->str);
         }
         pc++;
         continue;
@@ -578,7 +578,7 @@ add_thread(pike_state *s, re_threadlist *list,
       case RE_MATCH:
         s->matched = TRUE;
         if (s->result_caps) {
-          memcpy(s->result_caps, CAP(s, cap_slot), sizeof(int) * s->ncap);
+          memcpy(s->result_caps, CAP(s, cap_slot), sizeof(mrb_int) * s->ncap);
         }
         /* Leftmost-first: this is the highest-priority thread to reach a match
            this step (closures run in priority order), so cut every lower one.
@@ -624,7 +624,7 @@ leave:
 static int
 pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
         const char *str, mrb_int len, mrb_int start, mrb_int start_limit,
-        int *captures, int captures_size, mrb_bool binary)
+        mrb_int *captures, int captures_size, mrb_bool binary)
 {
   const char *start_cap = str + start_limit;
   const char *sp = str + start;
@@ -676,15 +676,15 @@ pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
   s.result_caps = NULL;
   if (match_only) {
     s.pool_capa = 1;
-    s.cap_pool = (int*)mrb_malloc_simple(mrb, sizeof(int) * ncap);
+    s.cap_pool = (mrb_int*)mrb_malloc_simple(mrb, sizeof(mrb_int) * ncap);
     if (!s.cap_pool) s.nomem = TRUE;
   }
   else {
     s.pool_capa = list_capa * 2;
-    s.cap_pool = (int*)mrb_malloc_simple(mrb, sizeof(int) * s.pool_capa * ncap);
-    s.result_caps = (int*)mrb_malloc_simple(mrb, sizeof(int) * ncap);
+    s.cap_pool = (mrb_int*)mrb_malloc_simple(mrb, sizeof(mrb_int) * s.pool_capa * ncap);
+    s.result_caps = (mrb_int*)mrb_malloc_simple(mrb, sizeof(mrb_int) * ncap);
     if (!s.cap_pool || !s.result_caps) s.nomem = TRUE;
-    else memset(s.result_caps, -1, sizeof(int) * ncap);
+    else memset(s.result_caps, -1, sizeof(mrb_int) * ncap);
   }
 
   re_threadlist curr, next;
@@ -764,7 +764,7 @@ pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
         int slot = 0;
         if (!match_only) {
           if (!pool_alloc(&s, &slot)) break;
-          memset(CAP(&s, slot), -1, sizeof(int) * ncap);
+          memset(CAP(&s, slot), -1, sizeof(mrb_int) * ncap);
         }
         advance_gen(&s);
         s.cut = FALSE;
@@ -790,7 +790,7 @@ pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
         int dst;
         if (!pool_alloc(&s, &dst)) break;
         memcpy(CAP(&s, dst), CAP(&s, curr.threads[i].cap_slot),
-               sizeof(int) * ncap);
+               sizeof(mrb_int) * ncap);
         curr.threads[i].cap_slot = i;
       }
       /* Leave before the block copy rather than after it: the staging slots
@@ -798,7 +798,7 @@ pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
          past the end of the pool without them. */
       if (s.nomem) break;
       memcpy(&s.cap_pool[0], &s.cap_pool[base * ncap],
-             sizeof(int) * ncap * curr.count);
+             sizeof(mrb_int) * ncap * curr.count);
     }
     /* Every live slot is a thread's, and a match keeps what it found in
        result_caps rather than in the pool (see RE_MATCH in add_thread), so a
@@ -928,7 +928,7 @@ pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
   else if (s.matched) {
     if (captures && s.result_caps) {
       int copy = ncap < captures_size ? ncap : captures_size;
-      memcpy(captures, s.result_caps, sizeof(int) * copy);
+      memcpy(captures, s.result_caps, sizeof(mrb_int) * copy);
     }
     ret = ncap > 0 ? ncap : 1;
   }
@@ -1022,9 +1022,9 @@ enum re_cp_kind {
                    it, and MRB_REGEXP_STACK_LIMIT bounds the call depth by
                    bounding the frames. */
   RE_CP_ABSENT, /* not a branch: the state one absent repeater's scan runs
-                   on. `sp` is where the absent began. `pc` is how far it may
-                   still reach as an offset into the subject: the whole of
-                   what stands after it until a match of the body says
+                   on. `sp` is where the absent began. `reach` is how far it
+                   may still reach as an offset into the subject: the whole
+                   of what stands after it until a match of the body says
                    otherwise, and below `sp` once the body has matched empty
                    where the absent began, which is the absent matching
                    nothing anywhere. `group` is the end of the subject the
@@ -1067,7 +1067,10 @@ typedef struct {
   const char *sp;
   uint32_t pc;
   uint32_t undo_top;
-  uint32_t group;   /* what `kind` names, where it names something */
+  mrb_int group;    /* what `kind` names, where it names something; for an
+                       absent repeater's entries it names a position, so it
+                       is as wide as one */
+  mrb_int reach;    /* RE_CP_ABSENT only: how far the scan may still reach */
   int pass;         /* the pass it was pushed in, which is the pass the
                        branch it holds runs in; for a lookaround's barrier
                        that is the pass the lookaround was entered from, and
@@ -1085,8 +1088,8 @@ typedef struct {
    would have to walk the region above the barrier and keep the undo records
    while dropping the choice points. */
 typedef struct {
-  int *slot;
-  int old;
+  mrb_int *slot;
+  mrb_int old;
 } re_undo;
 
 /* Everything one backtrack_exec() call carries: the pattern, the subject,
@@ -1098,7 +1101,7 @@ typedef struct {
   const mrb_regexp_pattern *pat;
   const char *str;
   const char *str_end;
-  int *captures;
+  mrb_int *captures;
   int ncap;
   int steps;
   /* Per pc, the offset the loop that pc keys was entered at, or -1 while
@@ -1113,7 +1116,7 @@ typedef struct {
      body reads the record) and its marked back edge for e+ (the
      SPLIT/SPLITNG at the end of the body, which both writes and reads it);
      see mark_empty_loops(). */
-  int *entered_at;
+  mrb_int *entered_at;
   /* Per pc, the pass that wrote entered_at[pc]. A pass is one run of a
      lookaround's sub-pattern, numbered from `pass_seq` so that no two runs
      of one start position's attempt share one, and 0 is the pattern outside
@@ -1128,7 +1131,7 @@ typedef struct {
      the run before left 1 for `(b|)+`, and its first iteration, ending at
      1, would stop there with "b" captured, where a fresh pass goes round
      once more and leaves "". */
-  int *entered_in;
+  mrb_int *entered_in;
   int pass;
   int pass_seq;
   mrb_bool binary;
@@ -1148,7 +1151,7 @@ typedef struct {
 /* Whether the loop `key` keys is at the end of an iteration that began at
    sp: the record is this pass's and names sp. */
 #define ITER_EMPTY(m, key, sp) \
-  ((m)->entered_at[key] == (int)((sp) - (m)->str) && (m)->entered_in[key] == (m)->pass)
+  ((m)->entered_at[key] == (mrb_int)((sp) - (m)->str) && (m)->entered_in[key] == (m)->pass)
 
 /* Whether the search may hold one more entry of backtracking state.
    MRB_REGEXP_STACK_LIMIT counts the two stacks together: a choice point and
@@ -1182,7 +1185,7 @@ bt_grow_capa(uint32_t capa)
    mrb_realloc() is what lets a refusal be an answer at all, a raising
    allocator longjmping past the mrb_free() in backtrack_exec(). */
 static int
-bt_push(bt_state *m, const char *sp, uint32_t pc, uint8_t kind, uint32_t group)
+bt_push(bt_state *m, const char *sp, uint32_t pc, uint8_t kind, mrb_int group)
 {
   if (!bt_room(m)) return BT_LIMIT;
   if (m->cp_top == m->cp_capa) {
@@ -1202,6 +1205,17 @@ bt_push(bt_state *m, const char *sp, uint32_t pc, uint8_t kind, uint32_t group)
   return BT_OK;
 }
 
+/* Push an absent repeater's state (see RE_CP_ABSENT): it began at `begun`,
+   the subject the text around it runs against ends at `end`, and it may
+   still reach as far as `reach`. Answers as bt_push() does. */
+static int
+bt_push_absent(bt_state *m, const char *begun, mrb_int end, mrb_int reach)
+{
+  int r = bt_push(m, begun, 0, RE_CP_ABSENT, end);
+  if (r == BT_OK) m->cp[m->cp_top - 1].reach = reach;
+  return r;
+}
+
 /* Write `val` into `slot`, logging what stood there so that backtracking
    past this point puts it back. The answer is bt_push()'s, and means what it
    means there: BT_OK is the write having gone through, and BT_LIMIT or
@@ -1214,7 +1228,7 @@ bt_push(bt_state *m, const char *sp, uint32_t pc, uint8_t kind, uint32_t group)
    goes on through such a write rather than stopping at one that would have
    restored nothing. */
 static int
-bt_log(bt_state *m, int *slot, int val)
+bt_log(bt_state *m, mrb_int *slot, mrb_int val)
 {
   if (*slot == val) return BT_OK;
   if (!bt_room(m)) return BT_LIMIT;
@@ -1274,7 +1288,7 @@ bt_barrier_find(const bt_state *m, uint32_t group, uint32_t *idx)
 static int
 bt_iter_begin(bt_state *m, uint32_t key, const char *sp)
 {
-  int r = bt_log(m, &m->entered_at[key], (int)(sp - m->str));
+  int r = bt_log(m, &m->entered_at[key], (mrb_int)(sp - m->str));
   return r != BT_OK ? r : bt_log(m, &m->entered_in[key], m->pass);
 }
 
@@ -1305,7 +1319,7 @@ bt_match(bt_state *m, const char *sp, uint32_t pc)
      executor measures against. RE_ABSENT puts it back at the head of every
      round. */
   const char *str_end = m->str_end;
-  int *captures = m->captures;
+  mrb_int *captures = m->captures;
   int ncap = m->ncap;
   mrb_bool binary = m->binary;
   /* What an operation on the stacks answers, which is this call's answer
@@ -1436,7 +1450,7 @@ bt_match(bt_state *m, const char *sp, uint32_t pc)
            before it was abandoned. What a match keeps, and what an atomic
            group or a positive lookaround keeps once it has matched, is kept
            by the log not unwinding at all there. */
-        if ((r = bt_log(m, &captures[slot], (int)(sp - str))) != BT_OK) return r;
+        if ((r = bt_log(m, &captures[slot], (mrb_int)(sp - str))) != BT_OK) return r;
         /* An even slot opens its group, and the pair it heads is a span
            only while the group is closed: clear the end slot with the
            start, so that RE_BACKREF reads a group a repetition has just
@@ -1506,14 +1520,14 @@ bt_match(bt_state *m, const char *sp, uint32_t pc)
       {
         int group = inst.a;
         if (group * 2 + 1 >= ncap) goto fail;
-        int gs = captures[group * 2];
-        int ge = captures[group * 2 + 1];
+        mrb_int gs = captures[group * 2];
+        mrb_int ge = captures[group * 2 + 1];
         if (gs < 0 || ge < 0) goto fail;
-        int blen = ge - gs;
+        mrb_int blen = ge - gs;
         if (inst.offset) {
           /* A folded comparison can consume a different number of bytes than
              the captured text holds, so the span is measured, not assumed. */
-          int used = memcmp_ci(sp, str_end, str + gs, str + ge, binary);
+          mrb_int used = memcmp_ci(sp, str_end, str + gs, str + ge, binary);
           if (used < 0) goto fail;
           sp += used;
         }
@@ -1718,8 +1732,8 @@ bt_match(bt_state *m, const char *sp, uint32_t pc)
         {
           int slot = inst.a * 2;
           if (slot + 1 >= ncap) goto fail;
-          if ((r = bt_log(m, &captures[slot], (int)(m->cp[idx].sp - str))) != BT_OK) return r;
-          if ((r = bt_log(m, &captures[slot + 1], (int)(sp - str))) != BT_OK) return r;
+          if ((r = bt_log(m, &captures[slot], (mrb_int)(m->cp[idx].sp - str))) != BT_OK) return r;
+          if ((r = bt_log(m, &captures[slot + 1], (mrb_int)(sp - str))) != BT_OK) return r;
         }
         {
           uint32_t ret = m->cp[idx].pc;
@@ -1735,10 +1749,7 @@ bt_match(bt_state *m, const char *sp, uint32_t pc)
          around it, and that same end is what the scan puts back when it is
          done. The subject an absent inside the body of another one runs
          against is the one that one has narrowed. */
-      if ((r = bt_push(m, sp, (uint32_t)(str_end - str), RE_CP_ABSENT,
-                       (uint32_t)(str_end - str))) != BT_OK) {
-        return r;
-      }
+      if ((r = bt_push_absent(m, sp, str_end - str, str_end - str)) != BT_OK) return r;
       pc++;
       break;
 
@@ -1759,17 +1770,17 @@ bt_match(bt_state *m, const char *sp, uint32_t pc)
         re_cpoint st = m->cp[--m->cp_top];
         m->pass = st.pass;
         str_end = str + st.group;
-        int begun = (int)(st.sp - str);
-        int reach = (int32_t)st.pc;
+        mrb_int begun = (mrb_int)(st.sp - str);
+        mrb_int reach = st.reach;
         /* The body matched empty where the absent began, so every run of
            text from here holds a match of it, the empty one included. */
         if (reach < begun) goto fail;
-        if ((int)(sp - str) >= reach) {
+        if ((mrb_int)(sp - str) >= reach) {
           if (reach > begun) {
             const char *prev = lookbehind_start(str, str_end, str + reach,
                                                 RE_LB_PACK(1, 1), binary);
             if (prev && (r = bt_push(m, prev, inst.offset, RE_CP_ABSENT_BACK,
-                                     (uint32_t)begun)) != BT_OK) {
+                                     begun)) != BT_OK) {
               return r;
             }
           }
@@ -1779,7 +1790,7 @@ bt_match(bt_state *m, const char *sp, uint32_t pc)
         }
         {
           const char *next = sp + mrb_re_charlen(sp, str_end, binary);
-          if ((r = bt_push(m, st.sp, st.pc, RE_CP_ABSENT, st.group)) != BT_OK) return r;
+          if ((r = bt_push_absent(m, st.sp, st.group, st.reach)) != BT_OK) return r;
           if ((r = bt_push(m, next, pc, RE_CP_ABSENT_ITER, 0)) != BT_OK) return r;
         }
         /* The body runs against a subject that ends where the absent may
@@ -1814,15 +1825,15 @@ bt_match(bt_state *m, const char *sp, uint32_t pc)
         re_cpoint it = m->cp[idx];
         if (idx == 0 || m->cp[idx - 1].kind != RE_CP_ABSENT) goto fail;
         re_cpoint *st = &m->cp[idx - 1];
-        int reach;
+        mrb_int reach;
         if (sp < it.sp) {
-          reach = (sp == st->sp) ? -1 : (int)(sp - str);
+          reach = (sp == st->sp) ? -1 : (mrb_int)(sp - str);
         }
         else {
           const char *prev = lookbehind_start(str, str_end, sp, RE_LB_PACK(1, 1), binary);
-          reach = prev ? (int)(prev - str) : -1;
+          reach = prev ? (mrb_int)(prev - str) : -1;
         }
-        if (reach < (int32_t)st->pc) st->pc = (uint32_t)reach;
+        if (reach < st->reach) st->reach = reach;
         m->cp_top = idx;
         bt_undo_to(m, it.undo_top);
         m->pass = it.pass;
@@ -1870,7 +1881,7 @@ bt_match(bt_state *m, const char *sp, uint32_t pc)
       }
       sp = c.sp;
       pc = c.pc;
-      if (c.kind == RE_CP_ITER && (r = bt_iter_begin(m, c.group, sp)) != BT_OK) return r;
+      if (c.kind == RE_CP_ITER && (r = bt_iter_begin(m, (uint32_t)c.group, sp)) != BT_OK) return r;
       break;
     }
   }
@@ -1879,7 +1890,7 @@ bt_match(bt_state *m, const char *sp, uint32_t pc)
 static int
 backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
                const char *str, mrb_int len, mrb_int start, mrb_int start_limit,
-               int *captures, int captures_size, mrb_bool binary)
+               mrb_int *captures, int captures_size, mrb_bool binary)
 {
   const char *start_cap = str + start_limit;
   const char *str_end = str + len;
@@ -1902,7 +1913,7 @@ backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
      refusal inside a search reaches the caller as RE_NOMEM, which
      re_check_exec_error() turns into the raise, and a search that raised
      from here instead would be one the caller never saw stop. */
-  int *caps = (int*)mrb_malloc_simple(mrb, sizeof(int) * (ncap + 2 * pat->code_len));
+  mrb_int *caps = (mrb_int*)mrb_malloc_simple(mrb, sizeof(mrb_int) * (ncap + 2 * pat->code_len));
   if (!caps) return RE_NOMEM;
   int ret = 0;
   bt_state m;
@@ -1921,8 +1932,8 @@ backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
   m.cp_top = m.cp_capa = 0;
   m.undo = NULL;
   m.undo_top = m.undo_capa = 0;
-  memset(m.entered_at, -1, sizeof(int) * pat->code_len);
-  memset(m.entered_in, 0, sizeof(int) * pat->code_len);
+  memset(m.entered_at, -1, sizeof(mrb_int) * pat->code_len);
+  memset(m.entered_in, 0, sizeof(mrb_int) * pat->code_len);
 
   for (const char *sp = str + start; sp <= str_end && sp <= start_cap; sp++) {
     /* Skip ahead using the anchor, the literal prefix or the first-byte
@@ -1946,7 +1957,7 @@ backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
     if (!binary && sp < str_end && mrb_re_char_interior_p(str, sp, str_end)) {
       continue;
     }
-    memset(caps, -1, sizeof(int) * ncap);
+    memset(caps, -1, sizeof(mrb_int) * ncap);
     m.steps = 0;
     /* The state of the attempt before, which failed and left nothing to
        resume, is not this attempt's: the stacks start empty, and the writes
@@ -1966,7 +1977,7 @@ backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
     if (r == BT_MATCH) {
       if (captures) {
         int copy = ncap < captures_size ? ncap : captures_size;
-        memcpy(captures, caps, sizeof(int) * copy);
+        memcpy(captures, caps, sizeof(mrb_int) * copy);
       }
       ret = ncap > 0 ? ncap : 1;
       break;
@@ -2002,7 +2013,7 @@ backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
 static int
 literal_exec(const mrb_regexp_pattern *pat,
              const char *str, mrb_int len, mrb_int start, mrb_int start_limit,
-             int *captures, int captures_size, mrb_bool binary)
+             mrb_int *captures, int captures_size, mrb_bool binary)
 {
   const char *start_cap = str + start_limit;
   const char *sp = str + start;
@@ -2021,8 +2032,8 @@ literal_exec(const mrb_regexp_pattern *pat,
        RE_CHAR only), so the literal is whole characters and a lead byte
        that matched fixed the length of the one it starts. */
     if (captures && captures_size >= 2) {
-      captures[0] = (int)(found - str);
-      captures[1] = (int)(found - str) + plen;
+      captures[0] = (mrb_int)(found - str);
+      captures[1] = (mrb_int)(found - str) + plen;
     }
     return 2;  /* group 0 start/end */
   }
@@ -2039,7 +2050,7 @@ literal_exec(const mrb_regexp_pattern *pat,
 static int
 exec_range(mrb_state *mrb, const mrb_regexp_pattern *pat,
            const char *str, mrb_int len, mrb_int start, mrb_int start_limit,
-           int *captures, int captures_size, mrb_bool binary)
+           mrb_int *captures, int captures_size, mrb_bool binary)
 {
   if (pat->is_literal) {
     return literal_exec(pat, str, len, start, start_limit, captures, captures_size, binary);
@@ -2054,7 +2065,7 @@ exec_range(mrb_state *mrb, const mrb_regexp_pattern *pat,
 int
 mrb_re_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
         const char *str, mrb_int len, mrb_int start,
-        int *captures, int captures_size, mrb_bool binary)
+        mrb_int *captures, int captures_size, mrb_bool binary)
 {
   /* The end of the subject is the last position anything can start at, so
      the forward search is the unbounded case of the above. */
@@ -2088,19 +2099,19 @@ mrb_re_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
 int
 mrb_re_rexec(mrb_state *mrb, const mrb_regexp_pattern *pat,
              const char *str, mrb_int len, mrb_int limit,
-             int *captures, int captures_size, mrb_bool binary)
+             mrb_int *captures, int captures_size, mrb_bool binary)
 {
   if (limit > len) limit = len;
   if (limit < 0) return 0;
 
-  int last[RE_MAX_CAPTURES * 2];
+  mrb_int last[RE_MAX_CAPTURES * 2];
   int last_n = 0;
 
   for (mrb_int k = 1; ; k *= 2) {
     mrb_int lo = limit - k + 1;
     if (lo < 0) lo = 0;
     if (len - lo > RE_RSEARCH_PROBE_SPAN) break;
-    memset(captures, -1, sizeof(int) * captures_size);
+    memset(captures, -1, sizeof(mrb_int) * captures_size);
     last_n = exec_range(mrb, pat, str, len, lo, limit, captures, captures_size, binary);
     /* A match or an execution error ends the probe. A limit, or an
        allocation the engine was refused, is the answer to the whole question
@@ -2114,7 +2125,7 @@ mrb_re_rexec(mrb_state *mrb, const mrb_regexp_pattern *pat,
   }
 
   if (last_n == 0) {
-    memset(captures, -1, sizeof(int) * captures_size);
+    memset(captures, -1, sizeof(mrb_int) * captures_size);
     last_n = exec_range(mrb, pat, str, len, 0, limit, captures, captures_size, binary);
     if (last_n == 0) return 0;
   }
@@ -2127,17 +2138,17 @@ mrb_re_rexec(mrb_state *mrb, const mrb_regexp_pattern *pat,
      would answer 0. A byte inside a character is not a position a match can
      start at, and the engine steps over one rather than seed an attempt
      there, so `+ 1` reaches the next character by itself. */
-  memcpy(last, captures, sizeof(int) * captures_size);
+  memcpy(last, captures, sizeof(mrb_int) * captures_size);
   mrb_int pos = captures[0] + 1;
   while (pos <= limit) {
-    memset(captures, -1, sizeof(int) * captures_size);
+    memset(captures, -1, sizeof(mrb_int) * captures_size);
     int n = exec_range(mrb, pat, str, len, pos, limit, captures, captures_size, binary);
     if (n == 0) break;
     if (n < 0) return n;
     last_n = n;
-    memcpy(last, captures, sizeof(int) * captures_size);
+    memcpy(last, captures, sizeof(mrb_int) * captures_size);
     pos = captures[0] + 1;
   }
-  memcpy(captures, last, sizeof(int) * captures_size);
+  memcpy(captures, last, sizeof(mrb_int) * captures_size);
   return last_n;
 }

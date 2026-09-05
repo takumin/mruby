@@ -650,14 +650,14 @@ mrb_re_word_before(const char *str, const char *s, const char *end, mrb_bool bin
    captures[2*n] = start, captures[2*n+1] = end for group n. */
 int mrb_re_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
             const char *str, mrb_int len, mrb_int start,
-            int *captures, int captures_size, mrb_bool binary);
+            mrb_int *captures, int captures_size, mrb_bool binary);
 
 /* Execute a match backward: the last match that starts at or before `limit`.
    Answers as mrb_re_exec() does, and clears the capture buffer itself before
    each of the searches it makes, having to make more than one. */
 int mrb_re_rexec(mrb_state *mrb, const mrb_regexp_pattern *pat,
             const char *str, mrb_int len, mrb_int limit,
-            int *captures, int captures_size, mrb_bool binary);
+            mrb_int *captures, int captures_size, mrb_bool binary);
 
 MRB_END_DECL
 
