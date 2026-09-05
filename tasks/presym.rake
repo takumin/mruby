@@ -119,7 +119,8 @@ end
     else
       fail "#{MRuby::Presym::REGISTRY_PATH} is missing #{added.size} symbol(s) " \
            "this build scanned: #{added.first(10).inspect}#{added.size > 10 ? ' ...' : ''}. " \
-           "Run `rake presym:update` with the same config and commit the result."
+           "Run `rake presym:update` with the same config, on this platform, " \
+           "and commit the result."
     end
   end
 end

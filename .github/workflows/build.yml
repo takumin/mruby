@@ -76,7 +76,14 @@ jobs:
         run: rake defines
       - name: Build
         run: rake -m test:build
+      # One job, because the registry can only cover what a machine can
+      # reproduce. A build scans the symbols its own platform and defines
+      # reach, so a macOS runner finds socket constants that exist nowhere
+      # else; those stay unregistered and are numbered after the registered
+      # ones, which costs their own order and nothing else. This job is the
+      # reference the registry is kept against.
       - name: Presym registry
+        if: matrix.os == 'ubuntu-24.04' && matrix.cc == 'gcc'
         run: rake presym:check
       - name: Size
         run: rake size

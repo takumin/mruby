@@ -99,9 +99,15 @@ rake presym:update
 ```
 
 with a configuration that builds every gem the symbol reaches, and commit the
-result together with the code that introduced it. CI runs `rake presym:check`,
-which reports the symbols the registry is missing and fails rather than
-writing them.
+result together with the code that introduced it. CI runs `rake presym:check`
+on one Linux job, which reports the symbols the registry is missing and fails
+rather than writing them.
+
+The registry covers what that reference job can reproduce. A build scans only
+the symbols its own platform and defines reach, so a macOS or Windows build
+finds socket constants that exist nowhere else; those stay unregistered, are
+numbered after every registered symbol, and cost the order of that tail alone.
+A maintainer on such a platform can register them the same way.
 
 Because a symbol's number is its position among the symbols of the build,
 removing the last use of a symbol renumbers the ones registered after it, and
