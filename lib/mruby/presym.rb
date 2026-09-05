@@ -59,6 +59,22 @@ module MRuby
     }
     ESCAPE_SEQUENCE_MAP.keys.each { |k| ESCAPE_SEQUENCE_MAP[ESCAPE_SEQUENCE_MAP[k]] = k }
 
+    # 32-bit FNV-1a with a final avalanche, the hash `presym_find` computes
+    # over a name it is looking up. The C side in `src/symbol.c` must compute
+    # the same value for the same bytes, so the two are changed together.
+    FNV32_OFFSET = 2166136261
+    FNV32_PRIME = 16777619
+    MASK32 = 0xffffffff
+    GOLDEN32 = 2654435761
+
+    def self.hash32(str)
+      h = FNV32_OFFSET
+      str.each_byte {|b| h = ((h ^ b) * FNV32_PRIME) & MASK32}
+      h = (h ^ (h >> 15)) & MASK32
+      h = (h * 2246822519) & MASK32
+      (h ^ (h >> 13)) & MASK32
+    end
+
     def initialize(build)
       @build = build
     end
@@ -128,8 +144,44 @@ module MRuby
           f.puts %|  "#{sym}",|
         end
         f.puts "};"
+        write_perfect_hash(f, presyms)
       end
     end
+
+    # The lookup `presym_find` runs, as a perfect hash over the symbol names.
+    #
+    # The search used to be a binary search, which needed the tables sorted
+    # by (length, bytes) and so pinned a symbol's number to where its name
+    # sorted among all the others: one symbol added in the middle renumbered
+    # everything after it. A hash asks nothing of the table's order, which is
+    # what lets the registry decide it, and answers in a constant number of
+    # probes instead of `log2(n)`.
+    #
+    # The construction is CHD. The names are drawn into `n/4` buckets by part
+    # of their hash; taken largest bucket first, each bucket is given the
+    # displacement that lands all of its names on slots still free. The slot
+    # table is a power of two long so that the runtime side indexes it by
+    # masking rather than by dividing, which is worth having on a target with
+    # no divide instruction.
+    def write_perfect_hash(f, presyms)
+      return if presyms.empty?
+      size, nbuckets, disp, slots = perfect_hash(presyms)
+      slot_type = presyms.size < 0xffff ? "uint16_t" : "uint32_t"
+      disp_type = disp.max < 0x100 ? "uint8_t" : (disp.max < 0x10000 ? "uint16_t" : "uint32_t")
+      f.puts
+      f.puts "#define MRB_PRESYM_MAX_LENGTH #{presyms.map(&:bytesize).max}"
+      f.puts "#define MRB_PRESYM_HASH_SIZE #{size}"
+      f.puts "#define MRB_PRESYM_BUCKETS #{nbuckets}"
+      f.puts
+      f.puts "static const #{disp_type} presym_disp_table[] = {"
+      disp.each_slice(16) {|row| f.puts "  #{row.join(',')},"}
+      f.puts "};"
+      f.puts
+      f.puts "static const #{slot_type} presym_slot_table[] = {"
+      slots.each_slice(16) {|row| f.puts "  #{row.join(',')},"}
+      f.puts "};"
+    end
+
 
     def list_path
       @list_path ||= "#{@build.build_dir}/presym".freeze
@@ -152,6 +204,54 @@ module MRuby
     end
 
     private
+
+    # The slot table, and the displacement of every bucket that fills it.
+    #
+    # The table starts at the smallest power of two that could hold the
+    # symbols and is doubled if no displacement is found for some bucket at
+    # that size, so that a set the construction cannot place densely costs
+    # memory rather than the build.
+    def perfect_hash(presyms)
+      size = 1
+      size <<= 1 while size < presyms.size
+      loop do
+        result = try_perfect_hash(presyms, size)
+        return [size, *result] if result
+        size <<= 1
+      end
+    end
+
+    def try_perfect_hash(presyms, size)
+      nbuckets = 1
+      nbuckets <<= 1 while nbuckets * 4 < presyms.size
+      hashes = presyms.map{|sym| self.class.hash32(sym)}
+      buckets = Array.new(nbuckets) {[]}
+      hashes.each_with_index{|h, i| buckets[h & (nbuckets - 1)] << i}
+      slots = Array.new(size)
+      disp = Array.new(nbuckets, 0)
+      # Largest bucket first: the buckets that constrain the table most are
+      # placed while the table is still empty enough to place them.
+      buckets.each_index.sort_by{|b| [-buckets[b].size, b]}.each do |b|
+        keys = buckets[b]
+        next if keys.empty?
+        d = 0
+        loop do
+          cand = keys.map{|i| slot_of(hashes[i], d, size)}
+          if cand.uniq.size == cand.size && cand.none?{|s| slots[s]}
+            cand.each_with_index{|s, j| slots[s] = keys[j] + 1}
+            disp[b] = d
+            break
+          end
+          d += 1
+          return nil if d > (1 << 20)
+        end
+      end
+      [nbuckets, disp, slots.map{|sym| sym || 0}]
+    end
+
+    def slot_of(hash, disp, size)
+      ((hash >> 16) ^ ((disp * GOLDEN32) & MASK32)) & (size - 1)
+    end
 
     def read_preprocessed(presym_hash, path)
       File.binread(path).scan(/<@! (.*?) !@>/) do |part,|

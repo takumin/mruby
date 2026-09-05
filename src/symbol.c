@@ -21,28 +21,54 @@
 #ifndef MRB_PRESYM_SCANNING
 /* const uint16_t presym_length_table[]   */
 /* const char * const presym_name_table[] */
+/* const uint8_t  presym_disp_table[]     */
+/* const uint16_t presym_slot_table[]     */
 # include <mruby/presym/table.h>
 #endif
 
+/* 32-bit FNV-1a with a final avalanche.
+
+   `MRuby::Presym.hash32` in `lib/mruby/presym.rb` computes this same value
+   when it builds the tables below, so the two are changed together. */
+static uint32_t
+presym_hash(const char *name, size_t len)
+{
+  uint32_t h = 2166136261u;
+
+  for (size_t i = 0; i < len; i++) {
+    h ^= (uint8_t)name[i];
+    h *= 16777619u;
+  }
+  h ^= h >> 15;
+  h *= 2246822519u;
+  h ^= h >> 13;
+  return h;
+}
+
+/* Look a name up in the presym tables.
+
+   The tables are ordered by `presym.list`, which is append-only, so that a
+   symbol added to the tree leaves the number of every other symbol alone and
+   a compiler cache keeps its entries. That order is not the sorted order a
+   binary search would need, so the lookup is a perfect hash instead: the
+   name's hash picks a bucket, the bucket's displacement picks the one slot
+   the name can occupy, and the name is compared against whatever sits there.
+
+   Both tables are indexed by masking, so no division runs here. */
 static mrb_sym
 presym_find(const char *name, size_t len)
 {
-  if (presym_length_table[MRB_PRESYM_MAX-1] < len) return 0;
+  if (len > MRB_PRESYM_MAX_LENGTH) return 0;
 
-  mrb_sym presym_size = MRB_PRESYM_MAX;
-  for (mrb_sym start = 0; presym_size != 0; presym_size/=2) {
-    mrb_sym idx = start+presym_size/2;
-    int cmp = (int)len-(int)presym_length_table[idx];
-    if (cmp == 0) {
-      cmp = memcmp(name, presym_name_table[idx], len);
-      if (cmp == 0) return idx+1;
-    }
-    if (0 < cmp) {
-      start = ++idx;
-      --presym_size;
-    }
-  }
-  return 0;
+  uint32_t h = presym_hash(name, len);
+  uint32_t d = presym_disp_table[h & (MRB_PRESYM_BUCKETS-1)];
+  uint32_t slot = ((h >> 16) ^ (d * 2654435761u)) & (MRB_PRESYM_HASH_SIZE-1);
+  mrb_sym sym = presym_slot_table[slot];
+
+  if (sym == 0) return 0;
+  if (presym_length_table[sym-1] != len) return 0;
+  if (memcmp(name, presym_name_table[sym-1], len) != 0) return 0;
+  return sym;
 }
 
 static const char*
