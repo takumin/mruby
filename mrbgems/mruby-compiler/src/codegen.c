@@ -4323,19 +4323,20 @@ gen_defined_answer(mrc_codegen_scope *s, struct defined_answer *a)
    be evaluated before the method can be looked for on it.  That evaluation
    is the one place `defined?` runs code the operand names, and CRuby answers
    nil rather than letting what it raises out, so it sits under a catch
-   handler whose landing discards the exception. */
+   handler whose landing discards the exception.  Both ways of not answering
+   join the caller's nil exit. */
 static void
-gen_defined_method_on(mrc_codegen_scope *s, struct defined_answer *a)
+gen_defined_method_on(mrc_codegen_scope *s, struct defined_answer *a,
+                      uint32_t *nil_jmps)
 {
-  uint32_t nil_jmps = JMPLINK_START;
-  uint32_t ok, done;
+  uint32_t ok;
   int catch_entry;
   uint32_t begin, end;
 
   /* nothing is evaluated where the receiver is not defined to begin with */
   codegen_defined(s, a->recv, VAL);
   pop();
-  nil_jmps = genjmp2(s, OP_JMPNOT, cursp(), nil_jmps, NOVAL);
+  *nil_jmps = genjmp2(s, OP_JMPNOT, cursp(), *nil_jmps, NOVAL);
 
   genop_1(s, OP_LOADSELF, cursp());   /* receiver slot for the SSEND */
   push();
@@ -4347,7 +4348,7 @@ gen_defined_method_on(mrc_codegen_scope *s, struct defined_answer *a)
   catch_handler_set(s, catch_entry, MRC_CATCH_RESCUE, begin, end, s->pc);
   pop();                              /* the receiver never landed */
   genop_1(s, OP_EXCEPT, cursp());     /* discarded: what it raises is nil */
-  nil_jmps = genjmp(s, OP_JMP, nil_jmps);
+  *nil_jmps = genjmp(s, OP_JMP, *nil_jmps);
   push();                             /* back to the state the jump left */
   dispatch(s, ok);
 
@@ -4356,41 +4357,111 @@ gen_defined_method_on(mrc_codegen_scope *s, struct defined_answer *a)
   pop_n(4);
   genop_3(s, OP_SSEND, cursp(), new_sym(s, a->helper), 2);
   push();
-  done = genjmp_0(s, OP_JMP);
-
-  dispatch_linked(s, nil_jmps);
-  pop();
-  genop_1(s, OP_LOADNIL, cursp());
-  push();
-  dispatch(s, done);
 }
 
-/* `defined?` must not evaluate its operand, with the one exception a
-   receiver makes above.  Cases decidable from the operand's node type alone
-   yield a literal string; ivar/const/method/yield existence is resolved at
-   run time by a private helper (the helper reads the caller's frame for
-   const lexical scope and for the block). */
+/* CRuby does not look into these where they stand as a part of an operand:
+   a splat, a keyword argument, a block argument, forwarded arguments. */
+static mrc_bool
+defined_part_ignored_p(mrc_node *part)
+{
+  switch (nint(part)) {
+  case PM_SPLAT_NODE: case PM_KEYWORD_HASH_NODE:
+  case PM_BLOCK_ARGUMENT_NODE: case PM_FORWARDING_ARGUMENTS_NODE:
+    return TRUE;
+  default:
+    return FALSE;
+  }
+}
+
+/* The parts of an operand whose own answers `defined?` weighs: a call's
+   arguments, and an array literal's elements.  A hash's or a range's parts
+   are not among them, and neither are the arguments of a call that already
+   answers "expression" for carrying a block. */
+static pm_node_list_t *
+defined_parts_of(mrc_node *value)
+{
+  pm_node_list_t *list = NULL;
+
+  if (nint(value) == PM_ARRAY_NODE) {
+    list = &((pm_array_node_t *)value)->elements;
+  }
+  else if (nint(value) == PM_CALL_NODE) {
+    pm_call_node_t *call = (pm_call_node_t *)value;
+    if (call->block != NULL && nint(call->block) == PM_BLOCK_NODE) {
+      return NULL;
+    }
+    if (call->arguments) list = &call->arguments->arguments;
+  }
+  return (list != NULL && list->size > 0) ? list : NULL;
+}
+
+/* Whether an operand answers the same string however the program runs, so
+   that checking it would emit a branch that is never taken.  An operand whose
+   parts are weighed in turn does not qualify: one of them may not be there. */
+static mrc_bool
+defined_always_p(mrc_node *value)
+{
+  struct defined_answer a;
+
+  value = defined_operand(value);
+  if (defined_parts_of(value) != NULL) return FALSE;
+  defined_answer_for(value, &a);
+  return a.type != NULL;
+}
+
+/* Weigh the parts of an operand, jumping to the nil answer where one of them
+   is not defined.  CRuby weighs them before the receiver, so an argument that
+   is missing answers nil with the receiver left unevaluated. */
+static void
+gen_defined_parts(mrc_codegen_scope *s, mrc_node *value, uint32_t *nil_jmps)
+{
+  pm_node_list_t *list = defined_parts_of(value);
+
+  if (list == NULL) return;
+  for (size_t i = 0; i < list->size; i++) {
+    mrc_node *part = (mrc_node *)list->nodes[i];
+    if (defined_part_ignored_p(part) || defined_always_p(part)) continue;
+    codegen_defined(s, part, VAL);
+    pop();
+    *nil_jmps = genjmp2(s, OP_JMPNOT, cursp(), *nil_jmps, NOVAL);
+  }
+}
+
+/* `defined?` must not evaluate its operand, with the one exception a receiver
+   makes above.  Cases decidable from the operand's node type alone yield a
+   literal string; ivar/const/method/yield existence is resolved at run time
+   by a private helper (the helper reads the caller's frame for const lexical
+   scope and for the block). */
 static void
 codegen_defined(mrc_codegen_scope *s, mrc_node *value, int val)
 {
   struct defined_answer a;
+  uint32_t nil_jmps = JMPLINK_START;
   int rlev = s->rlev;
 
-  defined_answer_for(defined_operand(value), &a);
+  value = defined_operand(value);
+  defined_answer_for(value, &a);
   if (!val) return;
   s->rlev++;
   if (s->rlev > MRC_CODEGEN_LEVEL_MAX) {
     codegen_error(s, "too complex expression");
   }
-  if (a.recv) {
-    gen_defined_method_on(s, &a);
-  }
-  else if (a.type || a.helper) {
-    gen_defined_answer(s, &a);
+  if (a.type || a.helper) {
+    gen_defined_parts(s, value, &nil_jmps);
+    if (a.recv) gen_defined_method_on(s, &a, &nil_jmps);
+    else gen_defined_answer(s, &a);
   }
   else {
     genop_1(s, OP_LOADNIL, cursp());
     push();
+  }
+  if (nil_jmps != JMPLINK_START) {
+    uint32_t done = genjmp_0(s, OP_JMP);
+    dispatch_linked(s, nil_jmps);
+    pop();
+    genop_1(s, OP_LOADNIL, cursp());
+    push();
+    dispatch(s, done);
   }
   s->rlev = rlev;
 }
