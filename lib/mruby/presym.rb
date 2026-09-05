@@ -59,6 +59,31 @@ module MRuby
     }
     ESCAPE_SEQUENCE_MAP.keys.each { |k| ESCAPE_SEQUENCE_MAP[ESCAPE_SEQUENCE_MAP[k]] = k }
 
+    # The file that fixes the order symbols are numbered in.
+    #
+    # It is append-only: a symbol keeps its place in it for as long as the
+    # tree names that symbol at all, and a symbol new to the tree is written
+    # after every symbol already there. A build numbers its own symbols by
+    # this order, so a symbol added to one source leaves the number of every
+    # other symbol where it was.
+    #
+    # That is what keeps an added symbol from costing a whole tree of
+    # recompiles. With the numbers already handed out unchanged, and `id.h`
+    # written as macros rather than as an enumerator list, a source that does
+    # not name the new symbol preprocesses to the bytes it did before, and
+    # `ccache` or `sccache` answers its compile from cache.
+    REGISTRY_PATH = "presym.list"
+
+    # The order the registry gives, read once for the tree rather than once
+    # per build: every build of one run numbers against the same file.
+    def self.registry
+      @registry ||=
+        begin
+          path = File.join(MRUBY_ROOT, REGISTRY_PATH)
+          File.exist?(path) ? File.readlines(path, mode: "r:binary").each(&:chomp!) : []
+        end
+    end
+
     # 32-bit FNV-1a with a final avalanche, the hash `presym_find` computes
     # over a name it is looking up. The C side in `src/symbol.c` must compute
     # the same value for the same bytes, so the two are changed together.
@@ -82,7 +107,21 @@ module MRuby
     def scan(paths)
       presym_hash = {}
       paths.each {|path| read_preprocessed(presym_hash, path)}
-      presym_hash.keys.sort_by!{|sym| [c_literal_size(sym), sym]}
+      order(presym_hash)
+    end
+
+    # The symbols this build scanned, in the order it numbers them.
+    #
+    # The registered ones come first, in the registry's order, and the rest
+    # follow it sorted. A symbol the registry does not carry is one a gem
+    # outside the tree contributed, and numbering those last keeps them from
+    # moving a registered symbol; sorting them keeps the build reproducible
+    # from its sources alone.
+    def order(presym_hash)
+      presym_hash = presym_hash.dup
+      ordered = []
+      self.class.registry.each {|sym| ordered << sym if presym_hash.delete(sym)}
+      ordered.concat(presym_hash.keys.sort_by{|sym| [c_literal_size(sym), sym]})
     end
 
     def read_list
@@ -181,7 +220,6 @@ module MRuby
       slots.each_slice(16) {|row| f.puts "  #{row.join(',')},"}
       f.puts "};"
     end
-
 
     def list_path
       @list_path ||= "#{@build.build_dir}/presym".freeze

@@ -77,3 +77,30 @@ These macros are converted to static symbol IDs at compile time.
 The `_2` suffix variants (e.g., `MRB_SYM_2`) are kept for backward
 compatibility only; they accept an explicit `mrb_state*` parameter
 but ignore it. New code should use the standard macros above.
+
+### The symbol registry
+
+The build scans every source for these macros and numbers the symbols it
+finds. The order it numbers them in comes from `presym.list` at the root of
+the tree, which is append-only: a symbol keeps the number it has for as long
+as the tree still names it, and a symbol new to the tree is numbered after
+every symbol already registered.
+
+That order is what keeps a compiler cache useful. The numbers are written to
+`build/<target>/include/mruby/presym/id.h`, which every source includes, so
+a symbol that moved the numbers of the symbols around it would change what
+the compiler is handed for the whole tree, and `ccache` or `sccache` would
+answer none of it from cache.
+
+Adding a symbol therefore needs `presym.list` extended. Run
+
+    rake presym:update
+
+with a configuration that builds every gem the symbol reaches, and commit the
+result together with the code that introduced it. CI runs `rake presym:check`,
+which reports the symbols the registry is missing and fails rather than
+writing them.
+
+Because a symbol's number is its position among the symbols of the build,
+removing the last use of a symbol renumbers the ones registered after it, and
+that build recompiles in full. Adding a symbol does not.

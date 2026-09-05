@@ -76,6 +76,8 @@ jobs:
         run: rake defines
       - name: Build
         run: rake -m test:build
+      - name: Presym registry
+        run: rake presym:check
       - name: Size
         run: rake size
       - name: Test

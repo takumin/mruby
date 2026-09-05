@@ -84,3 +84,42 @@ MRuby.each_target do |build|
 
   task gensym: presym.list_path
 end
+
+# The registry is append-only, and these two tasks are how it stays that way.
+#
+# `presym:update` writes the symbols this build scanned that the registry
+# does not carry yet, after everything already in it. `presym:check` reports
+# the same symbols and fails instead of writing, which is what CI runs: a
+# symbol the registry is missing is numbered after the registered ones by
+# `MRuby::Presym#order` and so is placed correctly for this build, but the
+# next symbol to arrive would sort against it and move it, and the compiler
+# cache of everyone building the tree would go with it.
+[["update", true], ["check", false]].each do |action, write|
+  desc "#{write ? 'append newly scanned presyms to' : 'report presyms missing from'} #{MRuby::Presym::REGISTRY_PATH}"
+  task "presym:#{action}" => :gensym do
+    registry = MRuby::Presym.registry
+    seen = registry.to_h {|sym| [sym, true]}
+    added = []
+    MRuby.each_target do |build|
+      next unless build.libmruby_enabled?
+      next unless File.exist?(build.presym.list_path)
+      build.presym.read_list.each do |sym|
+        next if seen[sym]
+        seen[sym] = true
+        added << sym
+      end
+    end
+
+    if added.empty?
+      _pp "OK", MRuby::Presym::REGISTRY_PATH, "(#{registry.size} symbols)"
+    elsif write
+      path = File.join(MRUBY_ROOT, MRuby::Presym::REGISTRY_PATH)
+      _pp "GEN", MRuby::Presym::REGISTRY_PATH, "(+#{added.size} symbols)"
+      File.binwrite(path, (registry + added).join("\n") << "\n")
+    else
+      fail "#{MRuby::Presym::REGISTRY_PATH} is missing #{added.size} symbol(s) " \
+           "this build scanned: #{added.first(10).inspect}#{added.size > 10 ? ' ...' : ''}. " \
+           "Run `rake presym:update` with the same config and commit the result."
+    end
+  end
+end
