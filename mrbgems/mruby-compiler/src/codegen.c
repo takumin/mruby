@@ -4117,6 +4117,7 @@ struct defined_answer {
   pm_constant_id_t path[DEFINED_PATH_MAX];  /* a constant path, root first */
   int path_len;                             /* names in `path`, 0 for none */
   mrc_bool path_toplevel;                   /* the path is rooted at Object */
+  mrc_node *recv;                           /* recv.meth, NULL for none */
 };
 
 /* Parentheses around a single expression are transparent here, so
@@ -4256,11 +4257,17 @@ defined_answer_for(mrc_node *value, struct defined_answer *a)
     if (call->block != NULL && nint(call->block) == PM_BLOCK_NODE) {
       a->type = "expression";
     }
-    /* a bare method call on self (no explicit receiver, so no operand to
-       evaluate); a call with a receiver would need to evaluate it */
+    /* a bare method call on self, which has no operand to evaluate */
     else if (call->receiver == NULL) {
       a->helper = MRC_SYM_2(defined_method_q);
       a->arg = call->name;
+    }
+    /* a call through a receiver: the receiver has to be defined, and then
+       evaluated, before the method can be looked for on it */
+    else {
+      a->helper = MRC_SYM_2(defined_method_on_q);
+      a->arg = call->name;
+      a->recv = (mrc_node *)call->receiver;
     }
     break;
   }
@@ -4269,57 +4276,123 @@ defined_answer_for(mrc_node *value, struct defined_answer *a)
   }
 }
 
-/* `defined?` must not evaluate its operand.  Cases decidable from the
-   operand's node type alone yield a literal string; ivar/const/method/yield
-   existence is resolved at run time by a private helper (the helper reads the
-   caller's frame for const lexical scope and for the block).  A method call
-   through a receiver still falls through to nil. */
+static void codegen_defined(mrc_codegen_scope *s, mrc_node *value, int val);
+
+/* Emit the answer an operand's node type alone decides: a literal string, or
+   the helper call that resolves it at run time. */
+static void
+gen_defined_answer(mrc_codegen_scope *s, struct defined_answer *a)
+{
+  if (a->type) {
+    genop_2(s, OP_STRING, cursp(), new_lit_cstr(s, a->type));
+    push();
+    return;
+  }
+  genop_1(s, OP_LOADSELF, cursp());   /* receiver slot for the SSEND */
+  if (a->path_len > 0) {       /* A::B::C: where to start, then the names */
+    push();
+    if (a->path_toplevel) genop_1(s, OP_OCLASS, cursp());
+    else genop_1(s, OP_LOADNIL, cursp());
+    push();
+    for (int i = 0; i < a->path_len; i++) {
+      genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a->path[i]));
+      push();
+    }
+    pop_n(a->path_len);
+    genop_2(s, OP_ARRAY, cursp(), a->path_len);
+    push(); push();         /* reserve args + block slots (nregs) */
+    pop_n(4);
+    genop_3(s, OP_SSEND, cursp(), new_sym(s, a->helper), 2);
+  }
+  else if (a->arg == 0) {      /* yield/super: no symbol operand */
+    push(); push();         /* reserve arg + block slots (nregs) */
+    pop_n(2);
+    genop_2(s, OP_SSEND0, cursp(), new_sym(s, a->helper));
+  }
+  else {
+    push();
+    genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a->arg));
+    push(); push();         /* reserve value + block slots (nregs) */
+    pop_n(3);
+    genop_3(s, OP_SSEND, cursp(), new_sym(s, a->helper), 1);
+  }
+  push();
+}
+
+/* `defined?(recv.meth)`.  The receiver must itself be defined, and must then
+   be evaluated before the method can be looked for on it.  That evaluation
+   is the one place `defined?` runs code the operand names, and CRuby answers
+   nil rather than letting what it raises out, so it sits under a catch
+   handler whose landing discards the exception. */
+static void
+gen_defined_method_on(mrc_codegen_scope *s, struct defined_answer *a)
+{
+  uint32_t nil_jmps = JMPLINK_START;
+  uint32_t ok, done;
+  int catch_entry;
+  uint32_t begin, end;
+
+  /* nothing is evaluated where the receiver is not defined to begin with */
+  codegen_defined(s, a->recv, VAL);
+  pop();
+  nil_jmps = genjmp2(s, OP_JMPNOT, cursp(), nil_jmps, NOVAL);
+
+  genop_1(s, OP_LOADSELF, cursp());   /* receiver slot for the SSEND */
+  push();
+  catch_entry = catch_handler_new(s);
+  begin = s->pc;
+  codegen(s, a->recv, VAL);
+  end = s->pc;
+  ok = genjmp_0(s, OP_JMP);
+  catch_handler_set(s, catch_entry, MRC_CATCH_RESCUE, begin, end, s->pc);
+  pop();                              /* the receiver never landed */
+  genop_1(s, OP_EXCEPT, cursp());     /* discarded: what it raises is nil */
+  nil_jmps = genjmp(s, OP_JMP, nil_jmps);
+  push();                             /* back to the state the jump left */
+  dispatch(s, ok);
+
+  genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a->arg));
+  push(); push();                     /* reserve args + block slots (nregs) */
+  pop_n(4);
+  genop_3(s, OP_SSEND, cursp(), new_sym(s, a->helper), 2);
+  push();
+  done = genjmp_0(s, OP_JMP);
+
+  dispatch_linked(s, nil_jmps);
+  pop();
+  genop_1(s, OP_LOADNIL, cursp());
+  push();
+  dispatch(s, done);
+}
+
+/* `defined?` must not evaluate its operand, with the one exception a
+   receiver makes above.  Cases decidable from the operand's node type alone
+   yield a literal string; ivar/const/method/yield existence is resolved at
+   run time by a private helper (the helper reads the caller's frame for
+   const lexical scope and for the block). */
 static void
 codegen_defined(mrc_codegen_scope *s, mrc_node *value, int val)
 {
   struct defined_answer a;
+  int rlev = s->rlev;
 
   defined_answer_for(defined_operand(value), &a);
   if (!val) return;
-  if (a.type) {
-    genop_2(s, OP_STRING, cursp(), new_lit_cstr(s, a.type));
-    push();
+  s->rlev++;
+  if (s->rlev > MRC_CODEGEN_LEVEL_MAX) {
+    codegen_error(s, "too complex expression");
   }
-  else if (a.helper) {
-    genop_1(s, OP_LOADSELF, cursp());   /* receiver slot for the SSEND */
-    if (a.path_len > 0) {       /* A::B::C: where to start, then the names */
-      push();
-      if (a.path_toplevel) genop_1(s, OP_OCLASS, cursp());
-      else genop_1(s, OP_LOADNIL, cursp());
-      push();
-      for (int i = 0; i < a.path_len; i++) {
-        genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a.path[i]));
-        push();
-      }
-      pop_n(a.path_len);
-      genop_2(s, OP_ARRAY, cursp(), a.path_len);
-      push(); push();         /* reserve args + block slots (nregs) */
-      pop_n(4);
-      genop_3(s, OP_SSEND, cursp(), new_sym(s, a.helper), 2);
-    }
-    else if (a.arg == 0) {      /* yield/super: no symbol operand */
-      push(); push();         /* reserve arg + block slots (nregs) */
-      pop_n(2);
-      genop_2(s, OP_SSEND0, cursp(), new_sym(s, a.helper));
-    }
-    else {
-      push();
-      genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a.arg));
-      push(); push();         /* reserve value + block slots (nregs) */
-      pop_n(3);
-      genop_3(s, OP_SSEND, cursp(), new_sym(s, a.helper), 1);
-    }
-    push();
+  if (a.recv) {
+    gen_defined_method_on(s, &a);
+  }
+  else if (a.type || a.helper) {
+    gen_defined_answer(s, &a);
   }
   else {
     genop_1(s, OP_LOADNIL, cursp());
     push();
   }
+  s->rlev = rlev;
 }
 
 static void
