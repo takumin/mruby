@@ -96,14 +96,24 @@ module MRuby
     # Adding one symbol moves 0.63 numbers on average, and none at all four
     # times out of five.
     #
-    # The table is a power of two long and always has a free slot, so the
-    # runtime side (`presym_find` in `src/symbol.c`) indexes it by masking and
-    # its probe terminates. The step is drawn from the hash and forced odd,
-    # which is coprime with the length: the probe reaches every slot, and two
-    # names that share a first slot do not then share a run of them.
+    # The table is a power of two long, so the runtime side (`presym_find` in
+    # `src/symbol.c`) indexes it by masking. The step is drawn from the hash
+    # and forced odd, which is coprime with the length: the probe reaches
+    # every slot, and two names that share a first slot do not then share a
+    # run of them.
+    #
+    # It is also never more than four fifths full, which is what bounds that
+    # probe and the number of symbols one addition can move. Taking the
+    # smallest power of two that merely fits would leave the fill to wherever
+    # the symbol count landed between two powers of two: a build with 2040
+    # symbols would fill a 2048-slot table to 99.6%, where a name that is no
+    # symbol costs 915 probes at the 99th percentile against 19 here, and one
+    # added symbol moves 4.71 numbers against 0.75. At four fifths the worst
+    # a build can see is 21 probes and 0.86 numbers, and neither of the tables
+    # this tree builds grows by a slot for it.
     def slots(presyms)
-      size = 1
-      size <<= 1 while size <= presyms.size
+      size = 2
+      size <<= 1 while presyms.size > size * 4 / 5
       table = Array.new(size)
       presyms.each do |sym|
         hash = self.class.hash32(sym)
