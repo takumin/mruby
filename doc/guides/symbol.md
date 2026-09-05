@@ -103,11 +103,15 @@ result together with the code that introduced it. CI runs `rake presym:check`
 on one Linux job, which reports the symbols the registry is missing and fails
 rather than writing them.
 
-The registry covers what that reference job can reproduce. A build scans only
-the symbols its own platform and defines reach, so a macOS or Windows build
-finds socket constants that exist nowhere else; those stay unregistered, are
-numbered after every registered symbol, and cost the order of that tail alone.
-A maintainer on such a platform can register them the same way.
+The registry covers what that reference job can reproduce, plus the names of
+the platform-gated constants the tree spells out for itself: every socket
+constant and every errno the generated tables can define is registered, on
+whatever platform it turns out to exist. Registering a symbol no build scans
+costs nothing, since only the symbols a build finds reach its tables.
+
+A symbol a platform reaches by some other route stays unregistered. It is
+numbered after every registered symbol, so it costs the order of that tail
+alone, and a maintainer on that platform can register it the same way.
 
 Because a symbol's number is its position among the symbols of the build,
 removing the last use of a symbol renumbers the ones registered after it, and
