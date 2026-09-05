@@ -139,6 +139,25 @@ Typical sizes depend on included gems:
 - Local includes (`.cstub` files) are automatically inlined
 - Generated files (`mrblib.c`, `gem_init.c`) are included
 
+### The `MRB_AMALGAMATION` Define
+
+Both generated `.c` files define `MRB_AMALGAMATION` ahead of everything else.
+It marks a translation unit that holds the whole runtime rather than one
+source file, so that a source asking the compiler for work proportional to
+the translation unit can keep the request scoped the way a per-file build
+scopes it.
+
+The VM uses it for exactly that. `mrb_vm_exec()` carries
+`__attribute__((flatten))`, which inlines every call it makes, recursively,
+as deep as the translation unit allows. A per-file build stops it at the VM's
+own static opcode handlers, which is what the attribute is for. With the whole
+runtime in one translation unit it instead descends into the cycle that
+allocation, collection and exception raising form with each other, and does
+not converge: GCC 13 exhausts memory before emitting a single function, and
+Clang 18 finishes but produces a VM about 25% slower than the same
+amalgamation built without the attribute. So the amalgamation drops it, and
+`mrb_vm_exec()` is optimized like any other function there.
+
 ### Build Configuration Defines
 
 The defines the build compiles with are written at the top of `mruby.h`,

@@ -2144,7 +2144,17 @@ catch_handler_find(const mrb_irep *irep, const mrb_code *pc, uint32_t filter)
 #define VM_SENDB_SYM  3  /* fallback sendb: goto L_SENDB_SYM */
 #define VM_RETURN_NIL 4  /* nil irep: return nil via L_OP_RETURN */
 
-#if defined(__GNUC__) || defined(__clang__)
+/* `flatten` inlines every call in mrb_vm_exec recursively, as deep as the
+   translation unit allows. A per-file build stops it at this file's static
+   opcode handlers, which is what the attribute is for.
+   The amalgamation puts the whole runtime in one translation unit, so the
+   same instruction descends into the allocation cycle instead
+   (mrb_realloc -> mrb_realloc_simple -> mrb_full_gc -> sweep -> mrb_realloc,
+   and mrb_realloc -> mrb_raise_nomemory -> mrb_exc_raise -> allocation), and
+   the descent does not converge: GCC 13 exhausts memory in ipa-inline, and
+   Clang 18 finishes but produces a slower VM than it does without the
+   attribute. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(MRB_AMALGAMATION)
 #define MRB_FLATTEN __attribute__((flatten))
 #else
 #define MRB_FLATTEN
