@@ -829,10 +829,44 @@ mrb_f_defined_const_path(mrb_state *mrb, mrb_value self)
   return mrb_str_new_lit(mrb, "constant");
 }
 
+/* `defined?(recv.meth)`: the caller has evaluated the receiver and hands it
+   over, and `self` here is the caller's own self, which is what decides
+   whether a protected method is reachable.  Answer as a call would: a
+   private method is not reachable through a receiver, and a name with no
+   method behind it is left to `respond_to_missing?`. */
+static mrb_value
+mrb_f_defined_method_on(mrb_state *mrb, mrb_value self)
+{
+  mrb_value recv;
+  mrb_sym sym;
+  mrb_get_args(mrb, "on", &recv, &sym);
+  struct RClass *c = mrb_class(mrb, recv);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, sym);
+  if (MRB_METHOD_UNDEF_P(m)) {
+    mrb_sym rtm_id = MRB_SYM_Q(respond_to_missing);
+    if (!mrb_func_basic_p(mrb, recv, rtm_id, mrb_false)) {
+      mrb_value v = mrb_funcall_argv2(mrb, recv, rtm_id,
+                                      mrb_symbol_value(sym), mrb_false_value());
+      if (mrb_test(v)) return mrb_str_new_lit(mrb, "method");
+    }
+    return mrb_nil_value();
+  }
+  /* a method the build does not implement answers false to `respond_to?`,
+     and answers nil here for the same reason */
+  if (MRB_METHOD_NOTIMPL_P(m)) return mrb_nil_value();
+  /* the visibility test the VM applies to OP_SEND, in the same order */
+  if (m.flags & MRB_METHOD_PRIVATE_FL) return mrb_nil_value();
+  if ((m.flags & MRB_METHOD_PROTECTED_FL) && !mrb_obj_is_kind_of(mrb, self, c)) {
+    return mrb_nil_value();
+  }
+  return mrb_str_new_lit(mrb, "method");
+}
+
 /* ---------------------------*/
 static const mrb_mt_entry kernel_rom_entries[] = {
   MRB_MT_ENTRY(mrb_f_defined_const_path, MRB_SYM_Q(__defined_const_path), MRB_ARGS_REQ(2) | MRB_MT_PRIVATE),
   MRB_MT_ENTRY(mrb_f_defined_method, MRB_SYM_Q(__defined_method), MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
+  MRB_MT_ENTRY(mrb_f_defined_method_on, MRB_SYM_Q(__defined_method_on), MRB_ARGS_REQ(2) | MRB_MT_PRIVATE),
   MRB_MT_ENTRY(mrb_f_defined_ivar,   MRB_SYM_Q(__defined_ivar),   MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
   MRB_MT_ENTRY(mrb_f_defined_const,  MRB_SYM_Q(__defined_const),  MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
   MRB_MT_ENTRY(mrb_f_defined_yield,  MRB_SYM_Q(__defined_yield),  MRB_ARGS_NONE() | MRB_MT_PRIVATE),
