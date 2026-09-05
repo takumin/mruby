@@ -10,7 +10,7 @@ For a list of specific behavioral differences, see
 **If you are coming from CRuby**, note these major differences upfront:
 
 - No `require` or `load` — all code is linked at build time
-- No `defined?` keyword — use `respond_to?`, `const_defined?`, etc.
+- `defined?` does not resolve a call with an explicit receiver
 - No refinements (`refine`, `using`)
 - No `Encoding` class — UTF-8 opt-in via `MRB_UTF8_STRING`
 - Fibers cannot yield across C function boundaries
@@ -34,8 +34,10 @@ mruby supports the following keywords:
 
 Magic variables: `__FILE__`, `__LINE__`, `__ENCODING__`, `__method__`
 
-**Not supported:** `defined?` (use `respond_to?`, `const_defined?`,
-etc. instead), `refinements` (`using`, `refine`).
+`defined?` is supported except for operands that would have to be
+evaluated; see [limitations.md](../limitations.md).
+
+**Not supported:** refinements (`using`, `refine`).
 
 ### Classes and Modules
 
@@ -188,16 +190,24 @@ Regular expressions require an external gem such as `mruby-regexp-pcre`
 or `mruby-onig-regexp`. Without a regexp gem, `Regexp` literals
 (`/pattern/`) are not available.
 
-### Pattern Matching (Limited)
+### Pattern Matching
 
-Only rightward assignment with simple variable binding is supported:
+`case/in`, array and hash patterns, find patterns, alternative
+patterns, guard clauses, the pin operator, and both one-line forms
+are supported:
 
 ```ruby
-expr => var   # assigns expr to var
+case {name: "Alice", roles: [:admin, :dev]}
+in {name: String => name, roles: [*, :admin, *]}
+  puts "#{name} is an admin"
+end
+
+expr => var        # rightward assignment
+expr in pattern    # boolean check; parenthesize it in argument position
 ```
 
-`case/in` syntax, array/hash patterns, guard clauses, pin operator,
-find patterns, and alternative patterns are **not** supported.
+A subject that matches no `in` clause and has no `else` raises
+`NoMatchingPatternError`.
 
 ## Numeric Types
 
@@ -352,20 +362,23 @@ MRuby::Build.new do |conf|
 end
 ```
 
-### No `defined?` Keyword
+### Partial `defined?`
 
-The `defined?` keyword raises `NameError` instead of returning a
-type string or `nil`. Use alternatives:
+`defined?` returns the same type string as CRuby for local
+variables, instance variables, class variables, global variables,
+plain constants, `A::B`, assignments, `self`, `yield`, `super`,
+literal expressions, and a receiverless method call. It returns
+`nil` for an operand it would have to evaluate to decide — a call
+with an explicit receiver, a nested constant path, or a top-level
+constant reference:
 
 ```ruby
-# Instead of: defined?(Foo)
+defined?(String.new)   # nil in mruby, "method" in CRuby
+defined?(A::B::C)      # nil in mruby, "constant" in CRuby
+
+# Use a reflection method where the answer matters:
 Object.const_defined?(:Foo)
-
-# Instead of: defined?(@var)
-instance_variable_defined?(:@var)
-
-# Instead of: defined?(method_name)
-respond_to?(:method_name)
+obj.respond_to?(:method_name)
 ```
 
 ### Fiber Limitations

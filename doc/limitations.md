@@ -89,25 +89,45 @@ p Liste.new "foobar"
 
 `ArgumentError` is raised.
 
-## `defined?`
+## `defined?` with an Explicit Receiver
 
-The `defined?` keyword is considered too complex to be fully
-implemented. It is recommended to use `const_defined?` and
-other reflection methods instead.
+`defined?` must not evaluate its operand, so mruby resolves only the
+cases it can decide without doing so. A call with an explicit
+receiver would require evaluating that receiver, and is left
+unresolved. Nested constant paths and top-level constant references
+are unresolved for the same reason; only `A::B` where `A` is a plain
+constant is handled.
 
 ```ruby
-defined?(Foo)
+defined?(1 + 1)
+defined?(String.new)
+defined?(A::B::C)
+defined?(::A)
 ```
 
 #### CRuby
 
 ```
-nil
+"method"
+"method"
+"constant"
+"constant"
 ```
 
 #### mruby
 
-`NameError` is raised.
+```
+nil
+nil
+nil
+nil
+```
+
+Every other operand matches CRuby, returning the same type string or
+`nil` when undefined: local variables, instance variables, class
+variables, global variables, plain constants, `A::B`, assignments,
+`self`, `yield`, `super`, literal expressions, and a method call
+without a receiver.
 
 ## `alias` on global variables
 
@@ -124,7 +144,7 @@ alias $a $__a__
 
 #### mruby
 
-Syntax error
+The compiler rejects it: `Not implemented: PM_ALIAS_GLOBAL_VARIABLE_NODE`.
 
 ## Operator modification
 
@@ -164,36 +184,6 @@ puts(a.nil? ? "truthy" : "falsy")
 
 Ruby outputs `truthy`. mruby outputs `falsy`.
 
-## Argument Destructuring
-
-```ruby
-def m(a,(b,c),d); p [a,b,c,d]; end
-m(1,[2,3],4)  # => [1,2,3,4]
-```
-
-Destructured arguments (`b` and `c` in above example) cannot be accessed
-from the default expression of optional arguments and keyword arguments,
-since actual assignment is done after the evaluation of those default
-expressions. Thus:
-
-```ruby
-def f(a,(b,c),d=b)
-  p [a,b,c,d]
-end
-f(1,[2,3])
-```
-
-CRuby gives `[1,2,3,nil]`. mruby raises `NoMethodError` for `b`.
-
-Keyword argument expansion has similar restrictions. The following example, gives `[1, 1]` for CRuby, mruby raises `NoMethodError` for `b`.
-
-```ruby
-def g(a: 1, b: a)
-  p [a,b]
-end
-g(a:1)
-```
-
 ## No Double Dispatch in Module Loading
 
 To make implementation simpler, mruby does not use double dispatching in module loading (`include`/`prepend`/`extend`).
@@ -225,51 +215,30 @@ Nothing printed (since `include` does not call `append_features` internally).
 
 For performance reasons, mruby avoids calling the `#hash` method on keys when a hash table is small. This means that custom `#hash` methods on key objects may not be executed.
 
-## Pattern Matching
+## Pattern Matching in Argument Position
 
-Pattern matching is only partially supported in mruby. Currently, only the rightward assignment operator (`=>`) with simple variable binding is implemented.
+`case/in`, array patterns, hash patterns, find patterns, alternative
+patterns, guard clauses, the pin operator, the `=>` and `in` one-line
+forms, `deconstruct`/`deconstruct_keys`, and `NoMatchingPatternError`
+all behave as in CRuby. The remaining difference is syntactic: an
+unparenthesized `expr in pattern` cannot be written in an argument
+position.
 
 ```ruby
-expr => var  # Supported: assigns expr to var
+p(1 in Integer)
 ```
 
 #### CRuby
 
-Full pattern matching with `case/in` syntax and various pattern types:
-
-```ruby
-case [1, 2, 3]
-in [a, b, c]
-  puts "#{a}, #{b}, #{c}"  # => "1, 2, 3"
-end
-
-case {name: "Alice", age: 30}
-in {name:, age:}
-  puts "#{name} is #{age}"  # => "Alice is 30"
-end
-```
+`true`
 
 #### mruby
 
-Only rightward assignment with simple variable binding:
+Syntax error. Parenthesize the check:
 
 ```ruby
-[1, 2, 3] => x
-puts x  # => [1, 2, 3]
+p((1 in Integer))
 ```
-
-The following are **not supported**:
-
-- `case/in` syntax
-- Array patterns: `in [a, b, c]`
-- Hash patterns: `in {name:, age:}`
-- Guard clauses: `in pattern if condition`
-- Pin operator: `in ^variable`
-- Find patterns: `in [*, x, *]`
-- Alternative patterns: `in pattern1 | pattern2`
-- Boolean pattern check: `value in pattern`
-
-Note: mruby does provide `Array#deconstruct` and `Hash#deconstruct_keys` methods for future pattern matching compatibility.
 
 ## No Refinements
 
