@@ -276,6 +276,7 @@ gembox provides the class or feature you need:
 | Enumerator            | stdlib     | mruby-enumerator  |
 | Enumerator::Lazy      | stdlib     | mruby-enum-lazy   |
 | Set                   | stdlib     | mruby-set         |
+| TSort                 | stdlib     | mruby-tsort       |
 | ObjectSpace           | stdlib     | mruby-objectspace |
 | Time                  | stdlib-ext | mruby-time        |
 | Struct                | stdlib-ext | mruby-struct      |
