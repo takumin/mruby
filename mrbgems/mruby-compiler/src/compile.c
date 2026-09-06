@@ -314,12 +314,18 @@ mrc_pm_parse(mrc_ccontext *cc)
     pm_string_constant_init(scope_local, (const char *)allocated, local->length);
   }
   if (cc->options && cc->options->scopes) {
-    for (int i = 0; i < cc->options->scopes[0].locals_count; i++) {
-      mrc_free(cc, (void *)cc->options->scopes[0].locals[i].source);
+    /* Only the names this workaround allocated itself are freed here: the ones
+       mrc_pm_options_init() puts in point into the scope table, which owns
+       them. */
+    if (cc->options_locals_owned) {
+      for (int i = 0; i < cc->options->scopes[0].locals_count; i++) {
+        mrc_free(cc, (void *)cc->options->scopes[0].locals[i].source);
+      }
     }
     mrc_free(cc, cc->options);
   }
   cc->options = options;
+  cc->options_locals_owned = TRUE;
 #endif
 
   return node;
