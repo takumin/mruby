@@ -70,13 +70,19 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
   size_t size = 0;
 
   switch(mrb_type(obj)) {
-    case MRB_TT_STRING:
+    case MRB_TT_STRING: {
+      struct RString *s = RSTRING(obj);
       size += mrb_objspace_page_slot_size();
-      if (!RSTR_EMBED_P(RSTRING(obj)) && !RSTR_SHARED_P(RSTRING(obj))) {
-        size += RSTRING_CAPA(obj);
+      /* the buffer is the string's own only when the GC would free it:
+       * not embedded, not a refcounted shared buffer, not borrowed from a
+       * frozen string (FSHARED), and not static storage (NOFREE) */
+      if (!RSTR_EMBED_P(s) && !RSTR_SHARED_P(s) &&
+          !RSTR_FSHARED_P(s) && !RSTR_NOFREE_P(s)) {
+        size += RSTR_CAPA(s);
         size++; /* NUL terminator */
       }
       break;
+    }
     case MRB_TT_CLASS:
     case MRB_TT_MODULE:
     case MRB_TT_SCLASS:
@@ -186,7 +192,7 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
       size += mrb_objspace_page_slot_size();
       break;
     case MRB_TT_BACKTRACE:
-      size += ((struct RBacktrace*)mrb_obj_ptr(obj))->len * sizeof(struct mrb_backtrace_location);
+      size +=((struct RBacktrace*)mrb_obj_ptr(obj))->len * sizeof(struct mrb_backtrace_location);
       break;
     case MRB_TT_SVAR:
       size += mrb_objspace_page_slot_size();
