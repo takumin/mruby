@@ -747,6 +747,30 @@ assert('local variable definition in default value and subsequent arguments') do
   assert_equal([:a, nil, true], m(:a){})
 end
 
+assert('destructured parameter read from a later default expression') do
+  def m(a, (b, c), d) [a, b, c, d] end
+  assert_equal([1, 2, 3, 4], m(1, [2, 3], 4))
+
+  # the names are locals from the start, so a default evaluated before the
+  # destructuring assignment reads nil rather than calling a method
+  def m(a, (b, c), d = b) [a, b, c, d] end
+  assert_equal([1, 2, 3, nil], m(1, [2, 3]))
+  assert_equal([1, 2, 3, 4], m(1, [2, 3], 4))
+
+  def m((a, (b, c)), d = c) [a, b, c, d] end
+  assert_equal([1, 2, 3, nil], m([1, [2, 3]]))
+
+  def m((a, b), c: a) [a, b, c] end
+  assert_equal([1, 2, nil], m([1, 2]))
+  assert_equal([1, 2, 3], m([1, 2], c: 3))
+
+  # a keyword default may read a keyword assigned before it
+  def m(a: 1, b: a) [a, b] end
+  assert_equal([1, 1], m)
+  assert_equal([2, 2], m(a: 2))
+  assert_equal([1, 9], m(b: 9))
+end
+
 assert('multiline comments work correctly') do
 =begin
 this is a comment with nothing after begin and end
