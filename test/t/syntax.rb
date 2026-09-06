@@ -2016,6 +2016,16 @@ assert('defined? on control flow, jumps and definitions') do
   assert_false Object.const_defined?(:DefinedNeverClass)
   assert_false Object.const_defined?(:DefinedNeverModule)
   assert_equal 'expression', defined?(class << self; end)
+
+  # a rescue modifier, a named-capture match, and the statements that only a
+  # bare begin can hold in an operand
+  assert_equal 'expression', defined?(begin; no_such_method_at_all rescue 1; end)
+  assert_equal 'expression', defined?(/(?<defined_never_bound>.)/ =~ 'x')
+  assert_nil defined_never_bound
+  assert_equal 'expression', defined?(begin; alias defined_never_alias defined_never_defined; end)
+  assert_false respond_to?(:defined_never_alias, true)
+  assert_equal 'expression', defined?(begin; undef assert; end)
+  assert_equal 'expression', defined?(begin; END { }; end)
 end
 
 assert('defined? sees through parentheses around one expression') do

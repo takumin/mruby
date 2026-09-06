@@ -4229,6 +4229,8 @@ defined_answer_for(mrc_node *value, struct defined_answer *a)
   case PM_DEF_NODE: case PM_CLASS_NODE: case PM_MODULE_NODE:
   case PM_SINGLETON_CLASS_NODE:
   case PM_MATCH_PREDICATE_NODE: case PM_MATCH_REQUIRED_NODE:
+  case PM_RESCUE_MODIFIER_NODE: case PM_MATCH_WRITE_NODE:
+  case PM_ALIAS_METHOD_NODE: case PM_UNDEF_NODE: case PM_POST_EXECUTION_NODE:
     a->type = "expression";
     break;
   /* the literals CRuby names rather than calling expressions */
