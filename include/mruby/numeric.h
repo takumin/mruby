@@ -55,8 +55,8 @@ MRB_API mrb_value mrb_int64_value(mrb_state *mrb, int64_t v);
    Named `value_from_` rather than `_value` on purpose.  `mrb_int_value` reads
    one way only, since an int is not a property something has; `mrb_size_value`
    would read as the size of a value as readily as a value from a size, beside
-   mrb_hash_size and mrb_bint_size which are exactly that.  And `mrb_ssize` is
-   already a type here, an mrb_int or an intptr_t, which is not the ssize_t
+   mrb_hash_size and mrb_bint_bytes_size which are exactly that.  And `mrb_ssize`
+   is already a type here, an mrb_int or an intptr_t, which is not the ssize_t
    this takes: they differ in width wherever mrb_int is 32 bits. */
 #define mrb_value_from_size_t(mrb, v)   mrb_uint64_value((mrb), (uint64_t)(v))
 #define mrb_value_from_ssize_t(mrb, v)  mrb_int64_value((mrb), (int64_t)(v))

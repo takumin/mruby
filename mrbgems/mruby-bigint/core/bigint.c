@@ -6264,7 +6264,7 @@ mrb_bint_sign(mrb_state *mrb, mrb_value bint)
 }
 
 mrb_int
-mrb_bint_size(mrb_state *mrb, mrb_value bint)
+mrb_bint_bytes_size(mrb_state *mrb, mrb_value bint)
 {
   mpz_t z;
   bint_as_mpz(RBIGINT(bint), &z);
@@ -6272,7 +6272,7 @@ mrb_bint_size(mrb_state *mrb, mrb_value bint)
 }
 
 mrb_value
-mrb_bint_from_bytes(mrb_state *mrb, const uint8_t *bytes, mrb_int len)
+mrb_bint_new_bytes(mrb_state *mrb, const uint8_t *bytes, mrb_int len)
 {
   mpz_t z;
   size_t limb_len = (len + sizeof(mp_limb) - 1) / sizeof(mp_limb);

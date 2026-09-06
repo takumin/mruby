@@ -818,8 +818,16 @@ void mrb_bint_copy(mrb_state *mrb, mrb_value x, mrb_value y);
 size_t mrb_bint_memsize(mrb_value x);
 mrb_value mrb_bint_hash(mrb_state *mrb, mrb_value x);
 mrb_value mrb_bint_sqrt(mrb_state *mrb, mrb_value x);
-mrb_int mrb_bint_size(mrb_state *mrb, mrb_value bint);
-mrb_value mrb_bint_from_bytes(mrb_state *mrb, const uint8_t *bytes, mrb_int len);
+/* The bytes mrb_bint_new_bytes() takes to build a Bignum the size of this
+   one.  Rounded up to a whole number of limbs, so it is not the length of the
+   value: a Bignum of 9 significant bytes answers 12 where a limb is 4. */
+mrb_int mrb_bint_bytes_size(mrb_state *mrb, mrb_value bint);
+/* Build a Bignum out of `len` bytes taken as they lie, straight into the
+   limbs: which digit a byte lands in follows sizeof(mp_limb) and the host's
+   byte order, and the answer is always positive.  So the bytes are bits to
+   fill a Bignum with, not a number written down; a caller reading a number
+   off a wire wants a spelled byte order and is not served by this. */
+mrb_value mrb_bint_new_bytes(mrb_state *mrb, const uint8_t *bytes, mrb_int len);
 mrb_int mrb_bint_sign(mrb_state *mrb, mrb_value bint);
 mrb_value mrb_bint_gcd(mrb_state *mrb, mrb_value x, mrb_value y);
 mrb_value mrb_bint_lcm(mrb_state *mrb, mrb_value x, mrb_value y);
