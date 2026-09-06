@@ -8,10 +8,6 @@
 #include "../include/mrc_presym.h"
 #include "../include/mrc_diagnostic.h"
 
-#if defined(MRC_TARGET_MRUBY)
-#include "../include/mrc_proc.h"
-#endif
-
 static mrc_irep *
 mrc_load_exec(mrc_ccontext *c, mrc_node *ast)
 {
@@ -77,102 +73,54 @@ partial_hook(void *data, pm_parser_t *p, pm_token_t *token)
   }
 }
 
-#if defined(MRC_TARGET_MRUBY)
-#define MRC_PROC_CFUNC_FL 128
-#define MRC_PROC_CFUNC_P(p) (((p)->flags & MRC_PROC_CFUNC_FL) != 0)
-
-static mrc_bool
-mrc_mruby_lvspace_proc_p(const struct RProc *proc)
-{
-  const struct mrc_irep *irep;
-
-  if (proc == NULL || MRC_PROC_CFUNC_P(proc) || proc->upper == NULL) {
-    return FALSE;
-  }
-  irep = (const struct mrc_irep *)proc->body.irep;
-  return irep && irep->lv == NULL && irep->nlocals == 1;
-}
-
-static size_t
-mrc_mruby_irep_local_count(mrb_state *mrb, const struct mrc_irep *irep)
-{
-  size_t count = 0;
-
-  if (irep && irep->lv) {
-    size_t lv_count = irep->nlocals > 0 ? irep->nlocals - 1 : 0;
-    for (size_t i = 0; i < lv_count; i++) {
-      if (mrb_sym_name(mrb, irep->lv[i])) {
-        count++;
-      }
-    }
-  }
-  return count;
-}
-
-static void
-mrc_mruby_options_scope_local_init(mrc_ccontext *cc, pm_string_t *local, mrc_sym sym)
-{
-  const char *name = mrb_sym_name(cc->mrb, sym);
-  size_t length;
-  uint8_t *copy;
-
-  if (!name) return;
-  length = strlen(name);
-  copy = (uint8_t *)mrc_malloc(cc, length);
-  memcpy(copy, name, length);
-  pm_string_constant_init(local, (const char *)copy, length);
-}
-
+/* Prism resolves a bare identifier to a local variable only when it knows the
+   enclosing scopes, which is what makes `eval` see the locals around it.  The
+   host has already handed those scopes down as names, so nothing here reads a
+   call frame or a symbol table. */
 static void
 mrc_pm_options_init(mrc_ccontext *cc)
 {
+  size_t i, j, scopes_count = 0, scope_index;
+  pm_options_t *options;
+
   if (cc->options) return;
-  if (cc->upper == NULL) return;
+  if (cc->upper_scopes_count == 0) return;
 
-  struct RProc *u;
-
-  pm_options_t *options = (pm_options_t *)mrc_calloc(cc, 1, sizeof(pm_options_t));
-  pm_string_t *encoding = &options->encoding;
-  pm_string_constant_init(encoding, "UTF-8", 5);
-
-  size_t scopes_count = 0;
-  for (u = (struct RProc *)cc->upper; u && !MRC_PROC_CFUNC_P(u); u = (struct RProc *)u->upper) {
-    if (!mrc_mruby_lvspace_proc_p(u)) {
-      scopes_count++;
-    }
+  for (i = 0; i < cc->upper_scopes_count; i++) {
+    if (!cc->upper_scopes[i].lvspace) scopes_count++;
   }
 
+  options = (pm_options_t *)mrc_calloc(cc, 1, sizeof(pm_options_t));
+  pm_string_constant_init(&options->encoding, "UTF-8", 5);
   pm_options_scopes_init(options, scopes_count + 1); // Prism requires one more scope
 
-  u = (struct RProc *)cc->upper;
-  pm_options_scope_t *scope;
-  size_t scope_index = scopes_count;
-  for (; u && !MRC_PROC_CFUNC_P(u); u = (struct RProc *)u->upper) {
-    if (mrc_mruby_lvspace_proc_p(u)) {
-      continue;
-    }
-    const struct mrc_irep *ir = (const struct mrc_irep *)u->body.irep;
-    size_t lv_count = ir->nlocals > 0 ? ir->nlocals - 1 : 0;
-    const mrc_sym *v = ir->lv;
-    size_t locals_count = mrc_mruby_irep_local_count(cc->mrb, ir);
+  /* Prism reads its scopes outermost first, the table runs innermost first. */
+  scope_index = scopes_count;
+  for (i = 0; i < cc->upper_scopes_count; i++) {
+    const mrc_upper_scope *up = &cc->upper_scopes[i];
+    pm_options_scope_t *scope;
+    size_t named = 0, local_index = 0;
 
+    if (up->lvspace) continue;
+    for (j = 0; j < up->locals_count; j++) {
+      if (up->locals[j].name) named++;
+    }
     scope = &options->scopes[--scope_index];
-    pm_options_scope_init(scope, locals_count);
-    if (v) {
-      const char *name;
-      size_t local_index = 0;
-      for (size_t j = 0; j < lv_count; j++) {
-        name = mrb_sym_name(cc->mrb, v[j]);
-        if (name) {
-          mrc_mruby_options_scope_local_init(cc, &scope->locals[local_index++], v[j]);
-        }
-      }
+    pm_options_scope_init(scope, named);
+    for (j = 0; j < up->locals_count; j++) {
+      const mrc_upper_local *local = &up->locals[j];
+
+      if (local->name == NULL) continue;
+      /* A Prism constant string is a pointer and a length that Prism never
+         frees, and the scope table holds these names for as long as the
+         context does, so they are shared rather than copied again. */
+      pm_string_constant_init(&scope->locals[local_index++], local->name, local->length);
     }
   }
 
   cc->options = options;
+  cc->options_locals_owned = FALSE;
 }
-#endif
 
 static void
 mrc_pm_parser_init(mrc_parser_state *p, uint8_t **source, size_t size, mrc_ccontext *cc)
@@ -180,9 +128,7 @@ mrc_pm_parser_init(mrc_parser_state *p, uint8_t **source, size_t size, mrc_ccont
   pm_lex_callback_t *cb = (pm_lex_callback_t *)mrc_malloc(cc, sizeof(pm_lex_callback_t));
   cb->data = cc;
   cb->callback = partial_hook;
-#if defined(MRC_TARGET_MRUBY)
   mrc_pm_options_init(cc);
-#endif
   pm_parser_init(p, *source, size, cc->options);
   p->lex_callback = cb;
   mrc_init_presym(&p->constant_pool);
@@ -368,12 +314,18 @@ mrc_pm_parse(mrc_ccontext *cc)
     pm_string_constant_init(scope_local, (const char *)allocated, local->length);
   }
   if (cc->options && cc->options->scopes) {
-    for (int i = 0; i < cc->options->scopes[0].locals_count; i++) {
-      mrc_free(cc, (void *)cc->options->scopes[0].locals[i].source);
+    /* Only the names this workaround allocated itself are freed here: the ones
+       mrc_pm_options_init() puts in point into the scope table, which owns
+       them. */
+    if (cc->options_locals_owned) {
+      for (int i = 0; i < cc->options->scopes[0].locals_count; i++) {
+        mrc_free(cc, (void *)cc->options->scopes[0].locals[i].source);
+      }
     }
     mrc_free(cc, cc->options);
   }
   cc->options = options;
+  cc->options_locals_owned = TRUE;
 #endif
 
   return node;
@@ -436,27 +388,3 @@ mrc_load_string_cxt(mrc_ccontext *c, const uint8_t **source, size_t length)
   pm_node_destroy(c->p, root);
   return irep;
 }
-
-#if defined(MRC_TARGET_MRUBY)
-
-MRC_API void
-mrb_mruby_compiler2_gem_init(mrb_state *mrb)
-{
-}
-
-MRC_API void
-mrb_mruby_compiler2_gem_final(mrb_state *mrb)
-{
-}
-
-MRC_API void
-mrb_mruby_compiler_gem_init(mrb_state *mrb)
-{
-}
-
-MRC_API void
-mrb_mruby_compiler_gem_final(mrb_state *mrb)
-{
-}
-
-#endif

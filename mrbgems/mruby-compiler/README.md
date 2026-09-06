@@ -98,7 +98,13 @@ The compiler is shared by multiple runtimes. Changes made for mruby must preserv
 
    PicoRuby intentionally uses top-level gems such as `mrbgems/mruby-compiler-prism` or the standalone `mruby-compiler2` mirror and synchronizes them at chosen times.
 
-6. `mruby-eval-prism` is for the mruby VM path.
+6. Enclosing scopes reach the compiler as names.
+
+   `eval` and `binding` compile against the scopes around them, and those scopes live in the runtime. The runtime walks them and pushes each one with `mrc_ccontext_push_upper_scope()`, innermost first; the parser and the code generator read only that table. Neither reads a call frame nor interns into a symbol table, so a runtime with its own idea of a frame supplies the same information without the compiler having to know what a frame is.
+
+   This replaced the `upper` field of `mrc_ccontext`, which held an `RProc` the compiler walked itself. A runtime that set `cc->upper = scope` walks that chain on its own side instead and pushes one scope per frame, giving each frame's local variable names, its `nlocals`, whether it carries a local variable table at all, whether the search for an outer local stops there, and whether it is the frame that only holds an eval's own local variable space. `copy_upper_scopes_to_mrc()` in `src/mruby_compat.c` is the mruby implementation to follow.
+
+7. `mruby-eval-prism` is for the mruby VM path.
 
    FemtoRuby uses `picoruby-eval`, loaded as a prebuilt gem. On FemtoRuby, `eval` is available after:
 
