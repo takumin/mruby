@@ -25,8 +25,11 @@ mrb_sym_all_symbols(mrb_state *mrb, mrb_value self)
 {
   mrb_value ary = mrb_ary_new_capa(mrb, mrb->symidx);
 
-  for (mrb_sym i=1; i<=MRB_PRESYM_MAX; i++) {
-    mrb_ary_push(mrb, ary, mrb_symbol_value(i));
+  mrb_sym slots = mrb_presym_slots();
+  for (mrb_sym i=0; i<slots; i++) {
+    mrb_sym presym = mrb_presym_at(i);
+    if (presym == 0) continue;
+    mrb_ary_push(mrb, ary, mrb_symbol_value(presym));
   }
   mrb_sym lim = mrb->symidx + 1;
   for (mrb_sym i=1; i<lim; i++) {

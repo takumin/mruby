@@ -7,6 +7,27 @@
 #ifndef MRUBY_PRESYM_H
 #define MRUBY_PRESYM_H
 
+/*
+ * A presym ID is the symbol's name hashed into `MRB_PRESYM_BITS` bits, so it
+ * depends on the name and on nothing else a build happens to scan. IDs used
+ * to be handed out 1..n over the scanned set, which moved every symbol
+ * whenever one was added; since `id.h` reaches every object through
+ * `mruby.h`, one added symbol cost a compiler cache every object it held.
+ *
+ * The width is fixed rather than configurable: `MRuby::Presym::HASH_BITS` in
+ * `lib/mruby/presym.rb` hands out the IDs and `presym_hash()` in
+ * `src/symbol.c` recomputes them, and the two have to agree. `table.h`
+ * carries the width the generator used, and `symbol.c` refuses to compile
+ * against a header written for another one.
+ *
+ * IDs run over [1, MRB_PRESYM_MAX); runtime symbols start at MRB_PRESYM_MAX,
+ * so `sym <= MRB_PRESYM_MAX` still tells the two apart and the runtime table
+ * is still indexed by `sym - MRB_PRESYM_MAX`. Only a fraction of the range
+ * is occupied, which is what leaves each name a place of its own.
+ */
+#define MRB_PRESYM_BITS 19
+#define MRB_PRESYM_MAX (1U << MRB_PRESYM_BITS)
+
 #if !defined(MRB_PRESYM_SCANNING)
 
 #include <mruby/presym/id.h>

@@ -77,3 +77,48 @@ These macros are converted to static symbol IDs at compile time.
 The `_2` suffix variants (e.g., `MRB_SYM_2`) are kept for backward
 compatibility only; they accept an explicit `mrb_state*` parameter
 but ignore it. New code should use the standard macros above.
+
+### How the IDs are picked
+
+The build scans the sources for these macros and writes the IDs it found into
+`build/<name>/include/mruby/presym/id.h`, which `mruby.h` includes. An ID is a
+hash of the symbol's name folded into `MRB_PRESYM_BITS` bits, so it depends on
+the name and on nothing else the scan turned up: adding a symbol adds one
+`#define` and leaves every other symbol where it was. A translation unit that
+names none of the new symbols preprocesses to the bytes it did before, which
+is what lets `ccache` and `sccache` hand back the object they already have.
+
+Two names can fold to the same ID. The generator gives the second one the next
+free ID, and `presym_find()` in `src/symbol.c` walks the run of consecutive IDs
+that a displaced name could have reached, so a clash costs a comparison rather
+than a build error.
+
+Preallocated IDs run over `[1, MRB_PRESYM_MAX)` and runtime symbols start at
+`MRB_PRESYM_MAX`, so `sym < MRB_PRESYM_MAX` tells the two apart. Only a
+fraction of that range is ever occupied; the rest is what leaves each name a
+place of its own.
+
+### Reading a name back
+
+Scattered IDs cannot index a table the way dense ones could, but the set of
+them is settled once the scan is done, so where each one belongs can be settled
+then too. The generator places every ID in a slot of its own, by the CHD
+construction: the IDs are bucketed by their high bits, the crowded buckets are
+taken first, and each bucket is given the smallest displacement that drops its
+IDs on slots still free. `presym_slot()` recomputes that placement with a
+shift, a load, an xor, a mask and a conditional subtract, and the slot it
+answers holds the ID or holds none. Nothing is searched.
+
+The slot count is not rounded up to a power of two. It would cost six bytes
+for every slot left empty, which a symbol count just past a power of two would
+pay two thousand times over, so the generator measures the shapes instead and
+keeps the one whose tables come out smallest: packing tight leaves fewer empty
+slots but needs larger displacements to fill, and a displacement past 255
+doubles the width of the table holding them. A count that is not a power of
+two is what the conditional subtract is for, the masked value landing at most
+one count past the end.
+
+Nothing outside `src/symbol.c` should read an ID as an index: they are
+scattered, and the slots outnumber them. `mrb_presym_count()` reports how many
+symbols there are, and code that has to walk them steps `slot` from 0 to
+`mrb_presym_slots()`, reading `mrb_presym_at(slot)` and skipping the empties.

@@ -170,6 +170,15 @@ any of those needs updating.
 - `rake size` prints the `size.json` a build wrote as a table, and every CI
   job runs it ([#7489](https://github.com/mruby/mruby/pull/7489))
 - A build can ask the compiler whether a header is there ([#7432](https://github.com/mruby/mruby/pull/7432))
+- **_NOTE_**: a preallocated symbol's ID is a hash of its name rather than its
+  place in the scanned list, so adding one no longer renumbers the rest and
+  `ccache`/`sccache` keep the objects they hold. The build places the IDs in a
+  perfect hash, so reading a name back is still a table lookup with nothing
+  searched. `MRB_PRESYM_MAX` is now the size of the ID range and not the number
+  of symbols; `mrb_presym_count()`, `mrb_presym_slots()` and `mrb_presym_at()`
+  report what it used to. The name table that went with the old numbering is
+  gone too, so `libmruby` loses about 4KB and one relocation per preallocated
+  symbol
 - A generated output another configuration left behind is rebuilt ([#7236](https://github.com/mruby/mruby/pull/7236))
 - CI gained 32-bit x86 ([2fd16f3](https://github.com/mruby/mruby/commit/2fd16f3)),
   32-bit Arm ([5ee3bfc](https://github.com/mruby/mruby/commit/5ee3bfc)) and

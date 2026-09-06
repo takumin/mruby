@@ -303,6 +303,15 @@ mrb_value mrb_proc_get_self(mrb_state *mrb, const struct RProc *p, struct RClass
 mrb_bool mrb_proc_eql(mrb_state *mrb, mrb_value self, mrb_value other);
 #endif
 
+/* symbol */
+
+/* Preallocated symbols. Their IDs are hashes of their names, so they lie
+   scattered over [1, MRB_PRESYM_MAX) and are held in a table with room to
+   spare: walk `slot` from 0 to mrb_presym_slots() and skip the empty ones. */
+mrb_sym mrb_presym_count(void);
+mrb_sym mrb_presym_slots(void);
+mrb_sym mrb_presym_at(mrb_sym slot);
+
 /* range */
 #ifdef MRUBY_RANGE_H
 mrb_value mrb_get_values_at(mrb_state *mrb, mrb_value obj, mrb_int olen, mrb_int argc, const mrb_value *argv, mrb_value (*func)(mrb_state*, mrb_value, mrb_int));
