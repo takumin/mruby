@@ -3069,6 +3069,12 @@ vm_call_proc(mrb_state *mrb, const struct RProc *p, mrb_int nargs,
 #define VM_SET_FLOAT_VALUE(r,f) SET_FLOAT_VALUE(mrb,r,f)
 #endif
 
+MRB_API void
+mrb_vm_interrupt(mrb_state *mrb)
+{
+  mrb->vm_interrupt = TRUE;
+}
+
 /**
  * @brief Executes a sequence of mruby bytecode instructions.
  *
@@ -3096,13 +3102,7 @@ vm_call_proc(mrb_state *mrb, const struct RProc *p, mrb_int nargs,
  *       when not using switch-based dispatch. It also manages the callinfo
  *       stack (`ci`) for tracking method/block calls.
  */
-MRB_FLATTEN MRB_API void
-mrb_vm_interrupt(mrb_state *mrb)
-{
-  mrb->vm_interrupt = TRUE;
-}
-
-MRB_API mrb_value
+MRB_FLATTEN MRB_API mrb_value
 mrb_vm_exec(mrb_state *mrb, const struct RProc *begin_proc, const mrb_code *iseq)
 {
   /* mrb_assert(MRB_PROC_CFUNC_P(begin_proc)) */
