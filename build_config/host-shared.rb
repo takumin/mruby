@@ -35,7 +35,6 @@ MRuby::Build.new('host-shared') do |conf|
     cc.flags << '-fPIC'
   end
 
-
   # Turn on `enable_debug` for better debugging
   conf.enable_debug
   conf.enable_bintest

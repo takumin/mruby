@@ -10,7 +10,6 @@ MRuby::Build.new('host-gprof') do |conf|
   conf.cc.flags << '-pg'
   conf.linker.flags << '-pg'
 
-
   # Turn on `enable_debug` for better debugging
   conf.enable_debug
   conf.enable_test

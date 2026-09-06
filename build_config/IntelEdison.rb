@@ -14,7 +14,6 @@ MRuby::CrossBuild.new('core2-32-poky-linux') do |conf|
   POKY_EDISON_X86_PATH = "#{POKY_EDISON_PATH}/sysroots/i386-pokysdk-darwin"
   POKY_EDISON_BIN_PATH = "#{POKY_EDISON_X86_PATH}/usr/bin/i586-poky-linux"
 
-
   conf.cc do |cc|
     cc.command = "#{POKY_EDISON_BIN_PATH}/i586-poky-linux-gcc"
     cc.include_paths << ["#{POKY_EDISON_SYSROOT}/usr/include", "#{POKY_EDISON_X86_PATH}/usr/include"]

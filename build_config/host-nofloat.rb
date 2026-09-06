@@ -21,7 +21,6 @@ MRuby::Build.new('host-nofloat') do |conf|
     c.defines << "MRB_NO_FLOAT"
   end
 
-
   conf.enable_debug
   conf.enable_test
   conf.enable_bintest

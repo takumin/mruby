@@ -40,7 +40,6 @@ def clean(output, stderr = false)
   results.join("\n")
 end
 
-
 # Run a Windows program under Wine and hand back what it wrote and how it
 # ended, the way `Open3.capture3` would.
 #
@@ -69,7 +68,6 @@ def capture(argv)
   end
 end
 
-
 def main
   if ARGV.empty? || ARGV[0] =~ /^- (-?) (\?|help|h) $/x
     puts "#{$0} <command-line>"
@@ -88,6 +86,5 @@ def main
 
   exit(status.exitstatus)
 end
-
 
 main()

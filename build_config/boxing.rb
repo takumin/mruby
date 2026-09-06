@@ -16,7 +16,6 @@ boxings.product(bits, ints) do |boxing, bit, int|
     end
     conf.linker.flags << "-m#{bit}"
 
-
     conf.enable_debug
     conf.enable_test
     conf.enable_bintest
