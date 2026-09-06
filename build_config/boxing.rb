@@ -6,6 +6,11 @@ bits = [64, 32]
 ints = [64, 32]
 
 boxings.product(bits, ints) do |boxing, bit, int|
+  # mrbconf.h refuses MRB_INT64 on 32-bit unless boxing is off: a
+  # heap-allocated RInteger would need an alignment the GC slots do not
+  # promise.
+  next if int == 64 && bit == 32 && boxing != "no"
+
   MRuby::Build.new("boxing-#{boxing}-m#{bit}-i#{int}") do |conf|
     conf.toolchain :gcc
     conf.gembox 'full-core'
