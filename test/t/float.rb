@@ -465,4 +465,66 @@ assert('Float literal underflow') do
   assert_equal(-0.0, -92170141183460469231731687303715884105729e-383)
 end
 
+assert('Float arithmetic redefined on Float itself reaches the redefinition') do
+  # `OP_ADD`, `OP_SUB`, `OP_MUL` and `OP_DIV` answer `a + b` from C for a
+  # Float receiver, and `OP_ADDI`, `OP_SUBI`, `OP_ADDILV` and `OP_SUBILV` do
+  # the same for an Integer immediate operand; see the Integer test. A
+  # redefinition on `Float` leaves an Integer receiver with a Float argument
+  # to `Integer#+`, which is not the operator replaced.
+  Float.class_eval do
+    alias_method :__add_before_test, :+
+    alias_method :__sub_before_test, :-
+    alias_method :__mul_before_test, :*
+    alias_method :__div_before_test, :/
+    def +(other) [:add, self, other] end
+    def -(other) [:sub, self, other] end
+    def *(other) [:mul, self, other] end
+    def /(other) [:div, self, other] end
+  end
+  begin
+    a = 7.5
+    b = 2.0
+    sum = a + b
+    diff = a - b
+    prod = a * b
+    quot = a / b
+    int_arg = a + 2
+    imm_sum = a + 1
+    imm_diff = a - 1
+    lv = a
+    lv += 1
+    lv_sum = lv
+    lv = a
+    lv -= 1
+    lv_diff = lv
+    int_recv = 2 + a
+  ensure
+    Float.class_eval do
+      alias_method :+, :__add_before_test
+      alias_method :-, :__sub_before_test
+      alias_method :*, :__mul_before_test
+      alias_method :/, :__div_before_test
+      if respond_to?(:remove_method, true)
+        remove_method :__add_before_test, :__sub_before_test,
+                      :__mul_before_test, :__div_before_test
+      end
+    end
+  end
+  assert_equal [:add, 7.5, 2.0], sum
+  assert_equal [:sub, 7.5, 2.0], diff
+  assert_equal [:mul, 7.5, 2.0], prod
+  assert_equal [:div, 7.5, 2.0], quot
+  assert_equal [:add, 7.5, 2], int_arg
+  assert_equal [:add, 7.5, 1], imm_sum
+  assert_equal [:sub, 7.5, 1], imm_diff
+  assert_equal [:add, 7.5, 1], lv_sum
+  assert_equal [:sub, 7.5, 1], lv_diff
+  assert_float 9.5, int_recv
+  a = 7.5
+  assert_float 9.5, a + 2.0
+  assert_float 8.5, a + 1
+  a += 1
+  assert_float 8.5, a
+end
+
 end # const_defined?(:Float)

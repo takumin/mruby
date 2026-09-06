@@ -487,3 +487,67 @@ assert('Integer.__ensure converts its argument without dispatching') do
   assert_raise(TypeError) { Integer.__ensure("2") }
   assert_raise(TypeError) { Integer.__ensure(nil) }
 end
+
+assert('Integer arithmetic redefined on Integer itself reaches the redefinition') do
+  # `OP_ADD`, `OP_SUB`, `OP_MUL` and `OP_DIV` answer `a + b` from C for an
+  # Integer receiver, `OP_ADDI` and `OP_SUBI` answer `a + 1` and `OP_ADDILV`
+  # and `OP_SUBILV` answer `a += 1` on a local the same way. They may only do
+  # so while `Integer#+` and its kin are still the builtins they reimplement,
+  # which `mrb->bop_redefined` records the moment one is replaced, so a
+  # redefinition installed on `Integer` itself is honored as in CRuby. The
+  # results are read before the operators are put back because mrblib itself
+  # counts with them.
+  Integer.class_eval do
+    alias_method :__add_before_test, :+
+    alias_method :__sub_before_test, :-
+    alias_method :__mul_before_test, :*
+    alias_method :__div_before_test, :/
+    def +(other) [:add, self, other] end
+    def -(other) [:sub, self, other] end
+    def *(other) [:mul, self, other] end
+    def /(other) [:div, self, other] end
+  end
+  begin
+    a = 7
+    b = 2
+    sum = a + b
+    diff = a - b
+    prod = a * b
+    quot = a / b
+    imm_sum = a + 1
+    imm_diff = a - 1
+    lv = a
+    lv += 1
+    lv_sum = lv
+    lv = a
+    lv -= 1
+    lv_diff = lv
+    mixed = a + 2.5 if Object.const_defined?(:Float)
+  ensure
+    Integer.class_eval do
+      alias_method :+, :__add_before_test
+      alias_method :-, :__sub_before_test
+      alias_method :*, :__mul_before_test
+      alias_method :/, :__div_before_test
+      if respond_to?(:remove_method, true)
+        remove_method :__add_before_test, :__sub_before_test,
+                      :__mul_before_test, :__div_before_test
+      end
+    end
+  end
+  assert_equal [:add, 7, 2], sum
+  assert_equal [:sub, 7, 2], diff
+  assert_equal [:mul, 7, 2], prod
+  assert_equal [:div, 7, 2], quot
+  assert_equal [:add, 7, 1], imm_sum
+  assert_equal [:sub, 7, 1], imm_diff
+  assert_equal [:add, 7, 1], lv_sum
+  assert_equal [:sub, 7, 1], lv_diff
+  assert_equal [:add, 7, 2.5], mixed if Object.const_defined?(:Float)
+  a = 7
+  b = 2
+  assert_equal 9, a + b
+  assert_equal 8, a + 1
+  a += 1
+  assert_equal 8, a
+end

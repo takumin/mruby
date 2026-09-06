@@ -2928,7 +2928,13 @@ vm_op_div(mrb_state *mrb, uint32_t a, mrb_sym *midp)
   mrb_float x, y, f;
 #endif
 
-  /* need to check if op is overridden */
+  /* While `Integer#/` or `Float#/` is redefined every pair is sent, the
+     redefined class's for the answer and the other's for the simplicity of
+     one test; see `bop_redefined` in `struct mrb_state`. */
+  if (mrb_unlikely(mrb->bop_redefined & MRB_BOP_NUMERIC(MRB_BOP_DIV))) {
+    *midp = MRB_OPSYM(div);
+    return VM_SEND_SYM;
+  }
   switch (TYPES2(mrb_type(regs[a]),mrb_type(regs[a+1]))) {
   case TYPES2(MRB_TT_INTEGER,MRB_TT_INTEGER):
     {
@@ -4054,15 +4060,19 @@ RETRY_TRY_BLOCK:
 #endif
 
 #define OP_MATH(op_name) do {                                               \
-  /* need to check if op is overridden */                                   \
   uint16_t tt = TYPES2(mrb_type(regs[a]),mrb_type(regs[a+1]));              \
-  if (mrb_likely(tt == TYPES2(MRB_TT_INTEGER, MRB_TT_INTEGER))) {           \
+  if (mrb_likely(tt == TYPES2(MRB_TT_INTEGER, MRB_TT_INTEGER) &&            \
+                 !(mrb->bop_redefined & MRB_BOP_INTEGER(OP_MATH_BOP_##op_name)))) { \
     mrb_int x = mrb_integer(regs[a]), y = mrb_integer(regs[a+1]), z;        \
     if (mrb_int_##op_name##_overflow(x, y, &z)) {                           \
       OP_MATH_OVERFLOW_INT(op_name,x,y);                                    \
     }                                                                       \
     else                                                                    \
       VM_SET_INT_VALUE(regs[a], z);                                         \
+  }                                                                         \
+  else if (mrb_unlikely(mrb->bop_redefined & MRB_BOP_NUMERIC(OP_MATH_BOP_##op_name))) { \
+    mid = MRB_OPSYM(op_name);                                               \
+    goto L_SEND_SYM;                                                        \
   }                                                                         \
   else switch (tt) {                                                        \
     OP_MATH_CASE_FLOAT(op_name, integer, float);                            \
@@ -4104,6 +4114,9 @@ RETRY_TRY_BLOCK:
 #define OP_MATH_OP_add +
 #define OP_MATH_OP_sub -
 #define OP_MATH_OP_mul *
+#define OP_MATH_BOP_add MRB_BOP_ADD
+#define OP_MATH_BOP_sub MRB_BOP_SUB
+#define OP_MATH_BOP_mul MRB_BOP_MUL
 #define OP_MATH_TT_integer MRB_TT_INTEGER
 #define OP_MATH_TT_float   MRB_TT_FLOAT
 
@@ -4127,8 +4140,8 @@ RETRY_TRY_BLOCK:
     }
 
 #define OP_MATHI(op_name) do {                                              \
-  /* need to check if op is overridden */                                   \
-  if (mrb_likely(mrb_integer_p(regs[a]))) {                                 \
+  if (mrb_likely(mrb_integer_p(regs[a]) &&                                  \
+                 !(mrb->bop_redefined & MRB_BOP_INTEGER(OP_MATH_BOP_##op_name)))) { \
     mrb_int x = mrb_integer(regs[a]), y = (mrb_int)b, z;                    \
     if (mrb_int_##op_name##_overflow(x, y, &z)) {                           \
       OP_MATH_OVERFLOW_INT(op_name,x,y);                                    \
@@ -4136,25 +4149,23 @@ RETRY_TRY_BLOCK:
     else                                                                    \
       VM_SET_INT_VALUE(regs[a], z);                                         \
   }                                                                         \
-  else switch (mrb_type(regs[a])) {                                         \
-    OP_MATHI_CASE_FLOAT(op_name);                                           \
-    default:                                                                \
-      SET_INT_VALUE(mrb,regs[a+1], b);                                      \
-      mid = MRB_OPSYM(op_name);                                             \
-      goto L_SEND_SYM;                                                      \
+  OP_MATHI_ELSE_FLOAT(op_name)                                              \
+  else {                                                                    \
+    SET_INT_VALUE(mrb,regs[a+1], b);                                        \
+    mid = MRB_OPSYM(op_name);                                               \
+    goto L_SEND_SYM;                                                        \
   }                                                                         \
 } while(0);                                                                 \
   NEXT;
 #ifdef MRB_NO_FLOAT
-#define OP_MATHI_CASE_FLOAT(op_name) (void)0
+#define OP_MATHI_ELSE_FLOAT(op_name)
 #else
-#define OP_MATHI_CASE_FLOAT(op_name)                                        \
-  case MRB_TT_FLOAT:                                                        \
-    {                                                                       \
-      mrb_float z = mrb_float(regs[a]) OP_MATH_OP_##op_name b;              \
-      VM_SET_FLOAT_VALUE(regs[a], z);                                       \
-    }                                                                       \
-    break
+#define OP_MATHI_ELSE_FLOAT(op_name)                                        \
+  else if (mrb_float_p(regs[a]) &&                                          \
+           !(mrb->bop_redefined & MRB_BOP_FLOAT(OP_MATH_BOP_##op_name))) {  \
+    mrb_float z = mrb_float(regs[a]) OP_MATH_OP_##op_name b;                \
+    VM_SET_FLOAT_VALUE(regs[a], z);                                         \
+  }
 #endif
 
     CASE(OP_ADDI, BB) {
@@ -4166,50 +4177,44 @@ RETRY_TRY_BLOCK:
     }
 
 #ifdef MRB_NO_FLOAT
-#define OP_MATHILV_CASE_FLOAT(op_name) (void)0
+#define OP_MATHILV_ELSE_FLOAT(op_name)
 #else
-#define OP_MATHILV_CASE_FLOAT(op_name)                                      \
-  case MRB_TT_FLOAT:                                                        \
-    {                                                                       \
-      mrb_float z = mrb_float(regs[a]) OP_MATH_OP_##op_name c;              \
-      VM_SET_FLOAT_VALUE(regs[a], z);                                       \
-    }                                                                       \
-    break
+#define OP_MATHILV_ELSE_FLOAT(op_name)                                      \
+  else if (mrb_float_p(regs[a]) &&                                          \
+           !(mrb->bop_redefined & MRB_BOP_FLOAT(OP_MATH_BOP_##op_name))) {  \
+    mrb_float z = mrb_float(regs[a]) OP_MATH_OP_##op_name c;                \
+    VM_SET_FLOAT_VALUE(regs[a], z);                                         \
+  }
 #endif
 #define OP_MATHILV(op_name)                                                 \
   /* a=local, b=working space, c=immediate */                               \
-  switch (mrb_type(regs[a])) {                                              \
-    case MRB_TT_INTEGER:                                                    \
-      {                                                                     \
-        mrb_int x = mrb_integer(regs[a]), y = (mrb_int)c, z;                \
-        if (mrb_int_##op_name##_overflow(x, y, &z)) {                       \
-          OP_MATH_OVERFLOW_INT(op_name,x,y);                                \
-        }                                                                   \
-        else {                                                              \
-          VM_SET_INT_VALUE(regs[a], z);                                     \
-        }                                                                   \
-      }                                                                     \
-      break;                                                                \
-    OP_MATHILV_CASE_FLOAT(op_name);                                         \
-    default:                                                                \
-      /* `a` is a local variable slot, not a temporary, so the L_SEND_SYM   \
-         path the other OP_MATH opcodes take cannot be used: it writes the  \
-         argument into regs[a+1] and lays the callee frame over the locals  \
-         from regs[a] on. `b` is the working space reserved for the call,   \
-         but a send set up there leaves its result in regs[b] and the       \
-         `MOVE local, temp` that used to copy it back is what the fusion    \
-         removed, so the call is made from C. It can move the stack, hence  \
-         the `ci` refresh before storing through `regs`. */                 \
-      {                                                                     \
-        int ai_ = mrb_gc_arena_save(mrb);                                   \
-        mrb_value arg_ = mrb_int_value(mrb, c);                             \
-        mrb_value v_ = mrb_funcall_argv(mrb, regs[a],                       \
-                                        MRB_OPSYM(op_name), 1, &arg_);      \
-        ci = mrb->c->ci;                                                    \
-        regs[a] = v_;                                                       \
-        mrb_gc_arena_restore(mrb, ai_);                                     \
-      }                                                                     \
-      break;                                                                \
+  if (mrb_likely(mrb_integer_p(regs[a]) &&                                  \
+                 !(mrb->bop_redefined & MRB_BOP_INTEGER(OP_MATH_BOP_##op_name)))) { \
+    mrb_int x = mrb_integer(regs[a]), y = (mrb_int)c, z;                    \
+    if (mrb_int_##op_name##_overflow(x, y, &z)) {                           \
+      OP_MATH_OVERFLOW_INT(op_name,x,y);                                    \
+    }                                                                       \
+    else {                                                                  \
+      VM_SET_INT_VALUE(regs[a], z);                                         \
+    }                                                                       \
+  }                                                                         \
+  OP_MATHILV_ELSE_FLOAT(op_name)                                            \
+  else {                                                                    \
+    /* `a` is a local variable slot, not a temporary, so the L_SEND_SYM     \
+       path the other OP_MATH opcodes take cannot be used: it writes the    \
+       argument into regs[a+1] and lays the callee frame over the locals    \
+       from regs[a] on. `b` is the working space reserved for the call,     \
+       but a send set up there leaves its result in regs[b] and the         \
+       `MOVE local, temp` that used to copy it back is what the fusion      \
+       removed, so the call is made from C. It can move the stack, hence    \
+       the `ci` refresh before storing through `regs`. */                   \
+    int ai_ = mrb_gc_arena_save(mrb);                                       \
+    mrb_value arg_ = mrb_int_value(mrb, c);                                 \
+    mrb_value v_ = mrb_funcall_argv(mrb, regs[a],                           \
+                                    MRB_OPSYM(op_name), 1, &arg_);          \
+    ci = mrb->c->ci;                                                        \
+    regs[a] = v_;                                                           \
+    mrb_gc_arena_restore(mrb, ai_);                                         \
   }                                                                         \
   NEXT
 

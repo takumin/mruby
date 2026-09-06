@@ -504,3 +504,23 @@ assert('Object#public_send visibility') do
   end.new
   assert_equal [:nope, [1]], mm.public_send(:nope, 1)
 end
+
+assert('Module#remove_method on a module prepended to Integer restores the builtin operator') do
+  # A module prepended to `Integer` changes what `-` resolves to without
+  # touching the method table of `Integer` itself, and `OP_SUB` honors that on
+  # the same terms as a redefinition on `Integer`: the operator resolves to
+  # something other than the builtin, so the opcode sends it. Removing the
+  # method again leaves the module in place but resolves `-` back to the
+  # builtin, which the opcode answers itself once more.
+  m = Module.new { def -(other) [:prepended, self, other] end }
+  Integer.prepend(m)
+  begin
+    a = 7
+    diff = a - 2
+  ensure
+    m.class_eval { remove_method :- }
+  end
+  assert_equal [:prepended, 7, 2], diff
+  a = 7
+  assert_equal 5, a - 2
+end
