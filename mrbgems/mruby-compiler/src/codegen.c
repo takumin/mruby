@@ -3027,6 +3027,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
           gen_move(s, cursp(), arr_reg, 0);
           push();
           gen_int(s, cursp(), -(post_len - i));
+          push(); pop();  /* space for the index */
           genop_1(s, OP_GETIDX, cursp() - 1);
           /* Element is now at cursp-1 */
           codegen_pattern(s, pat_arr->posts.nodes[i], cursp() - 1, fail_pos, -1);
@@ -3036,7 +3037,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
       else {
         /* Call target.deconstruct() */
         gen_move(s, cursp(), target, 0);
-        push(); pop();  /* touch block slot for max stack */
+        push_n(2); pop_n(2);  /* space for receiver and a block */
         genop_3(s, OP_SEND, cursp(), new_sym(s, MRC_SYM_1(deconstruct)), 0);
         arr_reg = cursp();
         push();  /* protect arr_reg on stack */
@@ -3049,7 +3050,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
         {
           int chk = cursp();
           gen_move(s, chk, arr_reg, 0);
-          push(); pop();  /* touch block slot */
+          push_n(2); pop_n(2);  /* space for receiver and a block */
           genop_3(s, OP_SEND, chk, new_sym(s, MRC_SYM_1(size)), 0);
           /* R[chk] = size */
           gen_int(s, chk + 1, pre_len + post_len);
@@ -3105,6 +3106,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
           gen_move(s, cursp(), arr_reg, 0);
           push();
           gen_int(s, cursp(), -(post_len - i));
+          push(); pop();  /* space for the index */
           genop_1(s, OP_GETIDX, cursp() - 1);
           codegen_pattern(s, pat_arr->posts.nodes[i], cursp() - 1, fail_pos, -1);
           pop();
