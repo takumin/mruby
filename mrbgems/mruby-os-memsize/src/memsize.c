@@ -55,6 +55,16 @@ os_memsize_of_irep(mrb_state* state, const struct mrb_irep *irep)
   return size;
 }
 
+/* Heap behind the code a proc runs. A C function has none, and neither
+ * does an alias, whose body holds the aliased method's id, not an irep. */
+static size_t
+os_memsize_of_proc_body(mrb_state* mrb, const struct RProc *proc)
+{
+  if (MRB_PROC_CFUNC_P(proc) || MRB_PROC_ALIAS_P(proc) || !proc->body.irep)
+    return 0;
+  return os_memsize_of_irep(mrb, proc->body.irep);
+}
+
 static size_t
 os_memsize_of_method(mrb_state* mrb, mrb_value method_obj)
 {
@@ -63,9 +73,7 @@ os_memsize_of_method(mrb_state* mrb, mrb_value method_obj)
   if (mrb_nil_p(proc_value)) return 0;
   struct RProc *proc = mrb_proc_ptr(proc_value);
 
-  size_t size = sizeof(struct RProc);
-  if (!MRB_PROC_CFUNC_P(proc)) size += os_memsize_of_irep(mrb, proc->body.irep);
-  return size;
+  return sizeof(struct RProc) + os_memsize_of_proc_body(mrb, proc);
 }
 
 static mrb_bool
@@ -143,8 +151,7 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
         size += MRB_ENV_LEN(env) * sizeof(mrb_value);
         if (MRB_ENV_SVAR_P(env)) size += sizeof(mrb_value);
       }
-      if (!MRB_PROC_CFUNC_P(proc))
-        size += os_memsize_of_irep(mrb, proc->body.irep);
+      size += os_memsize_of_proc_body(mrb, proc);
       break;
     }
     case MRB_TT_RANGE:
