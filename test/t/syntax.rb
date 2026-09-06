@@ -1604,6 +1604,37 @@ assert('pattern matching - complex patterns') do
   end
 end
 
+assert('pattern matching - array pattern as the last expression of a frame') do
+  # Nothing follows the pattern here, so the frame is exactly as wide as the
+  # pattern's own code declares. The internal `deconstruct` and `size` calls
+  # and the post-rest index must fit in that width.
+  f = ->(x) { x => [a, b]; [a, b] }
+  assert_equal [1, 2], f.call([1, 2])
+
+  f = ->(x) { x => [a, [b, c]]; [a, b, c] }
+  assert_equal [1, 2, 3], f.call([1, [2, 3]])
+
+  f = ->(x) { x => [a, *, b]; [a, b] }
+  assert_equal [1, 3], f.call([1, 2, 3])
+
+  f = ->(x) { x in [a, b] }
+  assert_true f.call([1, 2])
+  assert_false f.call([1, 2, 3])
+
+  f = ->(x) { case x; in [a, b]; end; [a, b] }
+  assert_equal [1, 2], f.call([1, 2])
+end
+
+assert('pattern matching - find pattern as the last expression of a frame') do
+  # The elements are variables on purpose: a literal element calls `===`,
+  # and that call widens the frame past the gap this guards against.
+  f = ->(x) { x => [*, a, *]; a }
+  assert_equal 1, f.call([1, 2, 3])
+
+  f = ->(x) { x => [*p, a, *q]; [p, a, q] }
+  assert_equal [[], 1, [2, 3]], f.call([1, 2, 3])
+end
+
 assert('defined? on statically-decidable operands') do
   # literals and pure expressions
   assert_equal 'expression', defined?(1)
