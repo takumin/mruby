@@ -39,6 +39,64 @@ mrc_ccontext_cleanup_local_variables(mrc_ccontext *cc)
   }
 }
 
+MRC_API mrc_bool
+mrc_ccontext_push_upper_scope(mrc_ccontext *c, const mrc_upper_scope *scope)
+{
+  mrc_upper_scope *scopes, *dst;
+  size_t i;
+
+  scopes = (mrc_upper_scope *)mrc_realloc(c, c->upper_scopes,
+                                          sizeof(mrc_upper_scope) * (c->upper_scopes_count + 1));
+  if (scopes == NULL) return FALSE;
+  c->upper_scopes = scopes;
+
+  dst = &scopes[c->upper_scopes_count];
+  *dst = *scope;
+  dst->locals = NULL;
+  dst->locals_count = 0;
+  /* Counted before it is filled in, so that whatever has been copied so far is
+     released with the context even if a copy below fails. */
+  c->upper_scopes_count++;
+
+  if (scope->locals_count > 0) {
+    dst->locals = (mrc_upper_local *)mrc_calloc(c, scope->locals_count, sizeof(mrc_upper_local));
+    if (dst->locals == NULL) return FALSE;
+    dst->locals_count = scope->locals_count;
+    for (i = 0; i < scope->locals_count; i++) {
+      const mrc_upper_local *src = &scope->locals[i];
+      char *copy;
+
+      if (src->name == NULL) continue;
+      /* One byte over the length: the names are compared by length, but a
+         terminator keeps them printable in a debugger. */
+      copy = (char *)mrc_malloc(c, src->length + 1);
+      if (copy == NULL) return FALSE;
+      memcpy(copy, src->name, src->length);
+      copy[src->length] = '\0';
+      dst->locals[i].name = copy;
+      dst->locals[i].length = src->length;
+    }
+  }
+  return TRUE;
+}
+
+static void
+mrc_ccontext_upper_scopes_free(mrc_ccontext *c)
+{
+  size_t i, j;
+
+  for (i = 0; i < c->upper_scopes_count; i++) {
+    mrc_upper_scope *scope = &c->upper_scopes[i];
+    for (j = 0; j < scope->locals_count; j++) {
+      if (scope->locals[j].name) mrc_free(c, (void *)scope->locals[j].name);
+    }
+    if (scope->locals) mrc_free(c, scope->locals);
+  }
+  if (c->upper_scopes) mrc_free(c, c->upper_scopes);
+  c->upper_scopes = NULL;
+  c->upper_scopes_count = 0;
+}
+
 MRC_API const char *
 mrc_ccontext_filename(mrc_ccontext *c, const char *s)
 {
@@ -74,6 +132,7 @@ mrc_ccontext_free(mrc_ccontext *c)
     mrc_free(c, c->options);
     c->options = NULL;
   }
+  mrc_ccontext_upper_scopes_free(c);
   if (c->filename_table) mrc_free(c, c->filename_table);
   if (c->filename) mrc_free(c, c->filename);
   pm_parser_free(c->p);

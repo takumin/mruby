@@ -24,6 +24,67 @@
 
 int mrc_dump_irep(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, uint8_t **bin, size_t *bin_size);
 
+/* The chain of enclosing procs is walked here, on the side that knows what a
+   proc is, and handed to the compiler as plain names.  That is what keeps
+   RProc, mrb_irep and the symbol table out of the parser and the code
+   generator while `eval` and `binding` still see the locals around them. */
+static void
+copy_upper_scopes_to_mrc(mrc_ccontext *dst, const struct RProc *upper)
+{
+  const struct RProc *u;
+
+  for (u = upper; u && !MRB_PROC_CFUNC_P(u); u = u->upper) {
+    const mrb_irep *irep = u->body.irep;
+    mrc_upper_scope scope;
+    mrc_upper_local *locals = NULL;
+    uint16_t i, count;
+
+    if (irep == NULL) break;
+    count = irep->nlocals > 0 ? irep->nlocals - 1 : 0;
+
+    memset(&scope, 0, sizeof(scope));
+    scope.nlocals = irep->nlocals;
+    scope.has_locals = irep->lv != NULL;
+    /* The code generator stops at this frame; the parser still wants what
+       lies beyond it, so the walk itself carries on. */
+    scope.boundary = MRB_PROC_SCOPE_P(u);
+    /* mruby inserts a frame holding nothing but the receiver to give an eval
+       its own local variable space.  It names no local, so it is not a scope
+       the parser should see. */
+    scope.lvspace = u->upper != NULL && irep->lv == NULL && irep->nlocals == 1;
+
+    if (scope.has_locals && count > 0) {
+      locals = (mrc_upper_local*)mrc_calloc(dst, count, sizeof(mrc_upper_local));
+      for (i = 0; i < count; i++) {
+        mrb_int len = 0;
+        const char *name = mrb_sym_name_len(dst->mrb, irep->lv[i], &len);
+        char *copy;
+
+        /* An inline symbol is unpacked into a buffer the state reuses on the
+           next call, so each name is copied before the next one is asked
+           for. */
+        if (name == NULL) continue;
+        copy = (char*)mrc_malloc(dst, (size_t)len + 1);
+        memcpy(copy, name, (size_t)len);
+        copy[len] = '\0';
+        locals[i].name = copy;
+        locals[i].length = (size_t)len;
+      }
+      scope.locals = locals;
+      scope.locals_count = count;
+    }
+    /* The context keeps its own copy of the names, so the scratch array goes
+       back as soon as the scope is pushed. */
+    mrc_ccontext_push_upper_scope(dst, &scope);
+    if (locals) {
+      for (i = 0; i < count; i++) {
+        if (locals[i].name) mrc_free(dst, (void*)locals[i].name);
+      }
+      mrc_free(dst, locals);
+    }
+  }
+}
+
 static void
 copy_context_to_mrc(mrc_ccontext *dst, const mrb_ccontext *src)
 {
@@ -47,7 +108,7 @@ copy_context_to_mrc(mrc_ccontext *dst, const mrb_ccontext *src)
   dst->keep_lv = src->keep_lv;
   dst->no_optimize = src->no_optimize;
   dst->no_ext_ops = src->no_ext_ops;
-  dst->upper = src->upper;
+  copy_upper_scopes_to_mrc(dst, src->upper);
   if (src->filename) {
     mrc_ccontext_filename(dst, src->filename);
   }
@@ -696,6 +757,28 @@ mrb_decode_insn(const mrb_code *pc)
   data.b = b;
   data.c = c;
   return data;
+}
+
+/* The mgem hooks.  The compiler needs no per-state setup; they exist because
+   every mgem is expected to define them. */
+MRC_API void
+mrb_mruby_compiler2_gem_init(mrb_state *mrb)
+{
+}
+
+MRC_API void
+mrb_mruby_compiler2_gem_final(mrb_state *mrb)
+{
+}
+
+MRC_API void
+mrb_mruby_compiler_gem_init(mrb_state *mrb)
+{
+}
+
+MRC_API void
+mrb_mruby_compiler_gem_final(mrb_state *mrb)
+{
 }
 
 #endif

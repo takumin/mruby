@@ -11,10 +11,6 @@
 #include "../include/mrc_debug.h"
 #include "../include/mrc_irep_pool_type.h"
 
-#if defined(MRC_TARGET_MRUBY)
-#include "../include/mrc_proc.h"
-#endif
-
 #ifdef MRBC_REQUIRE_32BIT_ALIGNMENT
 #include <mrubyc.h>
 #define printf(...) console_printf(__VA_ARGS__)
@@ -1071,10 +1067,36 @@ lv_idx(mrc_codegen_scope *s, mrc_sym id)
 }
 
 
-#define MRC_PROC_CFUNC_FL 128
-#define MRC_PROC_CFUNC_P(p) (((p)->flags & MRC_PROC_CFUNC_FL) != 0)
-#define MRC_PROC_SCOPE 2048
-#define MRC_PROC_SCOPE_P(p) (((p)->flags & MRC_PROC_SCOPE) != 0)
+/* The bytes a constant pool id stands for, or NULL when the id names nothing.
+   Outer local variables are matched on these bytes: the enclosing scopes reach
+   the code generator as names, so no symbol table is consulted to compare
+   them. */
+static const char *
+sym_bytes(mrc_codegen_scope *s, mrc_sym id, size_t *lenp)
+{
+  pm_constant_t *constant;
+
+  if (id == PM_CONSTANT_ID_UNSET || id > s->c->p->constant_pool.size) return NULL;
+  constant = pm_constant_pool_id_to_constant(&s->c->p->constant_pool, id);
+  if (constant == NULL) return NULL;
+  *lenp = constant->length;
+  return (const char *)constant->start;
+}
+
+static int
+upper_scope_local_idx(const mrc_upper_scope *up, const char *name, size_t len)
+{
+  size_t i;
+
+  if (!up->has_locals) return 0;
+  for (i = 0; i < up->locals_count; i++) {
+    const mrc_upper_local *local = &up->locals[i];
+    if (local->name && local->length == len && memcmp(local->name, name, len) == 0) {
+      return (int)i + 1;
+    }
+  }
+  return 0;
+}
 
 static int
 search_upvar(mrc_codegen_scope *s, mrc_sym id, int *idx)
@@ -1091,33 +1113,23 @@ search_upvar(mrc_codegen_scope *s, mrc_sym id, int *idx)
     up = up->prev;
   }
 
-#if defined(MRC_TARGET_MRUBY)
-  const struct RProc *u;
+  if (s->c->upper_scopes_count > 0) {
+    size_t len = 0;
+    const char *name = sym_bytes(s, id, &len);
 
-  if (lv < 1) lv = 1;
-  u = s->c->upper;
-  if (id != PM_CONSTANT_ID_UNSET && id <= s->c->p->constant_pool.size) {
-    pm_constant_t *constant = pm_constant_pool_id_to_constant(&s->c->p->constant_pool, id);
-    mrc_sym intern = mrb_intern(s->c->mrb, (const char *)constant->start, constant->length);
-    while (u && !MRC_PROC_CFUNC_P(u)) {
-      const struct mrc_irep *ir = (const struct mrc_irep *)u->body.irep;
-      uint_fast16_t n = ir->nlocals;
-      int i;
-      const mrc_sym *v = ir->lv;
-      if (v) {
-        for (i=1; n > 1; n--, v++, i++) {
-          if (*v == intern) {
-            *idx = i;
-            return lv - 1;
-          }
+    if (lv < 1) lv = 1;
+    if (name) {
+      for (size_t i = 0; i < s->c->upper_scopes_count; i++) {
+        const mrc_upper_scope *scope = &s->c->upper_scopes[i];
+        *idx = upper_scope_local_idx(scope, name, len);
+        if (*idx > 0) {
+          return lv - 1;
         }
+        if (scope->boundary) break;
+        lv++;
       }
-      if (MRC_PROC_SCOPE_P(u)) break;
-      u = u->upper;
-      lv++;
     }
   }
-#endif
 
   if (id == MRC_OPSYM_2(and)) {
     codegen_error(s, "No anonymous block parameter");
@@ -1804,7 +1816,8 @@ generate_code(mrc_ccontext *c, mrc_node *node, int val)
 
   MRC_TRY(c->jmp) {
     codegen(scope, node, val);
-    // TODO: mrc_ccontext has an upper Proc if MRC_TARGET_MRUBY
+    // TODO: the enclosing proc belongs to the host now; mruby_compat.c is
+    // where proc->upper is set after the irep is loaded back
     //proc->c = NULL;
     //if (mrb->c->cibase && mrb->c->cibase->proc == proc->upper) {
     //  proc->upper = NULL;
@@ -2418,47 +2431,38 @@ gen_hash(mrc_codegen_scope *s, mrc_node *tree, int val, int limit)
   return len;
 }
 
-#if defined(MRC_TARGET_MRUBY)
+/* A numbered parameter (`_1` .. `_9`) of an enclosing block.  A frame whose
+   local names were stripped still answers, because the number is the slot. */
 static mrc_bool
-mrc_mruby_numbered_parameter_upvar(mrc_codegen_scope *s, mrc_sym id, int *lv, int *idx)
+numbered_parameter_upvar(mrc_codegen_scope *s, mrc_sym id, int *lv, int *idx)
 {
-  if (id == PM_CONSTANT_ID_UNSET || id > s->c->p->constant_pool.size) {
+  size_t len = 0;
+  const char *name = sym_bytes(s, id, &len);
+  int number;
+
+  if (name == NULL) return FALSE;
+  if (len != 2 || name[0] != '_' || name[1] < '1' || name[1] > '9') {
     return FALSE;
   }
+  number = name[1] - '0';
 
-  pm_constant_t *constant = pm_constant_pool_id_to_constant(&s->c->p->constant_pool, id);
-  if (constant->length != 2 || constant->start[0] != '_' ||
-      constant->start[1] < '1' || constant->start[1] > '9') {
-    return FALSE;
-  }
-
-  mrc_sym intern = mrb_intern(s->c->mrb, (const char *)constant->start, constant->length);
-  const struct RProc *u = s->c->upper;
   *lv = 0;
-  while (u && !MRC_PROC_CFUNC_P(u)) {
-    const struct mrc_irep *ir = (const struct mrc_irep *)u->body.irep;
-    uint_fast16_t n = ir->nlocals;
-    const mrc_sym *v = ir->lv;
-    int number = constant->start[1] - '0';
-    if (v) {
-      for (int i = 1; n > 1; n--, v++, i++) {
-        if (*v == intern) {
-          *idx = i;
-          return TRUE;
-        }
-      }
+  for (size_t i = 0; i < s->c->upper_scopes_count; i++) {
+    const mrc_upper_scope *scope = &s->c->upper_scopes[i];
+
+    if (scope->has_locals) {
+      *idx = upper_scope_local_idx(scope, name, len);
+      if (*idx > 0) return TRUE;
     }
-    else if (number < ir->nlocals) {
+    else if (number < scope->nlocals) {
       *idx = number;
       return TRUE;
     }
-    if (MRC_PROC_SCOPE_P(u)) break;
-    u = u->upper;
+    if (scope->boundary) break;
     (*lv)++;
   }
   return FALSE;
 }
-#endif
 
 /* Attribute assignment (`recv.attr = v`, `recv[i] = v`) as an expression.
    Prism bundles the RHS as the last positional argument of the call node.
@@ -2562,10 +2566,10 @@ gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe)
   }
   int skip = 0, n = 0, nk = 0, noop = no_optimize(s), noself = 0, blk = 0, sp_save = cursp();
 
-#if defined(MRC_TARGET_MRUBY)
-  if (cast->receiver == NULL && cast->arguments == NULL && cast->block == NULL) {
+  if (s->c->upper_scopes_count > 0 &&
+      cast->receiver == NULL && cast->arguments == NULL && cast->block == NULL) {
     int lv, idx;
-    if (mrc_mruby_numbered_parameter_upvar(s, sym, &lv, &idx)) {
+    if (numbered_parameter_upvar(s, sym, &lv, &idx)) {
       if (val) {
         genop_3(s, OP_GETUPVAR, cursp(), idx, lv);
         push();
@@ -2573,7 +2577,6 @@ gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe)
       return;
     }
   }
-#endif
 
   if (cast->receiver == NULL) {
     noself = noop = 1;
