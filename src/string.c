@@ -336,6 +336,35 @@ mrb_gc_free_str(mrb_state *mrb, struct RString *str)
 #define MASK01 0x01010101ul
 #endif
 
+/* The lowest value each byte length of UTF-8 spells, one entry per length.
+   A value's spelling is the first length whose floor it reaches, so the
+   table decides both how many bytes a value takes and whether bytes that
+   spell a value took more than the value needed. The last two lengths are
+   the ones RFC 2279 allowed and RFC 3629 withdrew; whether a spelling that
+   long counts is a question for whoever reads one, and no answer to it is
+   kept here. */
+static const uint32_t utf8_min[6] = {
+  0, 0x80, 0x800, 0x10000, 0x200000, 0x4000000
+};
+
+/* Write the UTF-8 spelling of a value into a buffer of at least six bytes,
+   and return how many it took (1-6). Every value up to 0x7FFFFFFF has one,
+   and this holds no view on which of them spell a character: that is what
+   mrb_utf8_to_buf() below adds. */
+static mrb_int
+utf8_from_uv(char *buf, uint32_t uv)
+{
+  mrb_int n = 1;
+  while (n < 6 && uv >= utf8_min[n]) n++;
+  for (mrb_int i = n - 1; i > 0; i--) {
+    buf[i] = (char)(0x80 | (uv & 0x3F));
+    uv >>= 6;
+  }
+  /* the lead byte carries n high bits set, and none for a single byte */
+  buf[0] = (char)((n == 1 ? 0 : (0xFF00 >> n)) | uv);
+  return n;
+}
+
 /* Encode a Unicode codepoint to UTF-8 bytes, into a buffer of at least four.
    Returns the number of bytes written (1-4), or 0 for a value outside
    U+0000..U+10FFFF, which spells no character. The value arrives as an
@@ -352,32 +381,8 @@ mrb_gc_free_str(mrb_state *mrb, struct RString *str)
 mrb_int
 mrb_utf8_to_buf(char *buf, mrb_int cp)
 {
-  if (cp < 0) {
-    return 0;
-  }
-  else if (cp < 0x80) {
-    buf[0] = (char)cp;
-    return 1;
-  }
-  else if (cp < 0x800) {
-    buf[0] = (char)(0xC0 | (cp >> 6));
-    buf[1] = (char)(0x80 | (cp & 0x3F));
-    return 2;
-  }
-  else if (cp < 0x10000) {
-    buf[0] = (char)(0xE0 | (cp >> 12));
-    buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
-    buf[2] = (char)(0x80 | (cp & 0x3F));
-    return 3;
-  }
-  else if (cp <= 0x10FFFF) {
-    buf[0] = (char)(0xF0 | (cp >> 18));
-    buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
-    buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
-    buf[3] = (char)(0x80 | (cp & 0x3F));
-    return 4;
-  }
-  return 0;  /* above U+10FFFF */
+  if (cp < 0 || cp > 0x10FFFF) return 0;
+  return utf8_from_uv(buf, (uint32_t)cp);
 }
 
 /* UTF-8: what a run of bytes spells, and what a string holds character by
