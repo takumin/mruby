@@ -1,4 +1,6 @@
 assert 'ObjectSpace.memsize_of' do
+  slot = ObjectSpace.__memsize_slot
+
   # immediate literals
   int_size = ObjectSpace.memsize_of 1
   assert_equal int_size, 0, 'int zero'
@@ -8,6 +10,12 @@ assert 'ObjectSpace.memsize_of' do
 
   assert_equal ObjectSpace.memsize_of(true), int_size
   assert_equal ObjectSpace.memsize_of(false), int_size
+
+  # a number the boxing puts on the heap is its object slot; an immediate
+  # one is nothing, and which is which is the boxing's call
+  ObjectSpace.__memsize_heap_number.each do |value, immediate|
+    assert_equal immediate ? 0 : slot, ObjectSpace.memsize_of(value), "#{value.class} beyond the boxed word"
+  end
 
   assert_not_equal ObjectSpace.memsize_of('a'), 0, 'memsize of str'
 

@@ -26,10 +26,36 @@ memsize_value_width(mrb_state *mrb, mrb_value self)
   return mrb_int_value(mrb, (mrb_int)sizeof(mrb_value));
 }
 
+static void
+push_number(mrb_state *mrb, mrb_value ary, mrb_value v)
+{
+  mrb_value pair = mrb_ary_new_capa(mrb, 2);
+
+  mrb_ary_push(mrb, pair, v);
+  mrb_ary_push(mrb, pair, mrb_bool_value(mrb_immediate_p(v)));
+  mrb_ary_push(mrb, ary, pair);
+}
+
+/* An Integer and a Float the boxed word cannot hold, each paired with whether
+ * the boxing kept it immediate after all: MRB_NO_BOXING has room for both,
+ * and word boxing for a Float. The Float pair only where there is one. */
+static mrb_value
+memsize_heap_number(mrb_state *mrb, mrb_value self)
+{
+  mrb_value ary = mrb_ary_new_capa(mrb, 2);
+
+  push_number(mrb, ary, mrb_int_value(mrb, MRB_INT_MAX));
+#ifndef MRB_NO_FLOAT
+  push_number(mrb, ary, mrb_float_value(mrb, 1.5));
+#endif
+  return ary;
+}
+
 void
 mrb_mruby_os_memsize_gem_test(mrb_state *mrb)
 {
   struct RClass *os = mrb_module_get(mrb, "ObjectSpace");
   mrb_define_module_function(mrb, os, "__memsize_slot", memsize_slot, MRB_ARGS_NONE());
   mrb_define_module_function(mrb, os, "__memsize_value_width", memsize_value_width, MRB_ARGS_NONE());
+  mrb_define_module_function(mrb, os, "__memsize_heap_number", memsize_heap_number, MRB_ARGS_NONE());
 }

@@ -151,12 +151,12 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
       }
       break;
     }
-#ifndef MRB_NO_FLOAT
-    case MRB_TT_FLOAT:
-#endif
+    case MRB_TT_FLOAT: /* the type exists without a Float, only no value has it */
     case MRB_TT_INTEGER:
-      if (mrb_immediate_p(obj))
-        break;
+      /* boxed as RFloat/RInteger when the value does not fit the word */
+      if (!mrb_immediate_p(obj))
+        size += mrb_objspace_page_slot_size();
+      break;
     case MRB_TT_RATIONAL:
 #if defined(MRB_USE_RATIONAL)
 #if defined(MRB_INT64) && defined(MRB_32BIT)
