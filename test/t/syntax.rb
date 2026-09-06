@@ -1896,6 +1896,57 @@ assert('defined? weighs how a method on a receiver may be called') do
   assert_equal 'method', defined?(o.ghost)   # through respond_to_missing?
 end
 
+class DefinedBareCall
+  private def priv; end
+  def respond_to_missing?(name, include_private = false)
+    @asked = include_private
+    name == :ghost
+  end
+  def asked; @asked; end
+  def bare_priv;  defined?(priv); end
+  def bare_ghost; defined?(ghost); end
+  def bare_none;  defined?(no_such_method_at_all); end
+  def bare_args;  defined?(ghost(1)); end
+end
+
+class DefinedBareCallAnswers < DefinedBareCall
+  def respond_to?(name, include_private = false)
+    @asked = include_private
+    name == :answered
+  end
+  def bare_answered; defined?(answered); end
+end
+
+class DefinedBareCallGone < TestNotImplement
+  def bare_gone; defined?(gone); end
+end
+
+assert('defined? asks respond_to? about a call on self') do
+  o = DefinedBareCall.new
+  # a private method is reachable, and so is one `respond_to_missing?`
+  # claims, which is asked with include_private true
+  assert_equal 'method', o.bare_priv
+  assert_equal 'method', o.bare_ghost
+  assert_true o.asked
+  assert_nil o.bare_none
+  assert_equal 'method', o.bare_args
+
+  # a `respond_to?` the object defines is what gets asked, on the same terms
+  o = DefinedBareCallAnswers.new
+  assert_equal 'method', o.bare_answered
+  assert_true o.asked
+  assert_nil o.bare_priv
+  assert_nil o.bare_ghost
+
+  # a call with a receiver written is answered on the terms of that call
+  assert_nil defined?(o.answered)
+  assert_nil defined?(o.priv)
+
+  # a method standing for a feature the build does not have is not there
+  assert_nil DefinedBareCallGone.new.bare_gone
+  assert_nil defined?(TestNotImplement.gone)
+end
+
 assert('defined? answers nil where evaluating a receiver raises') do
   assert_nil defined?(DefinedRecvRaises.boom.anything)
   assert_equal :caught, (defined?(DefinedRecvRaises.boom.x) ? :answered : :caught)

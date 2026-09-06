@@ -628,6 +628,24 @@ mrb_obj_remove_instance_variable(mrb_state *mrb, mrb_value self)
  *  If the method is not defined, `respond_to_missing?`
  *  method is called and the result is returned.
  */
+static mrb_bool
+obj_respond_to_p(mrb_state *mrb, mrb_value self, mrb_sym id, mrb_bool priv)
+{
+  struct RClass *c = mrb_class(mrb, self);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, id);
+  if (MRB_METHOD_UNDEF_P(m)) {
+    mrb_sym rtm_id = MRB_SYM_Q(respond_to_missing);
+    if (!mrb_func_basic_p(mrb, self, rtm_id, mrb_false)) {
+      mrb_value v = mrb_funcall_argv2(mrb, self, rtm_id, mrb_symbol_value(id), mrb_bool_value(priv));
+      return mrb_bool(v);
+    }
+    return FALSE;
+  }
+  /* The method is there, so `respond_to_missing?` has nothing to add, and one
+     that is unimplemented on this machine answers a plain false. */
+  return !MRB_METHOD_NOTIMPL_P(m);
+}
+
 static mrb_value
 obj_respond_to(mrb_state *mrb, mrb_value self)
 {
@@ -635,19 +653,7 @@ obj_respond_to(mrb_state *mrb, mrb_value self)
   mrb_bool priv = FALSE;
 
   mrb_get_args(mrb, "n|b", &id, &priv);
-  struct RClass *c = mrb_class(mrb, self);
-  mrb_method_t m = mrb_method_search_vm(mrb, &c, id);
-  if (MRB_METHOD_UNDEF_P(m)) {
-    mrb_sym rtm_id = MRB_SYM_Q(respond_to_missing);
-    if (!mrb_func_basic_p(mrb, self, rtm_id, mrb_false)) {
-      mrb_value v = mrb_funcall_argv2(mrb, self, rtm_id, mrb_symbol_value(id), mrb_bool_value(priv));
-      return mrb_bool_value(mrb_bool(v));
-    }
-    return mrb_false_value();
-  }
-  /* The method is there, so `respond_to_missing?` has nothing to add, and one
-     that is unimplemented on this machine answers a plain false. */
-  return mrb_bool_value(!MRB_METHOD_NOTIMPL_P(m));
+  return mrb_bool_value(obj_respond_to_p(mrb, self, id, priv));
 }
 
 static mrb_value
@@ -717,14 +723,27 @@ mrb_p_m(mrb_state *mrb, mrb_value self)
 /* defined? runtime helpers: each returns the CRuby result string, or nil when
    undefined. The compiler emits calls to these for `defined?(...)` operands
    whose kind can only be resolved at run time. */
+
+/* `defined?(meth)`, a call on self with no receiver written: the answer is
+   what `respond_to?(:meth, true)` says, asked of the caller's own self, the
+   way CRuby's `rb_obj_respond_to` decides it.  A `respond_to?` the object
+   redefines is what gets asked, and `respond_to_missing?` where the method
+   is not there; a call with a receiver written is answered elsewhere, on
+   the terms that call would be made on. */
 static mrb_value
 mrb_f_defined_method(mrb_state *mrb, mrb_value self)
 {
   mrb_sym sym;
   mrb_get_args(mrb, "n", &sym);
-  struct RClass *c = mrb_class(mrb, self);
-  mrb_method_t m = mrb_method_search_vm(mrb, &c, sym);
-  if (!MRB_METHOD_UNDEF_P(m)) return mrb_str_new_lit(mrb, "method");
+  mrb_sym rt_id = MRB_SYM_Q(respond_to);
+  mrb_bool found;
+  if (mrb_func_basic_p(mrb, self, rt_id, obj_respond_to)) {
+    found = obj_respond_to_p(mrb, self, sym, TRUE);
+  }
+  else {
+    found = mrb_test(mrb_funcall_argv2(mrb, self, rt_id, mrb_symbol_value(sym), mrb_true_value()));
+  }
+  if (found) return mrb_str_new_lit(mrb, "method");
   return mrb_nil_value();
 }
 
