@@ -4106,6 +4106,13 @@ RETRY_TRY_BLOCK:
 #endif
 #define OP_MATH_CASE_STRING_add()                                           \
   case TYPES2(MRB_TT_STRING, MRB_TT_STRING):                                \
+    /* only for String itself: a subclass or singleton may override `+`,    \
+       and the slot is NULL while `String#+` is redefined, so one compare   \
+       rejects all three */                                                 \
+    if (mrb_unlikely(mrb_str_ptr(regs[a])->c != mrb->idx_class[MRB_IDX_OP_STR_ADD])) { \
+      mid = MRB_OPSYM(add);                                                 \
+      goto L_SEND_SYM;                                                      \
+    }                                                                       \
     regs[a] = mrb_str_plus(mrb, regs[a], regs[a+1]);                        \
     mrb_gc_arena_restore(mrb, ai);                                          \
     break

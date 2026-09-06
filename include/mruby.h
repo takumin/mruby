@@ -311,7 +311,8 @@ typedef void (*mrb_atexit_func)(mrb_state*);
 
 /**
  * Slots of `mrb_state.idx_class`, one per builtin the inline index opcodes
- * (`OP_GETIDX`, `OP_GETIDX0`, `OP_SETIDX`) reimplement in C.
+ * (`OP_GETIDX`, `OP_GETIDX0`, `OP_SETIDX`) reimplement in C, plus one for
+ * `String#+`, which `OP_ADD` guards the same way.
  */
 enum mrb_idx_op_slot {
   MRB_IDX_OP_ARY_AREF,          /* Array#[]  */
@@ -320,6 +321,7 @@ enum mrb_idx_op_slot {
   MRB_IDX_OP_ARY_ASET,          /* Array#[]= */
   MRB_IDX_OP_HASH_ASET,         /* Hash#[]=  */
   MRB_IDX_OP_STR_ASET,          /* String#[]= */
+  MRB_IDX_OP_STR_ADD,           /* String#+  */
   MRB_IDX_OP_SLOT_COUNT
 };
 
@@ -477,7 +479,8 @@ struct mrb_state {
   uint16_t atexit_stack_len;
 
   /* The inline index opcodes answer `[]` and `[]=` from C for a receiver whose
-     class is exactly Array, Hash or String, which would bypass a redefinition
+     class is exactly Array, Hash or String, and `OP_ADD` answers `+` for one
+     whose class is exactly String, which would bypass a redefinition
      installed on those classes themselves.  Each slot holds the core class
      while the name still resolves to the builtin recorded in `idx_builtin`,
      and NULL once it does not, so the class-pointer test the opcodes already
