@@ -801,8 +801,10 @@ mrb_f_defined_super(mrb_state *mrb, mrb_value self)
 /* `path` holds the names of a constant path from its root down, and `start`
    says where to look the first one up: nil for the caller's lexical scope
    (`A::B::C`), or the module the path is rooted at (`Object` for `::A::B`).
-   A name that is missing, or an outer value that is not a module, ends the
-   walk at nil rather than raising. */
+   Each name below the root resolves the way reading `outer::NAME` resolves
+   it, so a constant Object holds is out of reach through any other module,
+   and `const_missing` is not asked.  A name that is missing, or an outer
+   value that is not a module, ends the walk at nil rather than raising. */
 static mrb_value
 mrb_f_defined_const_path(mrb_state *mrb, mrb_value self)
 {
@@ -830,9 +832,8 @@ mrb_f_defined_const_path(mrb_state *mrb, mrb_value self)
       return mrb_nil_value();
     }
     if (!mrb_symbol_p(RARRAY_PTR(path)[i])) return mrb_nil_value();
-    mrb_sym name = mrb_symbol(RARRAY_PTR(path)[i]);
-    if (!mrb_const_defined(mrb, outer, name)) return mrb_nil_value();
-    if (i + 1 < len) outer = mrb_const_get(mrb, outer, name);
+    outer = mrb_const_get_noraise(mrb, mrb_class_ptr(outer), mrb_symbol(RARRAY_PTR(path)[i]));
+    if (mrb_undef_p(outer)) return mrb_nil_value();
   }
   return mrb_str_new_lit(mrb, "constant");
 }

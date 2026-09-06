@@ -1792,6 +1792,27 @@ assert('defined? on a constant path rooted at Object') do
   assert_nil defined?(::DefinedDeepOuter::Missing)
 end
 
+module DefinedPathHooked
+  def self.const_missing(name); @asked = name; end
+  def self.asked; @asked; end
+end
+
+assert('defined? on a constant path resolves each name as reading it does') do
+  # a constant Object holds is out of reach through any other module, as it
+  # is for the read itself, and the walk past one does not raise
+  assert_equal 'constant', defined?(Object::String)
+  assert_nil defined?(String::String)
+  assert_nil defined?(String::Object)
+  assert_nil defined?(String::String::Leaf)
+  assert_nil defined?(Comparable::String)
+  assert_nil defined?(DefinedPathOuter::String)
+
+  # const_missing is not asked
+  assert_nil defined?(DefinedPathHooked::Missing)
+  assert_nil defined?(DefinedPathHooked::Missing::Leaf)
+  assert_nil DefinedPathHooked.asked
+end
+
 assert('defined? does not evaluate a constant path') do
   # a root that would have to be evaluated is not a path the compiler names,
   # and the call it is built from stays unmade
