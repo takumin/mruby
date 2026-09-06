@@ -1611,14 +1611,14 @@ assert('defined? on statically-decidable operands') do
   assert_equal 'expression', defined?(:sym)
   assert_equal 'expression', defined?([1, 2])
   assert_equal 'expression', defined?({a: 1})
-  assert_equal 'expression', defined?(nil)
-  assert_equal 'expression', defined?(true)
-  assert_equal 'expression', defined?(false)
   assert_equal 'expression', defined?(1..2)
   assert_equal 'expression', defined?(defined?(x))
 
-  # self
+  # self, and the literals named rather than called expressions
   assert_equal 'self', defined?(self)
+  assert_equal 'nil', defined?(nil)
+  assert_equal 'true', defined?(true)
+  assert_equal 'false', defined?(false)
 
   # a local variable in scope
   lv = 1
@@ -1995,9 +1995,13 @@ assert('defined? sees through parentheses around one expression') do
   assert_equal 'instance-variable', defined?((@defined_paren_iv))
   assert_equal 'constant', defined?((Object))
   assert_nil defined?((no_such_method_at_all))
+  assert_equal 'nil', defined?((nil))
 
-  # parentheses holding several statements are an expression of their own
+  # parentheses holding several statements are an expression of their own,
+  # and empty ones the nil they evaluate to
   assert_equal 'expression', defined?((1; 2))
+  assert_equal 'nil', defined?(())
+  assert_equal 'nil', defined?(((())))
 end
 
 assert('defined? on a call carrying a block') do

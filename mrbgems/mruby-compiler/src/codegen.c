@@ -4136,10 +4136,20 @@ struct defined_answer {
   mrc_node *recv;                           /* recv.meth, NULL for none */
 };
 
+/* Whether a body holds no statement at all: `()` is the nil it evaluates
+   to, not an expression. */
+static mrc_bool
+defined_body_empty_p(mrc_node *body)
+{
+  if (body == NULL) return TRUE;
+  return nint(body) == PM_STATEMENTS_NODE &&
+         ((pm_statements_node_t *)body)->body.size == 0;
+}
+
 /* Parentheses around a single expression are transparent here, so
    `defined?((x))` answers what `defined?(x)` does; parentheses holding no
-   statement or several are an expression of their own and stay.  The value
-   a pair leaves implicit, as in `{x:}`, is the `x` it stands for. */
+   statement or several stay, and answer for themselves.  The value a pair
+   leaves implicit, as in `{x:}`, is the `x` it stands for. */
 static mrc_node *
 defined_operand(mrc_node *value)
 {
@@ -4173,7 +4183,6 @@ defined_answer_for(mrc_node *value, struct defined_answer *a)
   case PM_SYMBOL_NODE: case PM_INTERPOLATED_SYMBOL_NODE:
   case PM_REGULAR_EXPRESSION_NODE: case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE:
   case PM_ARRAY_NODE: case PM_HASH_NODE: case PM_KEYWORD_HASH_NODE:
-  case PM_NIL_NODE: case PM_TRUE_NODE: case PM_FALSE_NODE:
   case PM_RANGE_NODE: case PM_LAMBDA_NODE: case PM_DEFINED_NODE:
   case PM_SOURCE_FILE_NODE: case PM_SOURCE_LINE_NODE: case PM_SOURCE_ENCODING_NODE:
   /* control flow, jumps and definitions: CRuby answers "expression" for
@@ -4182,13 +4191,29 @@ defined_answer_for(mrc_node *value, struct defined_answer *a)
   case PM_IF_NODE: case PM_UNLESS_NODE:
   case PM_CASE_NODE: case PM_CASE_MATCH_NODE:
   case PM_WHILE_NODE: case PM_UNTIL_NODE: case PM_FOR_NODE:
-  case PM_BEGIN_NODE: case PM_PARENTHESES_NODE:
+  case PM_BEGIN_NODE:
   case PM_RETURN_NODE: case PM_BREAK_NODE: case PM_NEXT_NODE:
   case PM_REDO_NODE: case PM_RETRY_NODE:
   case PM_DEF_NODE: case PM_CLASS_NODE: case PM_MODULE_NODE:
   case PM_SINGLETON_CLASS_NODE:
   case PM_MATCH_PREDICATE_NODE: case PM_MATCH_REQUIRED_NODE:
     a->type = "expression";
+    break;
+  /* the literals CRuby names rather than calling expressions */
+  case PM_NIL_NODE:
+    a->type = "nil";
+    break;
+  case PM_TRUE_NODE:
+    a->type = "true";
+    break;
+  case PM_FALSE_NODE:
+    a->type = "false";
+    break;
+  case PM_PARENTHESES_NODE:
+    /* `()` is the nil it evaluates to; parentheses holding several
+       statements are an expression of their own */
+    a->type = defined_body_empty_p((mrc_node *)((pm_parentheses_node_t *)value)->body)
+              ? "nil" : "expression";
     break;
   case PM_SELF_NODE:
     a->type = "self";
