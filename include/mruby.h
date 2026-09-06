@@ -347,8 +347,9 @@ enum mrb_bop {
 #define MRB_BOP_INTEGER(op) (1u << (op))                  /* Integer#op */
 #define MRB_BOP_FLOAT(op)   (1u << (MRB_BOP_COUNT + (op))) /* Float#op   */
 #define MRB_BOP_NUMERIC(op) (MRB_BOP_INTEGER(op) | MRB_BOP_FLOAT(op))
-#define MRB_BOP_SYMBOL_EQ   (1u << (2 * MRB_BOP_COUNT))    /* Symbol#==  */
-#define MRB_BOP_SLOT_COUNT  (2 * MRB_BOP_COUNT + 1)
+#define MRB_BOP_SYMBOL_EQ_SLOT (2 * MRB_BOP_COUNT)         /* Symbol#==  */
+#define MRB_BOP_SYMBOL_EQ   (1u << MRB_BOP_SYMBOL_EQ_SLOT)
+#define MRB_BOP_SLOT_COUNT  (MRB_BOP_SYMBOL_EQ_SLOT + 1)
 
 #ifdef MRB_USE_TASK_SCHEDULER
 struct mrb_task;

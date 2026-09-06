@@ -2963,7 +2963,7 @@ static struct RClass*
 bop_class(mrb_state *mrb, int slot)
 {
   if (slot < MRB_BOP_COUNT) return mrb->integer_class;
-  if (slot == 2 * MRB_BOP_COUNT) return mrb->symbol_class;
+  if (slot == MRB_BOP_SYMBOL_EQ_SLOT) return mrb->symbol_class;
 #ifdef MRB_NO_FLOAT
   return NULL;
 #else
@@ -2974,7 +2974,7 @@ bop_class(mrb_state *mrb, int slot)
 static mrb_sym
 bop_mid(int slot)
 {
-  return slot == 2 * MRB_BOP_COUNT ? MRB_OPSYM(eq) : bop_mids[slot % MRB_BOP_COUNT];
+  return slot == MRB_BOP_SYMBOL_EQ_SLOT ? MRB_OPSYM(eq) : bop_mids[slot % MRB_BOP_COUNT];
 }
 
 static void
