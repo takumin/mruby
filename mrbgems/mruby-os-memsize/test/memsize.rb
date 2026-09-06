@@ -44,6 +44,13 @@ assert 'ObjectSpace.memsize_of' do
   empty_fiber_size = ObjectSpace.memsize_of(Fiber.new {})
   assert_not_equal empty_fiber_size, 0, 'empty fiber not zero'
 
+  # Fiber.allocate has no context yet; must not crash
+  bare_fiber = Fiber.allocate
+  bare_fiber_size = ObjectSpace.memsize_of(bare_fiber)
+  assert_not_equal bare_fiber_size, 0, 'uninitialized fiber not zero'
+  assert_operator bare_fiber_size, :<, empty_fiber_size, 'uninitialized fiber smaller than initialized'
+  assert_operator ObjectSpace.memsize_of_all, :>=, bare_fiber_size, 'memsize_of_all walks past the uninitialized fiber'
+
   #hash
   assert_not_equal ObjectSpace.memsize_of({}), 0, 'empty hash size not zero'
 end
