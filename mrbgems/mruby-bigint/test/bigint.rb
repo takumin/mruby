@@ -545,3 +545,61 @@ assert('Bigint int64 conversion refuses what int64_t cannot hold') do
   assert_raise(RangeError) { BigintTest.int64_roundtrip(10 ** 25) }
   assert_raise(RangeError) { BigintTest.int64_roundtrip(-(10 ** 25)) }
 end
+
+assert('mrb_integer_to_bytes and mrb_integer_from_bytes') do
+  # Zero needs no bytes, and its sign is neither of the other two.
+  assert_equal [0, []], BigintTest.to_bytes(0)
+
+  # A Fixnum, most significant byte first, with the sign kept out of them.
+  assert_equal [1, [1]], BigintTest.to_bytes(1)
+  assert_equal [-1, [1]], BigintTest.to_bytes(-1)
+  assert_equal [1, [1, 0]], BigintTest.to_bytes(256)
+  assert_equal [1, [1, 2, 3]], BigintTest.to_bytes(0x010203)
+
+  # A value wider than one limb, and one whose leading limb is a single byte,
+  # which is where a length counted in whole limbs would answer too many.
+  assert_equal [1, [1, 0, 0, 0, 0, 0, 0, 0, 0]], BigintTest.to_bytes(1 << 64)
+  assert_equal [1, [2, 0, 0, 0, 0]], BigintTest.to_bytes(2 << 32)
+
+  # Read back what was written, at every width and both signs.
+  [0, 1, -1, 255, 256, 65535, 65536,
+   (1 << 31), (1 << 32), (1 << 63), (1 << 64), (1 << 100) + 12345,
+   -(1 << 64), -((1 << 100) + 12345)].each do |n|
+    sign, bytes = BigintTest.to_bytes(n)
+    assert_equal n, BigintTest.from_bytes(sign, bytes)
+  end
+
+  # Leading zero bytes say nothing and drop out.  Enough of them to fill whole
+  # limbs is the case that matters: a Bignum carrying a zero limb on its front
+  # is not the shape the rest of the gem reads, so the value has to come back
+  # as the Fixnum 1 rather than as a Bignum that merely equals it.
+  assert_equal 1, BigintTest.from_bytes(1, [0, 0, 1])
+  assert_equal 1, BigintTest.from_bytes(1, [0] * 16 + [1])
+  assert_equal "1", BigintTest.from_bytes(1, [0] * 16 + [1]).to_s
+  assert_equal 2, BigintTest.from_bytes(1, [0] * 16 + [1]) + 1
+  assert_equal 1.hash, BigintTest.from_bytes(1, [0] * 16 + [1]).hash
+
+  # The same for a value too wide to become a Fixnum, where nothing downstream
+  # normalizes it away: a Bignum's hash reads its whole limb array, so one
+  # carrying zero limbs on the front hashes as a different number.
+  wide = (1 << 96) - 1
+  assert_equal wide, BigintTest.from_bytes(1, [0] * 16 + [255] * 12)
+  assert_equal wide.hash, BigintTest.from_bytes(1, [0] * 16 + [255] * 12).hash
+  assert_equal 0, BigintTest.from_bytes(1, [0, 0, 0])
+  assert_equal 0, BigintTest.from_bytes(1, [])
+
+  # A sign of 0 is zero whatever the bytes hold.
+  assert_equal 0, BigintTest.from_bytes(0, [1, 2, 3])
+
+  # The answer is a Fixnum where the value fits one.
+  assert_true BigintTest.from_bytes(1, [1]).is_a?(Integer)
+  assert_equal 1, BigintTest.from_bytes(1, [1])
+
+  # A buffer smaller than the value needs is not written to, and the length
+  # is still what to allocate.
+  assert_equal 3, BigintTest.to_bytes_short(0x010203)
+  assert_equal 9, BigintTest.to_bytes_short(1 << 64)
+
+  assert_raise(TypeError) { BigintTest.to_bytes("1") }
+  assert_raise(TypeError) { BigintTest.to_bytes(nil) }
+end

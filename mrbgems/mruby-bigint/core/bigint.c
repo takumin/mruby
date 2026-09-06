@@ -25,47 +25,7 @@
 #define imin(x,y) (((x)<(y))?(x):(y))
 #define dg(x,i) (((size_t)i < (x)->sz)?(x)->p[i]:0)
 
-#ifndef MRB_BIGINT_POOL_SIZE
-#define MRB_BIGINT_POOL_SIZE 512  /* 2KB on 32-bit, 4KB on 64-bit */
-#endif
-
-/* Scoped Memory Pool Infrastructure */
-#if MRB_BIGINT_POOL_SIZE == 0
-#define mpz_ctx_t mrb_state
-#define MPZ_MRB(ctx) (ctx)
-#define MPZ_HAS_POOL(ctx) (0)
-#define MPZ_CTX_INIT(mrb_ptr, ctx, pool_ptr) mrb_state *ctx = (mrb_ptr);
-#define pool_save(ctx) 0
-#define pool_restore(ctx, state) (void)state
-#define pool_alloc(pool, limbs) NULL
-#else
-typedef struct mpz_pool {
-  mp_limb data[MRB_BIGINT_POOL_SIZE];
-  size_t used;
-} mpz_pool_t;
-
-/* MPZ Context Architecture - unified parameter for mrb_state and optional pool */
-typedef struct mpz_context {
-  mrb_state *mrb;
-  mpz_pool_t *pool;  /* NULL for heap-only operations */
-} mpz_ctx_t;
-
-/* Convenience macros for context creation.
- * Uses positional aggregate initialization instead of a C99 compound
- * literal with designated initializers, so the file compiles as C++
- * on legacy toolchains (pre-C++20).  Member order must match the
- * mpz_context struct declaration above. */
-#define MPZ_CTX_INIT(mrb_ptr, ctx, pool_ptr) \
-  mpz_pool_t pool ## _storage = {{0}};\
-  mpz_pool_t *pool_ptr = &pool ## _storage;\
-  mpz_ctx_t ctx ## _struct = { (mrb_ptr), (pool_ptr) }; \
-  mpz_ctx_t *ctx = &(ctx ## _struct);
-
-/* Access macros for readability */
-#define MPZ_MRB(ctx) ((ctx)->mrb)
-#define MPZ_POOL(ctx) ((ctx)->pool)
-#define MPZ_HAS_POOL(ctx) ((ctx)->pool != NULL)
-
+#if MRB_BIGINT_POOL_SIZE != 0
 static size_t
 pool_save(mpz_ctx_t *ctx)
 {
@@ -6255,6 +6215,13 @@ mrb_bint_sqrt(mrb_state *mrb, mrb_value x)
   mpz_sqrt(ctx, &z, &a);
 
   return bint_norm(mrb, bint_new(ctx, &z));
+}
+
+/* Shared with bigint_bytes.c; see bigint.h. */
+mrb_value
+mrb_bint_new_mpz(mpz_ctx_t *ctx, mpz_t *z)
+{
+  return bint_norm(MPZ_MRB(ctx), bint_new(ctx, z));
 }
 
 mrb_int

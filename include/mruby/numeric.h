@@ -61,6 +61,27 @@ MRB_API mrb_value mrb_int64_value(mrb_state *mrb, int64_t v);
 #define mrb_value_from_size_t(mrb, v)   mrb_uint64_value((mrb), (uint64_t)(v))
 #define mrb_value_from_ssize_t(mrb, v)  mrb_int64_value((mrb), (int64_t)(v))
 
+#ifdef MRB_USE_BIGINT
+/* An Integer as the bytes a wire format spells, most significant first, with
+   the sign kept apart from them: what CBOR's bignum tags and ASN.1's INTEGER
+   are written in.  This is not the order the limbs sit in, which is whatever
+   this machine stores an integer in and is what mrb_bint_new_bytes() reads.
+
+   mrb_integer_to_bytes() answers the bytes the magnitude needs, and writes
+   them only when `buf` is not NULL and `len` is at least that, so asking with
+   NULL is how a caller learns what to allocate.  `sign` takes -1, 0 or 1, and
+   may be NULL.  Zero needs no bytes and answers 0.
+
+   mrb_integer_from_bytes() reads them back.  Leading zero bytes are allowed
+   and drop out, a `sign` of 0 answers 0 whatever the bytes say, and the
+   answer is a Fixnum where the value fits one.
+
+   Declared where the conversions above are, but carried by mruby-bigint: a
+   build without it has no Integer these are for. */
+MRB_API size_t mrb_integer_to_bytes(mrb_state *mrb, mrb_value x, uint8_t *buf, size_t len, int *sign);
+MRB_API mrb_value mrb_integer_from_bytes(mrb_state *mrb, const uint8_t *bytes, size_t len, int sign);
+#endif
+
 MRB_API mrb_value mrb_integer_to_str(mrb_state *mrb, mrb_value x, mrb_int base);
 MRB_API char *mrb_int_to_cstr(char *buf, size_t len, mrb_int n, mrb_int base);
 
