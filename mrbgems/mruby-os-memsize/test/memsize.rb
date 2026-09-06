@@ -81,6 +81,10 @@ assert 'ObjectSpace.memsize_of' do
   assert_operator bare_fiber_size, :<, empty_fiber_size, 'uninitialized fiber smaller than initialized'
   assert_operator ObjectSpace.memsize_of_all, :>=, bare_fiber_size, 'memsize_of_all walks past the uninitialized fiber'
 
+  # backtrace: the slot and one location per frame
+  backtrace, frames, location = ObjectSpace.__memsize_backtrace
+  assert_equal slot + frames * location, ObjectSpace.memsize_of(backtrace), 'a backtrace is its slot and its locations'
+
   #hash
   assert_not_equal ObjectSpace.memsize_of({}), 0, 'empty hash size not zero'
 end

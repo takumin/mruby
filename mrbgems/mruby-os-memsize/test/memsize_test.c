@@ -60,6 +60,35 @@ memsize_nofree_string(mrb_state *mrb, mrb_value self)
   return mrb_str_new_static(mrb, body, sizeof(body) - 1);
 }
 
+static mrb_value
+raise_for_backtrace(mrb_state *mrb, void *data)
+{
+  mrb_raise(mrb, E_RUNTIME_ERROR, "memsize");
+  return mrb_nil_value();
+}
+
+/* The packed backtrace an exception keeps from being raised, with how many
+ * frames it holds and what one frame takes. The object is internal
+ * (MRB_TT_BACKTRACE); memsize_of is the only thing to ask it. */
+static mrb_value
+memsize_backtrace(mrb_state *mrb, mrb_value self)
+{
+  mrb_bool error;
+  mrb_value exc = mrb_protect_error(mrb, raise_for_backtrace, NULL, &error);
+  struct RBacktrace *bt;
+  mrb_value ary;
+
+  mrb_gc_protect(mrb, exc); /* the backtrace is reachable through it alone */
+  bt = (struct RBacktrace*)mrb_exc_ptr(exc)->backtrace;
+  ary = mrb_ary_new_capa(mrb, 3);
+
+  mrb_assert(error && bt && bt->tt == MRB_TT_BACKTRACE);
+  mrb_ary_push(mrb, ary, mrb_obj_value(bt));
+  mrb_ary_push(mrb, ary, mrb_int_value(mrb, (mrb_int)bt->len));
+  mrb_ary_push(mrb, ary, mrb_int_value(mrb, (mrb_int)sizeof(struct mrb_backtrace_location)));
+  return ary;
+}
+
 void
 mrb_mruby_os_memsize_gem_test(mrb_state *mrb)
 {
@@ -68,4 +97,5 @@ mrb_mruby_os_memsize_gem_test(mrb_state *mrb)
   mrb_define_module_function(mrb, os, "__memsize_value_width", memsize_value_width, MRB_ARGS_NONE());
   mrb_define_module_function(mrb, os, "__memsize_heap_number", memsize_heap_number, MRB_ARGS_NONE());
   mrb_define_module_function(mrb, os, "__memsize_nofree_string", memsize_nofree_string, MRB_ARGS_NONE());
+  mrb_define_module_function(mrb, os, "__memsize_backtrace", memsize_backtrace, MRB_ARGS_NONE());
 }

@@ -197,7 +197,8 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
       size += mrb_objspace_page_slot_size();
       break;
     case MRB_TT_BACKTRACE:
-      size +=((struct RBacktrace*)mrb_obj_ptr(obj))->len * sizeof(struct mrb_backtrace_location);
+      size += mrb_objspace_page_slot_size();
+      size += ((struct RBacktrace*)mrb_obj_ptr(obj))->len * sizeof(struct mrb_backtrace_location);
       break;
     case MRB_TT_SVAR:
       size += mrb_objspace_page_slot_size();
