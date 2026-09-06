@@ -168,22 +168,46 @@ assert("TSort::Cyclic") do
   assert_include e.message, "topological sort failed"
 end
 
-assert("TSort handles deep graphs") do
-  n = 2000
-  h = {}
-  n.times {|i| h[i] = [i + 1] }
-  h[n] = []
-  r = TSortHash.from(h).tsort
-  assert_equal n + 1, r.size
-  assert_equal n, r.first
-  assert_equal 0, r.last
+class TSortLoggingHash < TSortHash
+  attr_reader :log
+  def tsort_each_child(node, &block)
+    (@log ||= []) << [:enter, node]
+    self[node].each {|c| @log << [:yield, node, c]; block.call(c) }
+    @log << [:leave, node]
+  end
+end
 
-  c = {}
-  n.times {|i| c[i] = [(i + 1) % n] }
-  scc = TSortHash.from(c).strongly_connected_components
-  assert_equal 1, scc.size
-  assert_equal n, scc[0].size
-  assert_raise(TSort::Cyclic) { TSortHash.from(c).tsort }
+assert("TSort visits each child as it is yielded") do
+  h = TSortLoggingHash.from({1=>[2, 3], 2=>[], 3=>[]})
+  h.each_strongly_connected_component {|c| h.log << [:component, c] }
+  assert_equal [[:enter, 1], [:yield, 1, 2], [:enter, 2], [:leave, 2], [:component, [2]],
+                [:yield, 1, 3], [:enter, 3], [:leave, 3], [:component, [3]],
+                [:leave, 1], [:component, [1]]], h.log
+end
+
+class TSortRaisingHash < TSortHash
+  def tsort_each_child(node, &block)
+    if node == 1
+      block.call(2)
+      raise RangeError, "after yielding 2"
+    end
+    super
+  end
+end
+
+assert("TSort yields components seen before tsort_each_child raises") do
+  h = TSortRaisingHash.from({1=>[2, 3], 2=>[], 3=>[]})
+  seen = []
+  assert_raise(RangeError) { h.each_strongly_connected_component {|c| seen << c } }
+  assert_equal [[2]], seen
+  assert_equal [2, 3, 1], TSortHash.from({1=>[2, 3], 2=>[], 3=>[]}).tsort
+end
+
+assert("TSort break stops the traversal") do
+  h = TSortLoggingHash.from({1=>[2, 3], 2=>[3], 3=>[]})
+  r = h.tsort_each {|n| break [:broke_at, n] }
+  assert_equal [:broke_at, 3], r
+  assert_equal [[:enter, 1], [:yield, 1, 2], [:enter, 2], [:yield, 2, 3], [:enter, 3], [:leave, 3]], h.log
 end
 
 assert("TSort with nil and false nodes") do

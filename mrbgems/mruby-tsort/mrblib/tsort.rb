@@ -175,52 +175,26 @@ module TSort
   def TSort.each_strongly_connected_component_from(node, each_child, id_map = {}, stack = [], &block)
     return to_enum(:each_strongly_connected_component_from, node, each_child, id_map, stack) unless block
 
-    # Tarjan's algorithm, written with an explicit stack of frames instead
-    # of recursion so that the depth of the graph is not limited by the
-    # call level limit of the VM (MRB_CALL_LEVEL_MAX). The children of a
-    # node are collected before the node is expanded.
-    #
-    # A frame is [node_id, minimum_id, stack_length, children, next_index].
-    frames = []
-    minimum_id = nil
-    visit = true
-    while true
-      if visit
-        visit = false
-        node_id = id_map[node] = id_map.size
-        stack_length = stack.length
-        stack << node
-        children = []
-        each_child.call(node) {|child| children << child }
-        frames << [node_id, node_id, stack_length, children, 0]
-      end
+    minimum_id = node_id = id_map[node] = id_map.size
+    stack_length = stack.length
+    stack << node
 
-      frame = frames.last
-      index = frame[4]
-      if index < frame[3].size
-        frame[4] = index + 1
-        child = frame[3][index]
-        if id_map.include?(child)
-          child_id = id_map[child]
-          frame[1] = child_id if child_id && child_id < frame[1]
-        else
-          node = child
-          visit = true
-        end
+    each_child.call(node) do |child|
+      if id_map.include?(child)
+        child_id = id_map[child]
+        minimum_id = child_id if child_id && child_id < minimum_id
       else
-        minimum_id = frame[1]
-        if frame[0] == minimum_id
-          component = []
-          component << stack.pop while stack.length > frame[2]
-          component.reverse!
-          component.each {|n| id_map[n] = nil }
-          block.call(component)
-        end
-        frames.pop
-        break if frames.empty?
-        parent = frames.last
-        parent[1] = minimum_id if minimum_id < parent[1]
+        sub_minimum_id = TSort.each_strongly_connected_component_from(child, each_child, id_map, stack, &block)
+        minimum_id = sub_minimum_id if sub_minimum_id < minimum_id
       end
+    end
+
+    if node_id == minimum_id
+      component = []
+      component << stack.pop while stack.length > stack_length
+      component.reverse!
+      component.each {|n| id_map[n] = nil }
+      block.call(component)
     end
 
     minimum_id

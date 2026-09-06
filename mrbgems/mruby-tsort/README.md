@@ -79,21 +79,17 @@ TSort.each_strongly_connected_component_from(1, each_child) {|scc| p scc }
 
 ## Differences from CRuby
 
-The API is the same as CRuby's `tsort`, and the results are identical for the
-same graph. The implementation differs in the following points.
+The API and the behavior are the same as CRuby's `tsort`: the algorithm is the
+same recursive traversal, so the results, the order in which
+`tsort_each_child` is called and components are yielded, and the propagation
+of exceptions and `break` are identical. The remaining differences are:
 
-- `each_strongly_connected_component_from` is not recursive. CRuby's
-  implementation recurses once per node, which on mruby would be limited by
-  the call level limit of the VM (`MRB_CALL_LEVEL_MAX`, 512 by default) to
-  graphs about a hundred nodes deep. This implementation keeps an explicit
-  stack instead, so the depth is limited only by memory.
-- As a consequence, the children of a node are collected by calling
-  `tsort_each_child` once before any child is visited, whereas CRuby visits
-  each child as it is yielded. The order of the results is the same. The
-  difference is observable only when `tsort_each_child` has side effects, or
-  raises after yielding some of the children: CRuby yields the components of
-  the children it has already seen before the exception propagates, while
-  this implementation raises first.
+- `each_strongly_connected_component_from` recurses once per node, as in
+  CRuby, and each level consumes about five VM call levels. The depth of the
+  graph is therefore bounded by `MRB_CALL_LEVEL_MAX` (512 by default), which
+  raises `SystemStackError` for chains of roughly 100 nodes. CRuby raises
+  the same error for chains of roughly 1600 nodes. Build with a larger
+  `MRB_CALL_LEVEL_MAX` if deeper graphs are needed.
 - The mixin methods build the callables passed to the module functions from
   lambdas instead of `Method` objects, so `mruby-method` is not required.
   `Method` objects still work with the module functions when `mruby-method`
