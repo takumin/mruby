@@ -373,3 +373,16 @@ assert('a discarded interpolation leaves the register pointer where it was') do
   end.new
   assert_equal [[1], 2, 3], worker.run([1], 2, 3)
 end
+
+assert('adding or subtracting a literal zero still sends the operator') do
+  # `x + 0` compiled to nothing at all: the peephole that turns `x + n` into
+  # `OP_ADDI` dropped the instruction for a zero, so the receiver was handed
+  # back untouched whatever it was, and neither its `+` nor a `TypeError` for
+  # a receiver that has none ever ran.
+  assert_raise(TypeError) { 'a' + 0 }
+  assert_raise(NoMethodError) { 'a' - 0 }
+  assert_raise(NoMethodError) { nil + 0 }
+  x = 5
+  assert_equal 5, x + 0
+  assert_equal 5, x - 0
+end
