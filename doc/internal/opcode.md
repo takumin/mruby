@@ -166,8 +166,12 @@ a block argument directly (e.g., `yield` or `block.call`).
 
 ### OP_ADDILV / OP_SUBILV
 
-Optimized integer increment/decrement that keeps operands for method
-call fallback when the receiver is not a Fixnum.
+Optimized integer increment/decrement of a local variable `R[a]`. The
+compiler always emits a 3-byte `MOVE a, b` right after it. When the
+receiver is an Integer or a Float and the operator is the builtin, the
+result is written to `R[a]` directly and the `MOVE` is skipped. Otherwise
+the operator is sent from the working space `R[b]`, `R[b+1]`, and the
+callee returns into the `MOVE`, which copies the result back to `R[a]`.
 
 ### OP_TDEF / OP_SDEF
 

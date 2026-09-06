@@ -4194,7 +4194,15 @@ RETRY_TRY_BLOCK:
   }
 #endif
 #define OP_MATHILV(op_name)                                                 \
-  /* a=local, b=working space, c=immediate */                               \
+  /* a=local, b=working space, c=immediate. `a` is a local variable slot,   \
+     not a temporary, so the L_SEND_SYM path the other OP_MATH opcodes take \
+     cannot lay the callee frame over the locals from regs[a] on. The frame \
+     goes on the working space `b` instead, and the `MOVE a, b` that always \
+     follows this instruction copies the result back once the callee        \
+     returns. The fast paths leave `a` up to date and skip that MOVE. The   \
+     skip is applied first so that it folds into the operand fetch; the     \
+     fallback undoes it. */                                                 \
+  ci->pc += 3;                  /* over the `MOVE a, b` (OP_MOVE, a, b) */  \
   if (mrb_likely(mrb_integer_p(regs[a]) &&                                  \
                  !(mrb->bop_redefined & MRB_BOP_INTEGER(OP_MATH_BOP_##op_name)))) { \
     mrb_int x = mrb_integer(regs[a]), y = (mrb_int)c, z;                    \
@@ -4207,21 +4215,14 @@ RETRY_TRY_BLOCK:
   }                                                                         \
   OP_MATHILV_ELSE_FLOAT(op_name)                                            \
   else {                                                                    \
-    /* `a` is a local variable slot, not a temporary, so the L_SEND_SYM     \
-       path the other OP_MATH opcodes take cannot be used: it writes the    \
-       argument into regs[a+1] and lays the callee frame over the locals    \
-       from regs[a] on. `b` is the working space reserved for the call,     \
-       but a send set up there leaves its result in regs[b] and the         \
-       `MOVE local, temp` that used to copy it back is what the fusion      \
-       removed, so the call is made from C. It can move the stack, hence    \
-       the `ci` refresh before storing through `regs`. */                   \
-    int ai_ = mrb_gc_arena_save(mrb);                                       \
-    mrb_value arg_ = mrb_int_value(mrb, c);                                 \
-    mrb_value v_ = mrb_funcall_argv(mrb, regs[a],                           \
-                                    MRB_OPSYM(op_name), 1, &arg_);          \
-    ci = mrb->c->ci;                                                        \
-    regs[a] = v_;                                                           \
-    mrb_gc_arena_restore(mrb, ai_);                                         \
+    ci->pc -= 3;                /* the callee returns into the MOVE */      \
+    b = ci->pc[-2];             /* refetched here so that the fast paths    \
+                                   need not keep it (no OP_EXT: see codegen) */ \
+    regs[b] = regs[a];                                                      \
+    SET_INT_VALUE(mrb, regs[b+1], (mrb_int)c);                              \
+    a = b;                                                                  \
+    mid = MRB_OPSYM(op_name);                                               \
+    goto L_SEND_SYM;                                                        \
   }                                                                         \
   NEXT
 
