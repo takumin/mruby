@@ -743,7 +743,7 @@ mrb_f_defined_method(mrb_state *mrb, mrb_value self)
   else {
     found = mrb_test(mrb_funcall_argv2(mrb, self, rt_id, mrb_symbol_value(sym), mrb_true_value()));
   }
-  if (found) return mrb_str_new_lit(mrb, "method");
+  if (found) return mrb_str_new_lit_frozen(mrb, "method");
   return mrb_nil_value();
 }
 
@@ -752,7 +752,7 @@ mrb_f_defined_ivar(mrb_state *mrb, mrb_value self)
 {
   mrb_sym sym;
   mrb_get_args(mrb, "n", &sym);
-  if (mrb_iv_defined(mrb, self, sym)) return mrb_str_new_lit(mrb, "instance-variable");
+  if (mrb_iv_defined(mrb, self, sym)) return mrb_str_new_lit_frozen(mrb, "instance-variable");
   return mrb_nil_value();
 }
 
@@ -765,7 +765,7 @@ mrb_f_defined_const(mrb_state *mrb, mrb_value self)
   mrb_callinfo *ci = &mrb->c->ci[-1];
   if (ci >= mrb->c->cibase && ci->proc &&
       mrb_vm_const_defined_p(mrb, ci->proc, sym)) {
-    return mrb_str_new_lit(mrb, "constant");
+    return mrb_str_new_lit_frozen(mrb, "constant");
   }
   return mrb_nil_value();
 }
@@ -774,7 +774,7 @@ static mrb_value
 mrb_f_defined_yield(mrb_state *mrb, mrb_value self)
 {
   /* mrb_f_block_given_p_m inspects ci[-1], i.e. the frame that used defined? */
-  if (mrb_test(mrb_f_block_given_p_m(mrb, self))) return mrb_str_new_lit(mrb, "yield");
+  if (mrb_test(mrb_f_block_given_p_m(mrb, self))) return mrb_str_new_lit_frozen(mrb, "yield");
   return mrb_nil_value();
 }
 
@@ -783,7 +783,7 @@ mrb_f_defined_gvar(mrb_state *mrb, mrb_value self)
 {
   mrb_sym sym;
   mrb_get_args(mrb, "n", &sym);
-  if (mrb_gv_defined(mrb, sym)) return mrb_str_new_lit(mrb, "global-variable");
+  if (mrb_gv_defined(mrb, sym)) return mrb_str_new_lit_frozen(mrb, "global-variable");
   return mrb_nil_value();
 }
 
@@ -796,7 +796,7 @@ mrb_f_defined_cvar(mrb_state *mrb, mrb_value self)
   mrb_callinfo *ci = &mrb->c->ci[-1];
   if (ci >= mrb->c->cibase && ci->proc &&
       mrb_vm_cv_defined_p(mrb, ci->proc, sym)) {
-    return mrb_str_new_lit(mrb, "class variable");
+    return mrb_str_new_lit_frozen(mrb, "class variable");
   }
   return mrb_nil_value();
 }
@@ -812,7 +812,7 @@ mrb_f_defined_super(mrb_state *mrb, mrb_value self)
   if (mid != 0 && tc != NULL && tc->super != NULL) {
     struct RClass *c = tc->super;
     mrb_method_t m = mrb_method_search_vm(mrb, &c, mid);
-    if (!MRB_METHOD_UNDEF_P(m)) return mrb_str_new_lit(mrb, "super");
+    if (!MRB_METHOD_UNDEF_P(m)) return mrb_str_new_lit_frozen(mrb, "super");
   }
   return mrb_nil_value();
 }
@@ -854,7 +854,7 @@ mrb_f_defined_const_path(mrb_state *mrb, mrb_value self)
     outer = mrb_const_get_noraise(mrb, mrb_class_ptr(outer), mrb_symbol(RARRAY_PTR(path)[i]));
     if (mrb_undef_p(outer)) return mrb_nil_value();
   }
-  return mrb_str_new_lit(mrb, "constant");
+  return mrb_str_new_lit_frozen(mrb, "constant");
 }
 
 /* `defined?(recv.meth)`: the caller has evaluated the receiver and hands it
@@ -875,7 +875,7 @@ mrb_f_defined_method_on(mrb_state *mrb, mrb_value self)
     if (!mrb_func_basic_p(mrb, recv, rtm_id, mrb_false)) {
       mrb_value v = mrb_funcall_argv2(mrb, recv, rtm_id,
                                       mrb_symbol_value(sym), mrb_false_value());
-      if (mrb_test(v)) return mrb_str_new_lit(mrb, "method");
+      if (mrb_test(v)) return mrb_str_new_lit_frozen(mrb, "method");
     }
     return mrb_nil_value();
   }
@@ -887,7 +887,7 @@ mrb_f_defined_method_on(mrb_state *mrb, mrb_value self)
   if ((m.flags & MRB_METHOD_PROTECTED_FL) && !mrb_obj_is_kind_of(mrb, self, c)) {
     return mrb_nil_value();
   }
-  return mrb_str_new_lit(mrb, "method");
+  return mrb_str_new_lit_frozen(mrb, "method");
 }
 
 /* ---------------------------*/

@@ -2129,6 +2129,19 @@ assert('defined? on control flow, jumps and definitions') do
   assert_equal 'expression', defined?(begin; END { }; end)
 end
 
+assert('defined? answers with a frozen string') do
+  lv = 1
+  assert_true defined?(1).frozen?
+  assert_true defined?(nil).frozen?
+  assert_true defined?(lv).frozen?
+  assert_true defined?(lv = 2).frozen?
+  assert_true defined?(Object).frozen?
+  assert_true defined?(assert).frozen?
+  assert_true defined?(1.to_s).frozen?
+  assert_true defined?(Object::String).frozen?
+  assert_raise(FrozenError) { defined?(self).upcase! }
+end
+
 assert('defined? on a back reference reads it') do
   # `$~` holds nothing here, so every name that reads from it is nil
   assert_nil defined?($&)

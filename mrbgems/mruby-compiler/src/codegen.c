@@ -4395,14 +4395,28 @@ gen_defined_path(mrc_codegen_scope *s, struct defined_answer *a)
   push();
 }
 
+/* Leave an answer at cursp() as a frozen string, which is what CRuby
+   answers with.  A literal is a fresh string each time, so it is frozen by
+   the same send `freeze` compiles to; an answer a helper gives comes back
+   frozen already. */
+static void
+gen_defined_literal(mrc_codegen_scope *s, const char *answer)
+{
+  genop_2(s, OP_STRING, cursp(), new_lit_cstr(s, answer));
+  push();                       /* the string is the receiver */
+  push(); pop();                /* space for a block */
+  pop();
+  genop_2(s, OP_SEND0, cursp(), new_sym(s, MRC_SYM_1(freeze)));
+  push();
+}
+
 /* Emit the answer an operand's node type alone decides: a literal string, or
    the helper call that resolves it at run time. */
 static void
 gen_defined_answer(mrc_codegen_scope *s, struct defined_answer *a)
 {
   if (a->type) {
-    genop_2(s, OP_STRING, cursp(), new_lit_cstr(s, a->type));
-    push();
+    gen_defined_literal(s, a->type);
     return;
   }
   genop_1(s, OP_LOADSELF, cursp());   /* receiver slot for the SSEND */
@@ -4652,8 +4666,7 @@ codegen_defined(mrc_codegen_scope *s, mrc_node *value, int val)
     codegen(s, value, VAL);
     pop();
     nil_jmps = genjmp2(s, OP_JMPNIL, cursp(), nil_jmps, NOVAL);
-    genop_2(s, OP_STRING, cursp(), new_lit_cstr(s, a.unless_nil));
-    push();
+    gen_defined_literal(s, a.unless_nil);
   }
   else {
     genop_1(s, OP_LOADNIL, cursp());
