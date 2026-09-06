@@ -131,3 +131,4 @@ OPCODE(EXT1,       Z)        /* make 1st operand (a) 16bit */
 OPCODE(EXT2,       Z)        /* make 2nd operand (b) 16bit */
 OPCODE(EXT3,       Z)        /* make 1st and 2nd operands 16bit */
 OPCODE(STOP,       Z)        /* stop VM */
+OPCODE(NILP,       B)        /* R[a] = R[a].nil? */

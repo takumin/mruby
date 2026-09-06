@@ -47,3 +47,31 @@ assert('safe navigation') do
   assert_nil nil&.size
   assert_equal 0, []&.size
 end
+
+assert('NilClass#nil? redefined reaches the redefinition in a conditional') do
+  # `if x.nil?` answers from C for nil as for any other receiver, and a
+  # redefinition on `NilClass` is honored on the same terms, a literal `nil`
+  # included. The results are read before the method is put back because
+  # mrblib itself branches on `nil?`.
+  NilClass.class_eval do
+    alias_method :__nil_p_before_test, :nil?
+    def nil?; false; end
+  end
+  begin
+    x = nil
+    var = x.nil? ? :then : :else
+    lit = nil.nil? ? :then : :else
+    str = "a".nil? ? :then : :else
+  ensure
+    NilClass.class_eval do
+      alias_method :nil?, :__nil_p_before_test
+      remove_method :__nil_p_before_test if respond_to?(:remove_method, true)
+    end
+  end
+  assert_equal :else, var
+  assert_equal :else, lit
+  assert_equal :else, str
+  x = nil
+  assert_equal :then, (x.nil? ? :then : :else)
+  assert_equal :then, (nil.nil? ? :then : :else)
+end

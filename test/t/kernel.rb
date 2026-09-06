@@ -583,3 +583,145 @@ assert('Kernel module functions') do
   # and unrelated modules do not gain them
   assert_raise(NoMethodError) { Comparable.raise ArgumentError }
 end
+
+assert('Kernel#nil? redefined on a singleton class reaches the redefinition in a conditional') do
+  # `if x.nil?` compiles to `OP_NILP`, which answers from C while `nil?` still
+  # resolves to the builtin for every receiver and sends it once one has been
+  # defined anywhere. A singleton class is the one place such a definition
+  # cannot be seen from the core classes, so the bit recording it is set by
+  # name and never cleared. This is the example `doc/limitations.md` gave for
+  # the redefinition being ignored.
+  a = "a"
+  def a.nil?; true; end
+  assert_equal :then, (a.nil? ? :then : :else)
+  assert_equal :then, (if a.nil? then :then else :else end)
+  assert_equal 1, (if a.nil? then 1 end)
+  assert_equal :else, (unless a.nil? then :then else :else end)
+  assert_equal :nilp, (if false then :no elsif a.nil? then :nilp else :else end)
+  r = :skipped
+  r = :ran if a.nil?
+  assert_equal :ran, r
+  r = :skipped
+  r = :ran unless a.nil?
+  assert_equal :skipped, r
+  assert_true a.nil?
+  assert_equal :else, ("b".nil? ? :then : :else)
+  # `&.` asks whether the receiver is nil itself, never `nil?`, as in CRuby
+  assert_equal 1, a&.size
+end
+
+assert('Kernel#nil? redefined on a class reaches the redefinition in a conditional') do
+  c = Class.new do
+    def nil?; true; end
+    def bare; nil? ? :then : :else; end
+    def other(o); o.nil? ? :then : :else; end
+  end
+  o = c.new
+  assert_equal :then, (o.nil? ? :then : :else)
+  assert_equal :then, o.bare
+  assert_equal :then, c.new.other(o)
+  assert_equal :else, c.new.other("b")
+  assert_equal :then, c.new.other(nil)
+  x = nil
+  assert_equal :then, (x.nil? ? :then : :else)
+  assert_equal :else, ("b".nil? ? :then : :else)
+end
+
+assert('Kernel#nil? supplied by a module reaches the redefinition in a conditional') do
+  m = Module.new { def nil?; true; end }
+  included = Class.new { include m }
+  prepended = Class.new { def nil?; false; end; prepend m }
+  extended = Object.new
+  extended.extend(m)
+  assert_equal :then, (included.new.nil? ? :then : :else)
+  assert_equal :then, (prepended.new.nil? ? :then : :else)
+  assert_equal :then, (extended.nil? ? :then : :else)
+  plain = Object.new
+  assert_equal :else, (plain.nil? ? :then : :else)
+end
+
+assert('a redefined nil? runs in a conditional as any send does') do
+  c = Class.new do
+    def initialize(v) @v = v end
+    def nil?; @v; end
+  end
+  assert_equal :then, (c.new(1).nil? ? :then : :else)
+  assert_equal :else, (c.new(false).nil? ? :then : :else)
+  assert_equal :else, (c.new(nil).nil? ? :then : :else)
+  boom = Class.new { def nil?; raise "boom"; end }
+  e = assert_raise(RuntimeError) { boom.new.nil? ? :then : :else }
+  assert_equal "boom", e.message
+  assert_equal :else, ("a".nil? ? :then : :else)
+  each = Class.new do
+    def nil?
+      n = 0
+      [1, 2].each { |i| n += i }
+      n == 3
+    end
+  end
+  assert_equal :then, (each.new.nil? ? :then : :else)
+  counted = Class.new do
+    def initialize; @n = 0; end
+    def nil?; @n += 1; @n < 3; end
+    attr_reader :n
+  end
+  o = counted.new
+  while o.nil?; end
+  assert_equal 3, o.n
+  undefined = Class.new { undef_method :nil? }
+  assert_raise(NoMethodError) { undefined.new.nil? ? :then : :else }
+  defined = Class.new { define_method(:nil?) { 1 } }
+  assert_equal :then, (defined.new.nil? ? :then : :else)
+end
+
+assert('Kernel#nil? redefined on Kernel itself reaches the redefinition in a conditional') do
+  # The results are read before the method is put back because mrblib itself
+  # branches on `nil?`.
+  Kernel.module_eval do
+    alias_method :__nil_p_before_test, :nil?
+    def nil?; :kernel; end
+  end
+  begin
+    s = "a"
+    str = s.nil? ? :then : :else
+    i = 1
+    int = i.nil? ? :then : :else
+  ensure
+    Kernel.module_eval do
+      alias_method :nil?, :__nil_p_before_test
+      remove_method :__nil_p_before_test if respond_to?(:remove_method, true)
+    end
+  end
+  assert_equal :then, str
+  assert_equal :then, int
+  s = "a"
+  assert_equal :else, (s.nil? ? :then : :else)
+end
+
+assert('nil? in a conditional is sent as OP_SEND0 would send it') do
+  # Once `OP_NILP` has to send `nil?`, it enters the send path as `OP_SEND0`,
+  # so visibility is checked as for any explicit receiver. A bare `nil?`, a
+  # `nil?` given a block and `x&.nil?` are not specialized at all: the first
+  # may reach a private `nil?`, the block changes what runs, and `&.` answers
+  # `nil` for a nil receiver in CRuby.
+  private_c = Class.new do
+    private def nil?; true; end
+    def bare; nil? ? :then : :else; end
+  end
+  o = private_c.new
+  assert_raise(NoMethodError) { o.nil? ? :then : :else }
+  assert_equal :then, o.bare
+  protected_c = Class.new do
+    protected def nil?; true; end
+    def other(x); x.nil? ? :then : :else; end
+  end
+  assert_raise(NoMethodError) { protected_c.new.nil? ? :then : :else }
+  assert_equal :then, protected_c.new.other(protected_c.new)
+  x = nil
+  assert_equal :else, (x&.nil? ? :then : :else)
+  y = "a"
+  assert_equal :else, (y&.nil? ? :then : :else)
+  b = Class.new { def nil?; block_given? ? yield : false; end }.new
+  assert_equal :then, (b.nil? { true } ? :then : :else)
+  assert_equal :else, (b.nil? ? :then : :else)
+end

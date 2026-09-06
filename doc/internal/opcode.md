@@ -144,6 +144,7 @@ See also `OP_EXT1`, `OP_EXT2` and `OP_EXT3`.
 | 116 | `OP_EXT2`        | `Z`          | make 2nd operand (b) 16 bit                                       |
 | 117 | `OP_EXT3`        | `Z`          | make 1st and 2nd operands 16 bit                                  |
 | 118 | `OP_STOP`        | `Z`          | stop VM                                                           |
+| 119 | `OP_NILP`        | `B`          | `R[a] = R[a].nil?`                                                |
 
 ## Notes
 

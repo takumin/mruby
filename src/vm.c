@@ -4127,6 +4127,26 @@ RETRY_TRY_BLOCK:
 #define OP_MATH_TT_integer MRB_TT_INTEGER
 #define OP_MATH_TT_float   MRB_TT_FLOAT
 
+    CASE(OP_NILP, B) {
+      if (mrb_unlikely(mrb->bop_redefined & MRB_BOP_NIL_P)) {
+        /* `nil?` is defined somewhere; only a receiver whose own resolves to
+           the builtin is still answered here */
+        struct RClass *cls = mrb_class(mrb, regs[a]);
+        mrb_method_t m = mrb_vm_find_method(mrb, cls, &cls, MRB_SYM_Q(nil));
+        const mrb_method_t *builtin = mrb_nil_p(regs[a]) ? &mrb->nil_p_nilclass : &mrb->nil_p_kernel;
+        if (m.flags != builtin->flags || m.as.func != builtin->as.func) {
+          /* as the OP_SEND0 the predicate would otherwise be: the send path
+             clears the block register and checks visibility for it */
+          insn = OP_SEND0;
+          mid = MRB_SYM_Q(nil);
+          c = 0;
+          goto L_SENDB_SYM;
+        }
+      }
+      SET_BOOL_VALUE(regs[a], mrb_nil_p(regs[a]));
+      NEXT;
+    }
+
     CASE(OP_ADD, B) {
       OP_MATH(add);
     }
