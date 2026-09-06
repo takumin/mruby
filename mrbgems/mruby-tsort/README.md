@@ -79,11 +79,26 @@ TSort.each_strongly_connected_component_from(1, each_child) {|scc| p scc }
 
 ## Differences from CRuby
 
-The API is the same as CRuby's `tsort`. The only difference is that the
-callables passed to the mixin-less module functions are built with lambdas
-instead of `Method` objects, so `mruby-method` is not required. `Method`
-objects still work when `mruby-method` is available, because they respond to
-`call`.
+The API is the same as CRuby's `tsort`, and the results are identical for the
+same graph. The implementation differs in the following points.
+
+- `each_strongly_connected_component_from` is not recursive. CRuby's
+  implementation recurses once per node, which on mruby would be limited by
+  the call level limit of the VM (`MRB_CALL_LEVEL_MAX`, 512 by default) to
+  graphs about a hundred nodes deep. This implementation keeps an explicit
+  stack instead, so the depth is limited only by memory.
+- As a consequence, the children of a node are collected by calling
+  `tsort_each_child` once before any child is visited, whereas CRuby visits
+  each child as it is yielded. The order of the results is the same. The
+  difference is observable only when `tsort_each_child` has side effects, or
+  raises after yielding some of the children: CRuby yields the components of
+  the children it has already seen before the exception propagates, while
+  this implementation raises first.
+- The mixin methods build the callables passed to the module functions from
+  lambdas instead of `Method` objects, so `mruby-method` is not required.
+  `Method` objects still work with the module functions when `mruby-method`
+  is available, because they respond to `call`.
+- `TSort::VERSION` is not defined.
 
 ## License
 

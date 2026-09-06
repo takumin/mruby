@@ -167,3 +167,51 @@ assert("TSort::Cyclic") do
   e = assert_raise(TSort::Cyclic) { h.tsort }
   assert_include e.message, "topological sort failed"
 end
+
+assert("TSort handles deep graphs") do
+  n = 2000
+  h = {}
+  n.times {|i| h[i] = [i + 1] }
+  h[n] = []
+  r = TSortHash.from(h).tsort
+  assert_equal n + 1, r.size
+  assert_equal n, r.first
+  assert_equal 0, r.last
+
+  c = {}
+  n.times {|i| c[i] = [(i + 1) % n] }
+  scc = TSortHash.from(c).strongly_connected_components
+  assert_equal 1, scc.size
+  assert_equal n, scc[0].size
+  assert_raise(TSort::Cyclic) { TSortHash.from(c).tsort }
+end
+
+assert("TSort with nil and false nodes") do
+  h = TSortHash.from({nil=>[false], false=>[true], true=>[]})
+  assert_equal [true, false, nil], h.tsort
+  assert_equal [[true], [false], [nil]], h.strongly_connected_components
+end
+
+class TSortCountingHash < TSortHash
+  attr_reader :calls
+  def tsort_each_child(node, &block)
+    (@calls ||= []) << node
+    super
+  end
+end
+
+assert("TSort#tsort_each_child is called once per node") do
+  h = TSortCountingHash.from({1=>[2, 3], 2=>[3], 3=>[1, 2]})
+  h.strongly_connected_components
+  assert_equal [1, 2, 3], h.calls
+end
+
+assert("TSort adds only its own API to including classes") do
+  h = TSortHash.new
+  [:tsort, :tsort_each, :strongly_connected_components, :each_strongly_connected_component,
+   :each_strongly_connected_component_from, :tsort_each_node, :tsort_each_child].each do |m|
+    assert_true h.respond_to?(m), m.to_s
+  end
+  assert_false h.respond_to?(:__tsort_each_node_proc, true)
+  assert_false h.respond_to?(:__tsort_each_child_proc, true)
+end

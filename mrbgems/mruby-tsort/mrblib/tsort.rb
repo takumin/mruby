@@ -62,7 +62,7 @@ module TSort
   #
   # If there is a cycle, TSort::Cyclic is raised.
   def tsort
-    TSort.tsort(__tsort_each_node_proc, __tsort_each_child_proc)
+    TSort.tsort(lambda {|&b| tsort_each_node(&b) }, lambda {|n, &b| tsort_each_child(n, &b) })
   end
 
   # Returns a topologically sorted array of nodes.
@@ -85,7 +85,7 @@ module TSort
   # #tsort_each returns +nil+.
   # If there is a cycle, TSort::Cyclic is raised.
   def tsort_each(&block)
-    TSort.tsort_each(__tsort_each_node_proc, __tsort_each_child_proc, &block)
+    TSort.tsort_each(lambda {|&b| tsort_each_node(&b) }, lambda {|n, &b| tsort_each_child(n, &b) }, &block)
   end
 
   # The iterator version of the TSort.tsort method.
@@ -109,7 +109,7 @@ module TSort
   # The array is sorted from children to parents.
   # Each elements of the array represents a strongly connected component.
   def strongly_connected_components
-    TSort.strongly_connected_components(__tsort_each_node_proc, __tsort_each_child_proc)
+    TSort.strongly_connected_components(lambda {|&b| tsort_each_node(&b) }, lambda {|n, &b| tsort_each_child(n, &b) })
   end
 
   # Returns strongly connected components as an array of arrays of nodes.
@@ -130,7 +130,7 @@ module TSort
   #
   # #each_strongly_connected_component returns +nil+.
   def each_strongly_connected_component(&block)
-    TSort.each_strongly_connected_component(__tsort_each_node_proc, __tsort_each_child_proc, &block)
+    TSort.each_strongly_connected_component(lambda {|&b| tsort_each_node(&b) }, lambda {|n, &b| tsort_each_child(n, &b) }, &block)
   end
 
   # The iterator version of the TSort.strongly_connected_components method.
@@ -158,7 +158,7 @@ module TSort
   #
   # #each_strongly_connected_component_from doesn't call #tsort_each_node.
   def each_strongly_connected_component_from(node, id_map = {}, stack = [], &block)
-    TSort.each_strongly_connected_component_from(node, __tsort_each_child_proc, id_map, stack, &block)
+    TSort.each_strongly_connected_component_from(node, lambda {|n, &b| tsort_each_child(n, &b) }, id_map, stack, &block)
   end
 
   # Iterates over strongly connected components in a graph.
@@ -175,26 +175,52 @@ module TSort
   def TSort.each_strongly_connected_component_from(node, each_child, id_map = {}, stack = [], &block)
     return to_enum(:each_strongly_connected_component_from, node, each_child, id_map, stack) unless block
 
-    minimum_id = node_id = id_map[node] = id_map.size
-    stack_length = stack.length
-    stack << node
-
-    each_child.call(node) do |child|
-      if id_map.include?(child)
-        child_id = id_map[child]
-        minimum_id = child_id if child_id && child_id < minimum_id
-      else
-        sub_minimum_id = TSort.each_strongly_connected_component_from(child, each_child, id_map, stack, &block)
-        minimum_id = sub_minimum_id if sub_minimum_id < minimum_id
+    # Tarjan's algorithm, written with an explicit stack of frames instead
+    # of recursion so that the depth of the graph is not limited by the
+    # call level limit of the VM (MRB_CALL_LEVEL_MAX). The children of a
+    # node are collected before the node is expanded.
+    #
+    # A frame is [node_id, minimum_id, stack_length, children, next_index].
+    frames = []
+    minimum_id = nil
+    visit = true
+    while true
+      if visit
+        visit = false
+        node_id = id_map[node] = id_map.size
+        stack_length = stack.length
+        stack << node
+        children = []
+        each_child.call(node) {|child| children << child }
+        frames << [node_id, node_id, stack_length, children, 0]
       end
-    end
 
-    if node_id == minimum_id
-      component = []
-      component << stack.pop while stack.length > stack_length
-      component.reverse!
-      component.each {|n| id_map[n] = nil }
-      block.call(component)
+      frame = frames.last
+      index = frame[4]
+      if index < frame[3].size
+        frame[4] = index + 1
+        child = frame[3][index]
+        if id_map.include?(child)
+          child_id = id_map[child]
+          frame[1] = child_id if child_id && child_id < frame[1]
+        else
+          node = child
+          visit = true
+        end
+      else
+        minimum_id = frame[1]
+        if frame[0] == minimum_id
+          component = []
+          component << stack.pop while stack.length > frame[2]
+          component.reverse!
+          component.each {|n| id_map[n] = nil }
+          block.call(component)
+        end
+        frames.pop
+        break if frames.empty?
+        parent = frames.last
+        parent[1] = minimum_id if minimum_id < parent[1]
+      end
     end
 
     minimum_id
@@ -212,15 +238,5 @@ module TSort
   # #tsort_each_child is used to iterate for child nodes of _node_.
   def tsort_each_child(node)
     raise NotImplementedError.new
-  end
-
-  private
-
-  def __tsort_each_node_proc
-    lambda {|&block| tsort_each_node(&block) }
-  end
-
-  def __tsort_each_child_proc
-    lambda {|node, &block| tsort_each_child(node, &block) }
   end
 end
