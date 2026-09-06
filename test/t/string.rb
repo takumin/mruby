@@ -191,6 +191,43 @@ assert('String#[] redefined on String itself reaches the redefinition') do
   assert_equal 'e', 'hello'[1]
 end
 
+assert('String#+ redefined on String itself reaches the redefinition') do
+  # `OP_ADD` answers `s + t` from C for two Strings, which it may only do
+  # while `String#+` is still the builtin it reimplements and the receiver's
+  # class is exactly `String`. It tests the receiver against `mrb->idx_class[]`
+  # on the same terms as the `[]` test above, so a redefinition installed on
+  # `String` itself is honored as in CRuby, and so is one on a subclass or a
+  # singleton, which the type tag alone could not tell from `String`. The
+  # results are read before the operator is put back because the assertions
+  # themselves build strings.
+  String.class_eval do
+    alias_method :__add_before_test, :+
+    def +(other)
+      [:overridden, self, other]
+    end
+  end
+  begin
+    s = 'hello'
+    sum = s + ' world'
+    literal = 'a' + 'b'
+  ensure
+    String.class_eval do
+      alias_method :+, :__add_before_test
+      remove_method :__add_before_test if respond_to?(:remove_method, true)
+    end
+  end
+  assert_equal [:overridden, 'hello', ' world'], sum
+  assert_equal [:overridden, 'a', 'b'], literal
+  assert_equal 'hello world', 'hello' + ' world'
+
+  sub = Class.new(String) { def +(other) [:subclass, self, other] end }.new('hi')
+  assert_equal [:subclass, 'hi', '!'], sub + '!'
+  single = 'hi'
+  def single.+(other) [:singleton, self, other] end
+  assert_equal [:singleton, 'hi', '!'], single + '!'
+  assert_equal 'hi!', 'hi' + '!'
+end
+
 assert('String#[]= redefined on String itself reaches the redefinition') do
   # `OP_SETIDX` answers `s[0] = 'X'` from C whenever the receiver's class is
   # exactly `String`, on the same terms as the `[]` test above: it tests the

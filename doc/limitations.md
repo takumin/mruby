@@ -103,30 +103,6 @@ alias $a $__a__
 
 Syntax error
 
-## Operator modification
-
-Operators on some of the primitive classes cannot be overridden, as they are
-optimized in the VM.
-
-```ruby
-class String
-  def +
-  end
-end
-
-'a' + 'b'
-```
-
-#### CRuby
-
-`ArgumentError` is raised.
-The re-defined `+` operator does not accept any arguments.
-
-#### mruby
-
-`'ab'`
-Behavior of the operator wasn't changed.
-
 ## `nil?` redefinition in conditional expressions
 
 Redefinition of `nil?` is ignored in conditional expressions.

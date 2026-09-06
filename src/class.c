@@ -1089,7 +1089,7 @@ mrb_define_method_raw(mrb_state *mrb, struct RClass *c, mrb_sym mid, mrb_method_
   mt_put(mrb, h, mid, flags, ptr);
   if (!mrb->bootstrapping) {
     mc_clear_by_id(mrb, mid);
-    mrb_idx_op_update(mrb, mid);
+    mrb_builtin_op_update(mrb, mid);
   }
   if (modfunc) {
     /* module_function scope: also define a public method on the singleton
@@ -2135,7 +2135,7 @@ include_module_at(mrb_state *mrb, struct RClass *c, struct RClass *ins_pos, stru
     mrb_method_cache_clear(mrb);
     /* An included or prepended module can carry both operators, and it is not
        one method name that changed, so recheck every slot. */
-    mrb_idx_op_update(mrb, 0);
+    mrb_builtin_op_update(mrb, 0);
   }
   return 0;
 }
@@ -2539,7 +2539,7 @@ mrb_mod_visibility(mrb_state *mrb, mrb_value mod, int vis)
       }
       mt_put(mrb, h, mid, m.flags, ptr);
       mc_clear_by_id(mrb, mid);
-      mrb_idx_op_update(mrb, mid);
+      mrb_builtin_op_update(mrb, mid);
     }
   }
 }
@@ -2856,7 +2856,8 @@ mc_clear_by_id(mrb_state *mrb, mrb_sym id)
  * Guards for the inline index opcodes.
  *
  * `OP_GETIDX`, `OP_GETIDX0` and `OP_SETIDX` implement `[]` and `[]=` for an
- * Array, Hash or String receiver in C, without a method lookup.  They may only
+ * Array, Hash or String receiver in C, without a method lookup, and `OP_ADD`
+ * does the same for `+` on a String receiver.  They may only
  * do so while those classes still carry the builtin the opcode reimplements,
  * so each (class, operator) pair keeps a slot in `mrb->idx_class` that holds
  * the class while that is true and NULL once it is not.  The opcodes compare
@@ -2885,6 +2886,7 @@ idx_op_class(mrb_state *mrb, int slot)
 static mrb_sym
 idx_op_mid(int slot)
 {
+  if (slot == MRB_IDX_OP_STR_ADD) return MRB_OPSYM(add);
   return slot < MRB_IDX_OP_ARY_ASET ? MRB_OPSYM(aref) : MRB_OPSYM(aset);
 }
 
@@ -2919,16 +2921,6 @@ idx_op_arm(mrb_state *mrb, int slot)
   mrb->idx_class[slot] = base;
 }
 
-/* Records the builtin `[]` / `[]=` of each core class and arms its slot.
-   Called once, after core initialization has installed them. */
-void
-mrb_idx_op_init(mrb_state *mrb)
-{
-  for (int slot = 0; slot < MRB_IDX_OP_SLOT_COUNT; slot++) {
-    idx_op_arm(mrb, slot);
-  }
-}
-
 /* Arms `slot` for an implementation installed over the builtin.
  *
  * CALLER'S PROMISE: for every argument form the opcode answers itself, the
@@ -2949,22 +2941,100 @@ mrb_idx_op_rearm(mrb_state *mrb, enum mrb_idx_op_slot slot)
   idx_op_arm(mrb, (int)slot);
 }
 
-/* Rechecks the slots that `mid` can affect.  Call after any change to a method
-   table that could change what `[]` or `[]=` resolves to; pass 0 for `mid` when
-   the change is not tied to one name, as module inclusion is not. */
+/*
+ * Guards for the arithmetic and comparison opcodes.
+ *
+ * `OP_ADD`, `OP_LT`, `OP_EQ` and their kin answer an operator from C for an
+ * Integer, Float or Symbol receiver.  Those are immediate values whose type
+ * tag names the class, so there is no class pointer for a slot to disarm as
+ * `idx_class` does; each (class, operator) pair owns a bit of
+ * `mrb->bop_redefined` instead, clear while the operator still resolves to the
+ * builtin recorded in `mrb->bop_builtin` and set once it does not.  Validity
+ * is judged exactly as for the index slots above.
+ */
+
+static const mrb_sym bop_mids[MRB_BOP_COUNT] = {
+  MRB_OPSYM(add), MRB_OPSYM(sub), MRB_OPSYM(mul), MRB_OPSYM(div),
+  MRB_OPSYM(eq), MRB_OPSYM(lt), MRB_OPSYM(le), MRB_OPSYM(gt), MRB_OPSYM(ge),
+};
+
+/* NULL for a slot the build has no class for. */
+static struct RClass*
+bop_class(mrb_state *mrb, int slot)
+{
+  if (slot < MRB_BOP_COUNT) return mrb->integer_class;
+  if (slot == 2 * MRB_BOP_COUNT) return mrb->symbol_class;
+#ifdef MRB_NO_FLOAT
+  return NULL;
+#else
+  return mrb->float_class;
+#endif
+}
+
+static mrb_sym
+bop_mid(int slot)
+{
+  return slot == 2 * MRB_BOP_COUNT ? MRB_OPSYM(eq) : bop_mids[slot % MRB_BOP_COUNT];
+}
+
+static void
+bop_refresh(mrb_state *mrb, int slot)
+{
+  const mrb_method_t *builtin = &mrb->bop_builtin[slot];
+
+  if (builtin->as.func == NULL) return;
+
+  struct RClass *c = bop_class(mrb, slot);
+  mrb_method_t m = mrb_vm_find_method(mrb, c, &c, bop_mid(slot));
+  if (m.flags == builtin->flags && m.as.func == builtin->as.func) {
+    mrb->bop_redefined &= ~(1u << slot);
+  }
+  else {
+    mrb->bop_redefined |= 1u << slot;
+  }
+}
+
+static void
+bop_arm(mrb_state *mrb, int slot)
+{
+  struct RClass *c = bop_class(mrb, slot);
+
+  /* A slot the build has no class for keeps its bit clear: nothing can
+     redefine what does not exist, and a bit set here would never let the
+     Integer and Float bits of an operator read clear as a pair. */
+  if (c == NULL) return;
+  mrb->bop_redefined |= 1u << slot;
+  mrb_method_t m = mrb_vm_find_method(mrb, c, &c, bop_mid(slot));
+  if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_FUNC_P(m)) return;
+  mrb->bop_builtin[slot] = m;
+  mrb->bop_redefined &= ~(1u << slot);
+}
+
+/* Records the builtin operators of each core class and arms their slots.
+   Called once, after core initialization has installed them. */
 void
-mrb_idx_op_update(mrb_state *mrb, mrb_sym mid)
+mrb_builtin_op_init(mrb_state *mrb)
+{
+  for (int slot = 0; slot < MRB_IDX_OP_SLOT_COUNT; slot++) {
+    idx_op_arm(mrb, slot);
+  }
+  for (int slot = 0; slot < MRB_BOP_SLOT_COUNT; slot++) {
+    bop_arm(mrb, slot);
+  }
+}
+
+/* Rechecks the slots that `mid` can affect.  Call after any change to a method
+   table that could change what a guarded operator resolves to; pass 0 for
+   `mid` when the change is not tied to one name, as module inclusion is not. */
+void
+mrb_builtin_op_update(mrb_state *mrb, mrb_sym mid)
 {
   if (mrb->bootstrapping) return;
-  if (mid == 0 || mid == MRB_OPSYM(aref)) {
-    idx_op_refresh(mrb, MRB_IDX_OP_ARY_AREF);
-    idx_op_refresh(mrb, MRB_IDX_OP_HASH_AREF);
-    idx_op_refresh(mrb, MRB_IDX_OP_STR_AREF);
+  for (int slot = 0; slot < MRB_IDX_OP_SLOT_COUNT; slot++) {
+    if (mid == 0 || mid == idx_op_mid(slot)) idx_op_refresh(mrb, slot);
   }
-  if (mid == 0 || mid == MRB_OPSYM(aset)) {
-    idx_op_refresh(mrb, MRB_IDX_OP_ARY_ASET);
-    idx_op_refresh(mrb, MRB_IDX_OP_HASH_ASET);
-    idx_op_refresh(mrb, MRB_IDX_OP_STR_ASET);
+  for (int slot = 0; slot < MRB_BOP_SLOT_COUNT; slot++) {
+    if (mid == 0 || mid == bop_mid(slot)) bop_refresh(mrb, slot);
   }
 }
 
@@ -3954,7 +4024,7 @@ mrb_remove_method(mrb_state *mrb, struct RClass *c0, mrb_sym mid)
     mrb_name_error(mrb, mid, "method '%n' not defined in %C", mid, c);
   }
   mc_clear_by_id(mrb, mid);
-  mrb_idx_op_update(mrb, mid);
+  mrb_builtin_op_update(mrb, mid);
   if (c0->tt == MRB_TT_SCLASS) {
     mrb_sym cb = MRB_SYM(singleton_method_removed);
     mrb_value recv = mrb_iv_get(mrb, mrb_obj_value(c0), MRB_SYM(__attached__));

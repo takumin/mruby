@@ -91,95 +91,6 @@
 #define MRC_ARGS_NONE()     ((mrc_aspec)0)
 
 
-#define MRC_INT_OVERFLOW_MASK ((mrc_uint)1 << (MRC_INT_BIT - 1))
-
-static inline mrc_bool
-mrc_int_add_overflow(mrc_int a, mrc_int b, mrc_int *c)
-{
-  mrc_uint x = (mrc_uint)a;
-  mrc_uint y = (mrc_uint)b;
-  mrc_uint z = (mrc_uint)(x + y);
-  *c = (mrc_int)z;
-  return !!(((x ^ z) & (y ^ z)) & MRC_INT_OVERFLOW_MASK);
-}
-
-static inline mrc_bool
-mrc_int_sub_overflow(mrc_int a, mrc_int b, mrc_int *c)
-{
-  mrc_uint x = (mrc_uint)a;
-  mrc_uint y = (mrc_uint)b;
-  mrc_uint z = (mrc_uint)(x - y);
-  *c = (mrc_int)z;
-  return !!(((x ^ z) & (~y ^ z)) & MRC_INT_OVERFLOW_MASK);
-}
-
-static inline mrc_bool
-mrc_int_mul_overflow(mrc_int a, mrc_int b, mrc_int *c)
-{
-#ifdef MRC_INT32
-  int64_t n = (int64_t)a * b;
-  *c = (mrc_int)n;
-  return n > MRC_INT_MAX || n < MRC_INT_MIN;
-#else /* MRC_INT64 */
-  if (a > 0 && b > 0 && a > MRC_INT_MAX / b) return TRUE;
-  if (a < 0 && b > 0 && a < MRC_INT_MIN / b) return TRUE;
-  if (a > 0 && b < 0 && b < MRC_INT_MIN / a) return TRUE;
-  if (a < 0 && b < 0 && (a <= MRC_INT_MIN || b <= MRC_INT_MIN || -a > MRC_INT_MAX / -b))
-    return TRUE;
-  *c = a * b;
-  return FALSE;
-#endif
-}
-
-static mrc_int
-mrc_div_int(mrc_int x, mrc_int y)
-{
-  mrc_int div = x / y;
-
-  if ((x ^ y) < 0 && x != div * y) {
-    div -= 1;
-  }
-  return div;
-}
-
-#define NUMERIC_SHIFT_WIDTH_MAX (MRC_INT_BIT-1)
-
-static mrc_bool
-mrc_num_shift(mrc_int val, mrc_int width, mrc_int *num)
-{
-  if (width < 0) {              /* rshift */
-    if (width == MRC_INT_MIN || -width >= NUMERIC_SHIFT_WIDTH_MAX) {
-      if (val < 0) {
-        *num = -1;
-      }
-      else {
-        *num = 0;
-      }
-    }
-    else {
-      *num = val >> -width;
-    }
-  }
-  else if (val > 0) {
-    if ((width > NUMERIC_SHIFT_WIDTH_MAX) ||
-        (val   > (MRC_INT_MAX >> width))) {
-      return FALSE;
-    }
-    *num = val << width;
-  }
-  else {
-    if ((width > NUMERIC_SHIFT_WIDTH_MAX) ||
-        (val   < (MRC_INT_MIN >> width))) {
-      return FALSE;
-    }
-    if (width == NUMERIC_SHIFT_WIDTH_MAX)
-      *num = MRC_INT_MIN;
-    else
-      *num = val * ((mrc_int)1 << width);
-  }
-  return TRUE;
-}
-
 #ifdef MRC_ENDIAN_BIG
 # define MRC_ENDIAN_LOHI(a,b) a b
 #else
@@ -1031,19 +942,6 @@ gen_move(mrc_codegen_scope *s, uint16_t dst, uint16_t src, int nopeep)
         struct mrc_insn_data data0 = mrc_decode_insn(mrc_prev_pc(s, data.addr));
         if (data0.insn != OP_MOVE || data0.a != data.a || data0.b != dst) goto normal;
         s->pc = addr_pc(s, data0.addr);
-        if (addr_pc(s, data0.addr) != s->lastlabel) {
-          /* constant folding */
-          struct mrc_insn_data data1 = mrc_decode_insn(mrc_prev_pc(s, data0.addr));
-          mrc_int n;
-          if (data1.a == dst && get_int_operand(s, &data1, &n)) {
-            if ((data.insn == OP_ADDI && !mrc_int_add_overflow(n, data.b, &n)) ||
-                (data.insn == OP_SUBI && !mrc_int_sub_overflow(n, data.b, &n))) {
-              s->pc = addr_pc(s, data1.addr);
-              gen_int(s, dst, n);
-              return;
-            }
-          }
-        }
         /* ADDILV/SUBILV fusion: MOVE temp local; ADDI/SUBI temp imm; MOVE local temp */
         /* -> ADDILV/SUBILV local temp imm (temp is working space for method fallback) */
         genop_3(s, data.insn == OP_ADDI ? OP_ADDILV : OP_SUBILV, dst, data.a, data.b);
@@ -1354,58 +1252,15 @@ gen_addsub(mrc_codegen_scope *s, uint8_t op, uint16_t dst)
       /* not integer immediate */
       goto normal;
     }
-    struct mrc_insn_data data0 = mrc_decode_insn(mrc_prev_pc(s, data.addr));
-    mrc_int n0;
-    if (addr_pc(s, data.addr) == s->lastlabel || !get_int_operand(s, &data0, &n0)) {
-      /* Fold to OP_ADDI/OP_SUBI only for non-negative 8-bit n; flipping op
-         for negative n would change the method sent on user override (#2557). */
-      if (n < 0 || n > UINT8_MAX) goto normal;
-      rewind_pc(s);
-      if (n == 0) return;
-      if (op == OP_ADD) genop_2(s, OP_ADDI, dst, (uint16_t)n);
-      else genop_2(s, OP_SUBI, dst, (uint16_t)n);
-      return;
-    }
-    if (op == OP_ADD) {
-      if (mrc_int_add_overflow(n0, n, &n)) goto normal;
-    }
-    else { /* OP_SUB */
-      if (mrc_int_sub_overflow(n0, n, &n)) goto normal;
-    }
-    s->pc = addr_pc(s, data0.addr);
-    gen_int(s, dst, n);
-  }
-}
-
-static void
-gen_muldiv(mrc_codegen_scope *s, uint8_t op, uint16_t dst)
-{
-  if (no_peephole(s)) {
-  normal:
-    genop_1(s, op, dst);
-    return;
-  }
-  else {
-    struct mrc_insn_data data = mrc_last_insn(s);
-    mrc_int n, n0;
-    if (addr_pc(s, data.addr) == s->lastlabel || !get_int_operand(s, &data, &n)) {
-      /* not integer immediate */
-      goto normal;
-    }
-    struct mrc_insn_data data0 = mrc_decode_insn(mrc_prev_pc(s, data.addr));
-    if (!get_int_operand(s, &data0, &n0)) {
-      goto normal;
-    }
-    if (op == OP_MUL) {
-      if (mrc_int_mul_overflow(n0, n, &n)) goto normal;
-    }
-    else { /* OP_DIV */
-      if (n == 0) goto normal;
-      if (n0 == MRC_INT_MIN && n == -1) goto normal;
-      n = mrc_div_int(n0, n);
-    }
-    s->pc = addr_pc(s, data0.addr);
-    gen_int(s, dst, n);
+    /* Fold to OP_ADDI/OP_SUBI only for non-negative 8-bit n; flipping op
+       for negative n would change the method sent on user override (#2557).
+       Two literals are not folded to their sum for the same reason: the
+       operator is a method of the receiver, and only the opcode can tell
+       whether it is still the builtin. */
+    if (n < 0 || n > UINT8_MAX) goto normal;
+    rewind_pc(s);
+    if (op == OP_ADD) genop_2(s, OP_ADDI, dst, (uint16_t)n);
+    else genop_2(s, OP_SUBI, dst, (uint16_t)n);
   }
 }
 
@@ -1424,10 +1279,9 @@ gen_uniop(mrc_codegen_scope *s, mrc_sym sym, uint16_t dst)
     if (n == MRC_INT_MIN) return FALSE;
     n = -n;
   }
-  else if (sym == MRC_OPSYM_2(neg)) {
-    n = ~n;
-  }
   else {
+    /* `~1` is a method call in CRuby too, and folding it would bypass a
+       redefined `Integer#~` */
     return FALSE;
   }
   s->pc = addr_pc(s, data.addr);
@@ -1454,50 +1308,7 @@ gen_binop(mrc_codegen_scope *s, mrc_sym op, uint16_t dst)
     return TRUE;
   }
   else {
-    struct mrc_insn_data data = mrc_last_insn(s);
-    mrc_int n, n0;
-    if (addr_pc(s, data.addr) == s->lastlabel || !get_int_operand(s, &data, &n)) {
-      /* not integer immediate */
-      return FALSE;
-    }
-    struct mrc_insn_data data0 = mrc_decode_insn(mrc_prev_pc(s, data.addr));
-    if (!get_int_operand(s, &data0, &n0)) {
-      return FALSE;
-    }
-    if (op == MRC_OPSYM_2(lshift)) {
-      if (!mrc_num_shift(n0, n, &n)) return FALSE;
-    }
-    else if (op == MRC_OPSYM_2(rshift)) {
-      if (n == MRC_INT_MIN) return FALSE;
-      if (!mrc_num_shift(n0, -n, &n)) return FALSE;
-    }
-    else if (op == MRC_OPSYM_2(mod) && n != 0) {
-      if (n0 == MRC_INT_MIN && n == -1) {
-        n = 0;
-      }
-      else {
-        mrc_int n1 = n0 % n;
-        if ((n0 < 0) != (n < 0) && n1 != 0) {
-          n1 += n;
-        }
-        n = n1;
-      }
-    }
-    else if (op == MRC_OPSYM_2(and)) {
-      n = n0 & n;
-    }
-    else if (op == MRC_OPSYM_2(or)) {
-      n = n0 | n;
-    }
-    else if (op == MRC_OPSYM_2(xor)) {
-      n = n0 ^ n;
-    }
-    else {
-      return FALSE;
-    }
-    s->pc = addr_pc(s, data0.addr);
-    gen_int(s, dst, n);
-    return TRUE;
+    return FALSE;
   }
 }
 
@@ -2646,10 +2457,10 @@ gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe, int recv_ready
     gen_addsub(s, OP_SUB, cursp());
   }
   else if (!noop && sym == MRC_OPSYM_2(mul) && n == 1)  {
-    gen_muldiv(s, OP_MUL, cursp());
+    genop_1(s, OP_MUL, cursp());
   }
   else if (!noop && sym == MRC_OPSYM_2(div) && n == 1)  {
-    gen_muldiv(s, OP_DIV, cursp());
+    genop_1(s, OP_DIV, cursp());
   }
   else if (!noop && sym == MRC_OPSYM_2(lt) && n == 1)  {
     genop_1(s, OP_LT, cursp());
@@ -2670,10 +2481,10 @@ gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe, int recv_ready
     genop_1(s, OP_SETIDX, cursp());
   }
   else if (!noop && n == 0 && gen_uniop(s, sym, cursp())) {
-    /* constant folding succeeded */
+    /* a literal absorbed its sign */
   }
   else if (!noop && n == 1 && gen_binop(s, sym, cursp())) {
-    /* constant folding succeeded */
+    /* an index opcode was emitted */
   }
   else if (noself) {
     if (!blk && n == 0 && nk == 0) {

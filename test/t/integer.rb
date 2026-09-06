@@ -487,3 +487,192 @@ assert('Integer.__ensure converts its argument without dispatching') do
   assert_raise(TypeError) { Integer.__ensure("2") }
   assert_raise(TypeError) { Integer.__ensure(nil) }
 end
+
+assert('Integer arithmetic redefined on Integer itself reaches the redefinition') do
+  # `OP_ADD`, `OP_SUB`, `OP_MUL` and `OP_DIV` answer `a + b` from C for an
+  # Integer receiver, `OP_ADDI` and `OP_SUBI` answer `a + 1` and `OP_ADDILV`
+  # and `OP_SUBILV` answer `a += 1` on a local the same way. They may only do
+  # so while `Integer#+` and its kin are still the builtins they reimplement,
+  # which `mrb->bop_redefined` records the moment one is replaced, so a
+  # redefinition installed on `Integer` itself is honored as in CRuby. The
+  # results are read before the operators are put back because mrblib itself
+  # counts with them.
+  Integer.class_eval do
+    alias_method :__add_before_test, :+
+    alias_method :__sub_before_test, :-
+    alias_method :__mul_before_test, :*
+    alias_method :__div_before_test, :/
+    def +(other) [:add, self, other] end
+    def -(other) [:sub, self, other] end
+    def *(other) [:mul, self, other] end
+    def /(other) [:div, self, other] end
+  end
+  begin
+    a = 7
+    b = 2
+    sum = a + b
+    diff = a - b
+    prod = a * b
+    quot = a / b
+    imm_sum = a + 1
+    imm_diff = a - 1
+    lv = a
+    lv += 1
+    lv_sum = lv
+    lv = a
+    lv -= 1
+    lv_diff = lv
+    mixed = a + 2.5 if Object.const_defined?(:Float)
+  ensure
+    Integer.class_eval do
+      alias_method :+, :__add_before_test
+      alias_method :-, :__sub_before_test
+      alias_method :*, :__mul_before_test
+      alias_method :/, :__div_before_test
+      if respond_to?(:remove_method, true)
+        remove_method :__add_before_test, :__sub_before_test,
+                      :__mul_before_test, :__div_before_test
+      end
+    end
+  end
+  assert_equal [:add, 7, 2], sum
+  assert_equal [:sub, 7, 2], diff
+  assert_equal [:mul, 7, 2], prod
+  assert_equal [:div, 7, 2], quot
+  assert_equal [:add, 7, 1], imm_sum
+  assert_equal [:sub, 7, 1], imm_diff
+  assert_equal [:add, 7, 1], lv_sum
+  assert_equal [:sub, 7, 1], lv_diff
+  assert_equal [:add, 7, 2.5], mixed if Object.const_defined?(:Float)
+  a = 7
+  b = 2
+  assert_equal 9, a + b
+  assert_equal 8, a + 1
+  a += 1
+  assert_equal 8, a
+end
+
+assert('Integer comparison redefined on Integer itself reaches the redefinition') do
+  # `OP_EQ`, `OP_LT`, `OP_LE`, `OP_GT` and `OP_GE` answer `a < b` from C for
+  # an Integer receiver on the same terms as the arithmetic opcodes above.
+  # `a == a` is answered without any comparison whenever the two hold the
+  # same value, which a redefined `Integer#==` must still be asked about.
+  Integer.class_eval do
+    alias_method :__eq_before_test, :==
+    alias_method :__lt_before_test, :<
+    alias_method :__le_before_test, :<=
+    alias_method :__gt_before_test, :>
+    alias_method :__ge_before_test, :>=
+    def ==(other) [:eq, self, other] end
+    def <(other) [:lt, self, other] end
+    def <=(other) [:le, self, other] end
+    def >(other) [:gt, self, other] end
+    def >=(other) [:ge, self, other] end
+  end
+  begin
+    a = 7
+    b = 2
+    eq = a == b
+    same = a == a
+    lt = a < b
+    le = a <= b
+    gt = a > b
+    ge = a >= b
+    mixed = a < 2.5 if Object.const_defined?(:Float)
+  ensure
+    Integer.class_eval do
+      alias_method :==, :__eq_before_test
+      alias_method :<, :__lt_before_test
+      alias_method :<=, :__le_before_test
+      alias_method :>, :__gt_before_test
+      alias_method :>=, :__ge_before_test
+      if respond_to?(:remove_method, true)
+        remove_method :__eq_before_test, :__lt_before_test, :__le_before_test,
+                      :__gt_before_test, :__ge_before_test
+      end
+    end
+  end
+  assert_equal [:eq, 7, 2], eq
+  assert_equal [:eq, 7, 7], same
+  assert_equal [:lt, 7, 2], lt
+  assert_equal [:le, 7, 2], le
+  assert_equal [:gt, 7, 2], gt
+  assert_equal [:ge, 7, 2], ge
+  assert_equal [:lt, 7, 2.5], mixed if Object.const_defined?(:Float)
+  a = 7
+  b = 2
+  assert_false a == b
+  assert_true a == a
+  assert_false a < b
+  assert_true a >= b
+end
+
+assert('Integer operators on two literals reach a redefinition') do
+  # The compiler used to compute `1 + 2`, `1 << 2` and their kin on two
+  # Integer literals while compiling, as well as `~1` and `i = 7; i += 1`, so
+  # no opcode and no send were left for a redefined operator to reach; CRuby
+  # computes them when they run. A literal keeps absorbing its sign, `-1`
+  # being a literal in CRuby as well.
+  Integer.class_eval do
+    alias_method :__add_before_test, :+
+    alias_method :__sub_before_test, :-
+    alias_method :__mul_before_test, :*
+    alias_method :__div_before_test, :/
+    alias_method :__lshift_before_test, :<<
+    alias_method :__rshift_before_test, :>>
+    alias_method :__mod_before_test, :%
+    alias_method :__and_before_test, :&
+    alias_method :__or_before_test, :|
+    alias_method :__xor_before_test, :^
+    alias_method :__inv_before_test, :~
+    def +(other) [:add, self, other] end
+    def -(other) [:sub, self, other] end
+    def *(other) [:mul, self, other] end
+    def /(other) [:div, self, other] end
+    def <<(other) [:lshift, self, other] end
+    def >>(other) [:rshift, self, other] end
+    def %(other) [:mod, self, other] end
+    def &(other) [:and, self, other] end
+    def |(other) [:or, self, other] end
+    def ^(other) [:xor, self, other] end
+    def ~() [:inv, self] end
+  end
+  begin
+    got = [1 + 2, 5 - 3, 5 * 3, 6 / 3, 1 << 2, 8 >> 1, 7 % 3, 6 & 3, 6 | 3, 6 ^ 3, ~1]
+    i = 7
+    i += 1
+    incremented = i
+    negative = -1
+  ensure
+    Integer.class_eval do
+      alias_method :+, :__add_before_test
+      alias_method :-, :__sub_before_test
+      alias_method :*, :__mul_before_test
+      alias_method :/, :__div_before_test
+      alias_method :<<, :__lshift_before_test
+      alias_method :>>, :__rshift_before_test
+      alias_method :%, :__mod_before_test
+      alias_method :&, :__and_before_test
+      alias_method :|, :__or_before_test
+      alias_method :^, :__xor_before_test
+      alias_method :~, :__inv_before_test
+      if respond_to?(:remove_method, true)
+        remove_method :__add_before_test, :__sub_before_test, :__mul_before_test,
+                      :__div_before_test, :__lshift_before_test, :__rshift_before_test,
+                      :__mod_before_test, :__and_before_test, :__or_before_test,
+                      :__xor_before_test, :__inv_before_test
+      end
+    end
+  end
+  assert_equal [[:add, 1, 2], [:sub, 5, 3], [:mul, 5, 3], [:div, 6, 3],
+                [:lshift, 1, 2], [:rshift, 8, 1], [:mod, 7, 3],
+                [:and, 6, 3], [:or, 6, 3], [:xor, 6, 3], [:inv, 1]], got
+  assert_equal [:add, 7, 1], incremented
+  assert_equal(-1, negative)
+  assert_equal 3, 1 + 2
+  assert_equal 4, 1 << 2
+  assert_equal(-2, ~1)
+  i = 7
+  i += 1
+  assert_equal 8, i
+end
