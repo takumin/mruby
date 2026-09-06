@@ -1092,3 +1092,68 @@ assert('constant lookup #6506') do
     end
   end
 end
+
+assert('constant lookup: ancestors before the top level') do
+  Test4ConstOrder = :top
+  class Test4ConstOrderBase
+    Test4ConstOrder = :base
+  end
+  module Test4ConstOrderMixin
+    Test4ConstOrder = :mixin
+  end
+  class Test4ConstOrderSub < Test4ConstOrderBase
+    @in_body = Test4ConstOrder
+    @defined = defined?(Test4ConstOrder)
+    def in_method; Test4ConstOrder; end
+    class << self
+      attr_reader :in_body, :defined
+      def in_singleton; Test4ConstOrder; end
+    end
+  end
+  [1].each do
+    class Test4ConstOrderInBlock < Test4ConstOrderBase
+      @in_body = Test4ConstOrder
+      class << self
+        attr_reader :in_body
+      end
+    end
+  end
+  class Test4ConstOrderOwner
+    Test4ConstOrder = :owner
+  end
+  Test4ConstOrderOwner.class_eval do
+    class Test4ConstOrderInEvalBlock < Test4ConstOrderBase
+      @in_body = Test4ConstOrder
+      class << self
+        attr_reader :in_body
+      end
+    end
+  end
+  class Test4ConstOrderIncluder
+    include Test4ConstOrderMixin
+    @in_body = Test4ConstOrder
+    class << self
+      attr_reader :in_body
+    end
+  end
+  class Object
+    class Test4ConstOrderLexical < Test4ConstOrderBase
+      @in_body = Test4ConstOrder
+      class << self
+        attr_reader :in_body
+      end
+    end
+  end
+
+  assert_equal :base, Test4ConstOrderSub.in_body
+  assert_equal :base, Test4ConstOrderSub.new.in_method
+  assert_equal "constant", Test4ConstOrderSub.defined
+  assert_equal :mixin, Test4ConstOrderIncluder.in_body
+  # a block shares the scope around it; a class_eval block does not open one
+  assert_equal :base, Test4ConstOrderInBlock.in_body
+  assert_equal :base, Test4ConstOrderInEvalBlock.in_body
+  # the singleton class's own ancestors reach Object before the attached class
+  assert_equal :top, Test4ConstOrderSub.in_singleton
+  # `class Object` is a lexical scope of its own; only the top level is not
+  assert_equal :top, Test4ConstOrderLexical.in_body
+end

@@ -205,6 +205,29 @@ assert('Module#class_eval with string') do
   assert_equal 55, b.new.b.new.a
 end
 
+assert('Module#class_eval with string opens a constant scope') do
+  Test4EvalConstOrder = :top
+  class Test4EvalConstOrderBase
+    Test4EvalConstOrder = :base
+  end
+  class Test4EvalConstOrderOwner
+    Test4EvalConstOrder = :owner
+  end
+  Test4EvalConstOrderOwner.class_eval <<~CODE
+    class Test4EvalConstOrderSub < Test4EvalConstOrderBase
+      @in_body = Test4EvalConstOrder
+      def in_method; Test4EvalConstOrder; end
+      class << self
+        attr_reader :in_body
+      end
+    end
+  CODE
+
+  # the receiver's scope comes before the superclass, as with `class` nesting
+  assert_equal :owner, Test4EvalConstOrderOwner::Test4EvalConstOrderSub.in_body
+  assert_equal :owner, Test4EvalConstOrderOwner::Test4EvalConstOrderSub.new.in_method
+end
+
 assert 'method visibility with eval' do
   c = Class.new do
     eval <<~CODE
