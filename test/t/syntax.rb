@@ -2028,6 +2028,15 @@ assert('defined? on control flow, jumps and definitions') do
   assert_equal 'expression', defined?(begin; END { }; end)
 end
 
+assert('defined? on a back reference reads it') do
+  # `$~` holds nothing here, so every name that reads from it is nil
+  assert_nil defined?($&)
+  assert_nil defined?($`)
+  assert_nil defined?($1)
+  assert_nil defined?($1.to_s)
+  assert_nil defined?(assert($1))
+end
+
 assert('defined? names it a local variable') do
   assert_equal ['local-variable'], [1].map { defined?(it) }
   assert_equal ['method'], [1].map { defined?(it.to_s) }

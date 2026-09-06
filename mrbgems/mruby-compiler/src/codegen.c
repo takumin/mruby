@@ -4150,6 +4150,8 @@ struct defined_answer {
   int path_len;                             /* names in `path`, 0 for none */
   mrc_bool path_toplevel;                   /* the path is rooted at Object */
   mrc_node *recv;                           /* recv.meth, NULL for none */
+  const char *unless_nil;                   /* answer where the operand reads
+                                               other than nil, NULL for none */
 };
 
 /* Whether a body holds no statement at all: `()` and `begin; end` are the
@@ -4328,6 +4330,12 @@ defined_answer_for(mrc_node *value, struct defined_answer *a)
   case PM_GLOBAL_VARIABLE_READ_NODE:
     a->helper = MRC_SYM_2(defined_gvar_q);
     a->arg = ((pm_global_variable_read_node_t *)value)->name;
+    break;
+  /* `$&`, `` $` ``, `$'`, `$+` and `$1` onward are readings of `$~`, not
+     globals of their own, and are defined where they read other than nil,
+     the way CRuby decides them by what `getspecial` yields */
+  case PM_BACK_REFERENCE_READ_NODE: case PM_NUMBERED_REFERENCE_READ_NODE:
+    a->unless_nil = "global-variable";
     break;
   case PM_CLASS_VARIABLE_READ_NODE:
     a->helper = MRC_SYM_2(defined_cvar_q);
@@ -4610,6 +4618,13 @@ codegen_defined(mrc_codegen_scope *s, mrc_node *value, int val)
     gen_defined_parts(s, value, &nil_jmps);
     if (a.recv) gen_defined_method_on(s, &a, &nil_jmps);
     else gen_defined_answer(s, &a);
+  }
+  else if (a.unless_nil) {
+    codegen(s, value, VAL);
+    pop();
+    nil_jmps = genjmp2(s, OP_JMPNIL, cursp(), nil_jmps, NOVAL);
+    genop_2(s, OP_STRING, cursp(), new_lit_cstr(s, a.unless_nil));
+    push();
   }
   else {
     genop_1(s, OP_LOADNIL, cursp());
