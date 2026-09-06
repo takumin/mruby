@@ -1642,14 +1642,14 @@ assert('defined? on statically-decidable operands') do
   assert_equal 'expression', defined?(:sym)
   assert_equal 'expression', defined?([1, 2])
   assert_equal 'expression', defined?({a: 1})
-  assert_equal 'expression', defined?(nil)
-  assert_equal 'expression', defined?(true)
-  assert_equal 'expression', defined?(false)
   assert_equal 'expression', defined?(1..2)
   assert_equal 'expression', defined?(defined?(x))
 
-  # self
+  # self, and the literals named rather than called expressions
   assert_equal 'self', defined?(self)
+  assert_equal 'nil', defined?(nil)
+  assert_equal 'true', defined?(true)
+  assert_equal 'false', defined?(false)
 
   # a local variable in scope
   lv = 1
@@ -1997,7 +1997,8 @@ assert('defined? on control flow, jumps and definitions') do
   assert_equal 'expression', defined?(while false do end)
   assert_equal 'expression', defined?(until true do end)
   assert_equal 'expression', defined?(for i in [1] do end)
-  assert_equal 'expression', defined?(begin; 1; end)
+  assert_equal 'expression', defined?(begin; 1; rescue; end)
+  assert_equal 'expression', defined?(begin; 1; ensure; end)
   assert_equal 'expression', defined?(if (lv == 1)..(lv == 2) then 1 end)
 
   # jumps, which `defined?` reports on without needing a place to jump to
@@ -2026,9 +2027,40 @@ assert('defined? sees through parentheses around one expression') do
   assert_equal 'instance-variable', defined?((@defined_paren_iv))
   assert_equal 'constant', defined?((Object))
   assert_nil defined?((no_such_method_at_all))
+  assert_equal 'nil', defined?((nil))
 
-  # parentheses holding several statements are an expression of their own
+  # parentheses holding several statements are an expression of their own,
+  # and empty ones the nil they evaluate to
   assert_equal 'expression', defined?((1; 2))
+  assert_equal 'nil', defined?(())
+  assert_equal 'nil', defined?(((())))
+end
+
+assert('defined? sees through a bare begin around one expression') do
+  lv = 1
+
+  assert_equal 'local-variable', defined?(begin; lv; end)
+  assert_equal 'constant', defined?(begin; Object; end)
+  assert_equal 'assignment', defined?(begin; unset = 1; end)
+  assert_nil unset
+  assert_nil defined?(begin; no_such_method_at_all; end)
+  assert_nil defined?(begin; begin; (no_such_method_at_all); end; end)
+
+  # the same where the begin is a receiver, or an argument
+  assert_nil defined?(begin; no_such_method_at_all; end.to_s)
+  assert_nil defined?(puts(begin; no_such_method_at_all; end))
+  assert_equal 'method', defined?(begin; lv; end.to_s)
+
+  # a begin holding several statements is an expression of its own, and an
+  # empty one the nil it evaluates to
+  assert_equal 'expression', defined?(begin; 1; 2; end)
+  assert_equal 'nil', defined?(begin; end)
+  assert_equal 'nil', defined?(begin; (); end)
+
+  # a rescue, else or ensure clause makes it an expression whatever it holds
+  assert_equal 'expression', defined?(begin; no_such_method_at_all; rescue; end)
+  assert_equal 'expression', defined?(begin; no_such_method_at_all; ensure; end)
+  assert_equal 'expression', defined?(begin; rescue; end)
 end
 
 assert('defined? on a call carrying a block') do
