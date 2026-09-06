@@ -2363,6 +2363,28 @@ gc_each_objects(mrb_state *mrb, mrb_gc *gc, mrb_each_object_callback *callback, 
   }
 }
 
+/* Walks the heap without collecting first and hands the callback the objects
+   the collector has not condemned. `mrb_objspace_each_objects()` runs a full
+   GC so that no dead object is handed out, which a caller that only reads
+   class headers and allocates nothing has no use for; a dead object the
+   sweep has not reached can hold a pointer into a page already freed, and
+   `is_dead()` is what tells it from a live one during the sweep. */
+void
+mrb_gc_each_live_object(mrb_state *mrb, mrb_each_object_callback *callback, void *data)
+{
+  mrb_gc *gc = &mrb->gc;
+
+  for (mrb_heap_page *page = gc->heaps; page != NULL; page = page->next) {
+    RVALUE *p = page->objects;
+    for (int i = 0; i < MRB_HEAP_PAGE_SIZE; i++) {
+      struct RBasic *obj = &p[i].as.basic;
+      if (is_dead(gc, obj)) continue;
+      if ((*callback)(mrb, obj, data) == MRB_EACH_OBJ_BREAK)
+        return;
+    }
+  }
+}
+
 void
 mrb_objspace_each_objects(mrb_state *mrb, mrb_each_object_callback *callback, void *data)
 {

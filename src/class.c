@@ -380,6 +380,7 @@ prepare_singleton_class(mrb_state *mrb, struct RBasic *o)
     sc->super = o->c;
     prepare_singleton_class(mrb, (struct RBasic*)sc);
   }
+  sc->flags |= sc->super->flags & MRB_FL_CLASS_EQ_DEFINED;
   o->c = sc;
   mrb_field_write_barrier(mrb, (struct RBasic*)o, (struct RBasic*)sc);
   mrb_obj_iv_set(mrb, (struct RObject*)sc, MRB_SYM(__attached__), mrb_obj_value(o));
@@ -1030,6 +1031,50 @@ mt_writable(mrb_state *mrb, struct RClass *frozen, struct RClass *table)
   return h;
 }
 
+static int
+eq_defined_walk(mrb_state *mrb, struct RBasic *obj, void *data)
+{
+  switch (obj->tt) {
+  case MRB_TT_CLASS: case MRB_TT_SCLASS: case MRB_TT_MODULE: {
+    struct RClass *k = (struct RClass*)obj;
+    if (k->flags & MRB_FL_CLASS_EQ_DEFINED) break;
+    for (struct RClass *s = k->super; s; s = s->super) {
+      struct RClass *r = (s->tt == MRB_TT_ICLASS) ? s->c : s;
+      if (r->flags & MRB_FL_CLASS_EQ_DEFINED) {
+        k->flags |= MRB_FL_CLASS_EQ_DEFINED;
+        break;
+      }
+    }
+    break;
+  }
+  default:
+    break;
+  }
+  return MRB_EACH_OBJ_OK;
+}
+
+/* `c` answers `==` by a method of its own from now on, so every class that
+   has `c` among its ancestors loses the identity answer of `OP_EQ`. A class
+   or singleton class made later copies the flag from its superclass and an
+   includer takes it from the module, so the heap is walked only for a class
+   that already has subclasses or a module that may already be included.
+   `nil`, `true` and `false` are immediate, so `OP_EQ` has no class of theirs
+   to read the flag from; the flag of the three is mirrored into a bit of
+   `bop_redefined`, which the opcode tests for every receiver anyway. */
+static void
+eq_defined_mark(mrb_state *mrb, struct RClass *c)
+{
+  if (c->flags & MRB_FL_CLASS_EQ_DEFINED) return;
+  c->flags |= MRB_FL_CLASS_EQ_DEFINED;
+  if ((c->flags & MRB_FL_CLASS_IS_INHERITED) || c->tt == MRB_TT_MODULE) {
+    mrb_gc_each_live_object(mrb, eq_defined_walk, NULL);
+  }
+  if ((mrb->nil_class->flags | mrb->true_class->flags |
+       mrb->false_class->flags) & MRB_FL_CLASS_EQ_DEFINED) {
+    mrb->bop_redefined |= MRB_BOP_NIL_TRUE_FALSE_EQ;
+  }
+}
+
 MRB_API void
 mrb_define_method_raw(mrb_state *mrb, struct RClass *c, mrb_sym mid, mrb_method_t m)
 {
@@ -1090,6 +1135,7 @@ mrb_define_method_raw(mrb_state *mrb, struct RClass *c, mrb_sym mid, mrb_method_
   if (!mrb->bootstrapping) {
     mc_clear_by_id(mrb, mid);
     mrb_builtin_op_update(mrb, mid);
+    if (mid == MRB_OPSYM(eq)) eq_defined_mark(mrb, named);
   }
   if (modfunc) {
     /* module_function scope: also define a public method on the singleton
@@ -2053,6 +2099,7 @@ boot_defclass(mrb_state *mrb, struct RClass *super, enum mrb_vtype tt)
     c->super = super;
     mrb_field_write_barrier(mrb, (struct RBasic*)c, (struct RBasic*)super);
     c->flags |= MRB_FL_CLASS_IS_INHERITED;
+    c->flags |= super->flags & MRB_FL_CLASS_EQ_DEFINED;
   }
   else {
     // limited to cases where BasicObject class is defined during mruby initialization
@@ -2093,6 +2140,7 @@ static int
 include_module_at(mrb_state *mrb, struct RClass *c, struct RClass *ins_pos, struct RClass *m, int search_super)
 {
   struct RClass *ic;
+  struct RClass *m0 = m;
   void *klass_mt = find_origin(c)->mt;
 
   while (m) {
@@ -2136,6 +2184,9 @@ include_module_at(mrb_state *mrb, struct RClass *c, struct RClass *ins_pos, stru
     /* An included or prepended module can carry both operators, and it is not
        one method name that changed, so recheck every slot. */
     mrb_builtin_op_update(mrb, 0);
+    /* and it can carry a `==` of its own, or of a module it includes, which
+       marked it in turn */
+    if (m0->flags & MRB_FL_CLASS_EQ_DEFINED) eq_defined_mark(mrb, c);
   }
   return 0;
 }
@@ -2951,6 +3002,12 @@ mrb_idx_op_rearm(mrb_state *mrb, enum mrb_idx_op_slot slot)
  * `mrb->bop_redefined` instead, clear while the operator still resolves to the
  * builtin recorded in `mrb->bop_builtin` and set once it does not.  Validity
  * is judged exactly as for the index slots above.
+ *
+ * `nil`, `true` and `false` are immediate too, but their classes are ordinary
+ * heap ones, so `eq_defined_mark()` above records a `==` of their own as it
+ * does for any other class and mirrors the flag into
+ * `MRB_BOP_NIL_TRUE_FALSE_EQ`, the one bit past the slots.  Nothing here
+ * arms or rechecks it.
  */
 
 static const mrb_sym bop_mids[MRB_BOP_COUNT] = {

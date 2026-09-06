@@ -111,6 +111,7 @@ struct mrb_backtrace_location {
 /* gc */
 size_t mrb_gc_mark_mt(mrb_state*, struct RClass*);
 int mrb_equal_in_c(mrb_state*, mrb_value, mrb_value);
+void mrb_gc_each_live_object(mrb_state*, int (*)(mrb_state*, struct RBasic*, void*), void*);
 void mrb_gc_free_mt(mrb_state*, struct RClass*);
 
 /* hash */

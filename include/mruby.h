@@ -350,6 +350,13 @@ enum mrb_bop {
 #define MRB_BOP_SYMBOL_EQ_SLOT (2 * MRB_BOP_COUNT)         /* Symbol#==  */
 #define MRB_BOP_SYMBOL_EQ   (1u << MRB_BOP_SYMBOL_EQ_SLOT)
 #define MRB_BOP_SLOT_COUNT  (MRB_BOP_SYMBOL_EQ_SLOT + 1)
+/* `nil`, `true` and `false` are immediate as well, so `OP_EQ` reads no class
+   of theirs, but their classes are ordinary heap ones whose own `==` is
+   recorded by `MRB_FL_CLASS_EQ_DEFINED`.  This bit carries that flag of the
+   three into the mask the opcode already tests.  It is not a slot: nothing
+   records a builtin for it and nothing rechecks it, since nothing clears the
+   flag it mirrors. */
+#define MRB_BOP_NIL_TRUE_FALSE_EQ (1u << MRB_BOP_SLOT_COUNT)
 
 #ifdef MRB_USE_TASK_SCHEDULER
 struct mrb_task;
@@ -498,7 +505,9 @@ struct mrb_state {
      slot to disarm; each (class, operator) pair owns a bit here instead, clear
      while the operator still resolves to the builtin recorded in
      `bop_builtin` and set once it does not.  Bit numbers are the `MRB_BOP_*`
-     macros, which also index `bop_builtin`. */
+     macros, which also index `bop_builtin`; the one bit above them,
+     `MRB_BOP_NIL_TRUE_FALSE_EQ`, mirrors a class flag instead of a builtin
+     and indexes nothing. */
   uint32_t bop_redefined;
   mrb_method_t bop_builtin[MRB_BOP_SLOT_COUNT];
 
