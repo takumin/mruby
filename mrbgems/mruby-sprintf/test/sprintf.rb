@@ -228,14 +228,17 @@ assert('sprintf - a width near mrb_int is refused, not wrapped') do
   # what a String can hold and has to be refused; where mrb_int is wider it is
   # an ordinary request and the answer is a 2GB string, which is not something
   # to allocate in a test.  Asking sprintf which build this is would build that
-  # string to find out, so the width is read off an integer instead: 2**31 is
-  # an object of its own where mrb_int stops below it, and where the build has
-  # no wider integer at all it cannot be reached.  Spelling it as a literal
-  # would take the whole file down on the builds this guards, so it is raised.
+  # string to find out, so the width is read off an integer instead: an Array
+  # index has to be an mrb_int, so `[][2**31]` is nil where mrb_int holds the
+  # width, and RangeError where the value is a big integer or, with no wider
+  # integer in the build, cannot be made at all.  Identity is not the question:
+  # under NaN boxing a 64-bit mrb_int past 32 bits is a heap object of its own,
+  # and two of them are never `equal?`.  Spelling the value as a literal would
+  # take the whole file down on the builds this guards, so it is computed.
   narrow =
     begin
-      n = 2 ** 31
-      !n.equal?(2 ** 31)
+      [][2 ** 31]
+      false
     rescue RangeError
       true
     end
