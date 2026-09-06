@@ -3301,7 +3301,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
 
       /* Call deconstruct on target */
       gen_move(s, cursp(), target, 0);
-      push(); pop();
+      push_n(2); pop_n(2);  /* space for receiver and a block */
       genop_3(s, OP_SEND, arr_reg, new_sym(s, MRC_SYM_1(deconstruct)), 0);
       push(); /* protect arr_reg */
 
@@ -3311,7 +3311,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
 
       /* Check minimum length: arr.size >= elems_len */
       gen_move(s, cursp(), arr_reg, 0);
-      push(); pop();
+      push_n(2); pop_n(2);  /* space for receiver and a block, then for the GE operand */
       genop_3(s, OP_SEND, cursp(), new_sym(s, MRC_SYM_1(size)), 0);
       gen_int(s, cursp() + 1, elems_len);
       genop_1(s, OP_GE, cursp());
@@ -3329,7 +3329,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
 
       /* Check if idx <= arr.size - elems_len */
       gen_move(s, cursp(), arr_reg, 0);
-      push(); pop();
+      push_n(2); pop_n(2);  /* space for receiver and a block, then for the SUB and GE operands */
       genop_3(s, OP_SEND, cursp(), new_sym(s, MRC_SYM_1(size)), 0);
       gen_int(s, cursp() + 1, elems_len);
       genop_1(s, OP_SUB, cursp());
@@ -3351,6 +3351,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
           gen_int(s, cursp() + 1, (int)i);
           genop_1(s, OP_ADD, cursp());
         }
+        push_n(2); pop_n(2);  /* space for the index and the ADD operand */
         genop_1(s, OP_GETIDX, cursp() - 1);
         int elem_reg = cursp() - 1;
         codegen_pattern(s, pat_find->requireds.nodes[i], elem_reg, &match_fail, -1);
@@ -3372,6 +3373,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
             gen_int(s, cursp(), 0);
             push();
             gen_move(s, cursp(), idx_reg, 0);
+            push(); pop();  /* space for the range end, which is also the block slot */
             genop_1(s, OP_RANGE_EXC, cursp() - 1);
             pop(); pop();
             genop_3(s, OP_SEND, cursp(), new_sym(s, MRC_OPSYM_2(aref)), 1);
@@ -3396,6 +3398,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
             genop_1(s, OP_ADD, cursp());
             push();
             gen_int(s, cursp(), -1);
+            push(); pop();  /* space for the range end, which is also the block slot */
             genop_1(s, OP_RANGE_INC, cursp() - 1);
             pop(); pop();
             genop_3(s, OP_SEND, cursp(), new_sym(s, MRC_OPSYM_2(aref)), 1);
