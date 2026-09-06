@@ -262,6 +262,51 @@ assert 'pack("U") with a UTF-16 surrogate' do
   assert_equal [0xEE, 0x80, 0x80], [0xE000].pack("U").unpack("C*")
 end
 
+assert 'unpack("U") over every lead byte' do
+  # Every lead byte followed by up to five continuation bytes, once with the
+  # lowest continuation byte and once with the highest, so that each sequence
+  # reaches both sides of every boundary: a shorter spelling (C0, C1, E0 80,
+  # F0 80, F8 80, FC 80), a surrogate (ED A0 and above), U+10FFFF (F4 90 and
+  # above, F5 to F7), and the five and six byte lengths (F8 to FD). A shorter
+  # spelling of a value is "redundant" and everything else short of a
+  # character is "malformed", which is how CRuby tells the two apart. What
+  # CRuby admits past U+10FFFF, the four byte spellings above it and the
+  # five and six byte ones, is refused here; over these 3072 strings that is
+  # the whole of the difference.
+  min = [0, 128, 2048, 65536, 2097152, 67108864]
+  claim = ->(c) {
+    if c < 0x80 then 1 elsif c < 0xC0 then 0 elsif c < 0xE0 then 2
+    elsif c < 0xF0 then 3 elsif c < 0xF8 then 4 elsif c < 0xFC then 5
+    elsif c < 0xFE then 6 else 0 end
+  }
+  # the fillers are continuation bytes, so only the count and the value can
+  # fall short
+  expected = ->(bytes) {
+    c = bytes[0]
+    n = claim.call(c)
+    next [c] if n == 1
+    next :malformed if n == 0 || bytes.size < n
+    v = c & (0x7F >> n)
+    (1...n).each {|k| v = (v << 6) | (bytes[k] & 0x3F) }
+    next :redundant if v < min[n - 1]
+    next :malformed if v > 0x10FFFF
+    [v]
+  }
+  0.upto(255) do |c|
+    [0x80, 0xBF].each do |f|
+      0.upto(5) do |k|
+        bytes = [c] + [f] * k
+        got = begin
+          bytes.pack("C*").unpack("U")
+        rescue ArgumentError => e
+          e.message.split(" ").first.to_sym
+        end
+        assert_equal expected.call(bytes), got, bytes.inspect
+      end
+    end
+  end
+end
+
 assert 'unpack1' do
   d = 1234
   assert_equal(d, [d].pack("i").unpack1("i"))
