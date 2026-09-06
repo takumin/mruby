@@ -47,12 +47,19 @@ MRB_API mrb_value mrb_num_mul(mrb_state *mrb, mrb_value x, mrb_value y);
 MRB_API mrb_value mrb_uint64_value(mrb_state *mrb, uint64_t v);
 MRB_API mrb_value mrb_int64_value(mrb_state *mrb, int64_t v);
 
-/* The same for the widths a C library counts in, whose own width varies by
-   platform: a size_t is 32 bits where a time_t beside it is 64.  Spelled here
-   so that a caller passes what it holds and does not have to know which of the
-   two above that is today. */
-#define mrb_size_value(mrb, v)   mrb_uint64_value((mrb), (uint64_t)(v))
-#define mrb_ssize_value(mrb, v)  mrb_int64_value((mrb), (int64_t)(v))
+/* The same, spelled for the C types a library counts in, whose own width
+   varies by platform: a size_t is 32 bits where the time_t beside it is 64.
+   A caller passes what it holds and does not have to know which of the two
+   above that is today.
+
+   Named `value_from_` rather than `_value` on purpose.  `mrb_int_value` reads
+   one way only, since an int is not a property something has; `mrb_size_value`
+   would read as the size of a value as readily as a value from a size, beside
+   mrb_hash_size and mrb_bint_size which are exactly that.  And `mrb_ssize` is
+   already a type here, an mrb_int or an intptr_t, which is not the ssize_t
+   this takes: they differ in width wherever mrb_int is 32 bits. */
+#define mrb_value_from_size_t(mrb, v)   mrb_uint64_value((mrb), (uint64_t)(v))
+#define mrb_value_from_ssize_t(mrb, v)  mrb_int64_value((mrb), (int64_t)(v))
 
 MRB_API mrb_value mrb_integer_to_str(mrb_state *mrb, mrb_value x, mrb_int base);
 MRB_API char *mrb_int_to_cstr(char *buf, size_t len, mrb_int n, mrb_int base);
