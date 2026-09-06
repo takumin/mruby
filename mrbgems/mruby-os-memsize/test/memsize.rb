@@ -51,6 +51,11 @@ assert 'ObjectSpace.memsize_of' do
   assert_operator alias_size, :<, m_size, 'alias carries no code of its own'
   assert_operator ObjectSpace.memsize_of_all, :>=, alias_size, 'memsize_of_all walks past the alias'
 
+  # ireps built by hand, each with the heap mrb_irep_free() would release
+  ObjectSpace.__memsize_ireps.each do |name, proc, owned|
+    assert_equal slot + owned, ObjectSpace.memsize_of(proc), "irep: #{name}"
+  end
+
   # collections
   empty_array_size = ObjectSpace.memsize_of []
   assert_not_equal empty_array_size, 0, 'empty array size not zero'
