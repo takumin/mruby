@@ -33,6 +33,7 @@ assert('Symbol#== redefined on Symbol itself reaches the redefinition') do
     same = a == :abc
     different = a == :xyz
     string = a == 'abc'
+    index = [:abc, :xyz].index(:xyz)    # `mrb_equal()` asks the redefinition
   ensure
     Symbol.class_eval do
       alias_method :==, :__eq_before_test
@@ -42,6 +43,7 @@ assert('Symbol#== redefined on Symbol itself reaches the redefinition') do
   assert_equal [:eq, :abc, :abc], same
   assert_equal [:eq, :abc, :xyz], different
   assert_equal [:eq, :abc, 'abc'], string
+  assert_equal 0, index
   assert_true :abc == :abc
   assert_false :abc == :xyz
   assert_false :abc == 'abc'

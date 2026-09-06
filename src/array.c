@@ -2073,6 +2073,21 @@ mrb_ary_svalue(mrb_state *mrb, mrb_value ary)
   }
 }
 
+/* internal method: whether the value `__svalue` reads off this array is equal
+   to `other`, as `mrb_equal_in_c()` answers it: `true`, `false`, or `:send`
+   when the element's `==` is written in Ruby, for the caller, which is Ruby,
+   to send in the VM it is already in. The Enumerable methods written in Ruby
+   compare an element through it, so they take it for equal to itself before
+   its `==` is asked, as CRuby's `rb_equal()` does and as `Array#count` does
+   in C, and nest no VM for a `==` a class defines. */
+static mrb_value
+mrb_ary_svalue_eq(mrb_state *mrb, mrb_value ary)
+{
+  int r = mrb_equal_in_c(mrb, mrb_ary_svalue(mrb, ary), mrb_get_arg1(mrb));
+  if (r < 0) return mrb_symbol_value(MRB_SYM(send));
+  return mrb_bool_value(r);
+}
+
 /*
  * call-seq:
  *   array.delete(obj) -> deleted_object
@@ -2622,6 +2637,7 @@ static const mrb_mt_entry array_rom_entries[] = {
   MRB_MT_ENTRY(mrb_ary_to_s,         MRB_SYM(inspect),         MRB_ARGS_NONE()),
   MRB_MT_ENTRY(mrb_ary_sort_bang,    MRB_SYM_B(sort),          MRB_ARGS_NONE()),
   MRB_MT_ENTRY(mrb_ary_svalue,       MRB_SYM(__svalue),        MRB_ARGS_NONE()),
+  MRB_MT_ENTRY(mrb_ary_svalue_eq,    MRB_SYM(__svalue_eq),     MRB_ARGS_REQ(1)),
 };
 
 void

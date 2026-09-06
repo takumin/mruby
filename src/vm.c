@@ -4321,16 +4321,25 @@ RETRY_TRY_BLOCK:
          in either. A Symbol is equal to nothing but itself, so it is answered
          here in full.
 
-         Neither answer may stand in for a redefined `==`: whether an Integer,
-         Float or Symbol equals itself, or a Symbol anything else, is then the
-         redefinition's to say. While any of the three is redefined both
-         shortcuts are skipped for every receiver, and the comparison below
-         sends `==` to whatever its type dispatch does not answer. That costs
-         a heap object its identity answer in that state alone; the usual
-         state pays one test. */
+         Neither answer may stand in for a `==` that is not the builtin one.
+         Whether an Integer, Float or Symbol equals itself, or a Symbol
+         anything else, is a redefinition's to say: while any of the three is
+         redefined both shortcuts are skipped for every receiver, and the
+         comparison below sends `==` to whatever its type dispatch does not
+         answer. `nil`, `true` and `false` are read from the same mask, by the
+         bit `MRB_FL_CLASS_EQ_DEFINED` on their classes is mirrored into.
+         Whether a heap object equals itself is its own class's to say once a
+         class among its ancestors defines a `==`, which that flag on the
+         class records: the identity answer is withheld from that object
+         alone, and `obj == obj` sends `==` as CRuby's `opt_eq` calls it. The
+         usual state pays one mask test and, for a heap object, one flag
+         test. */
       if (mrb_likely(!(mrb->bop_redefined &
-                       (MRB_BOP_NUMERIC(MRB_BOP_EQ) | MRB_BOP_SYMBOL_EQ)))) {
-        if (mrb_obj_eq(mrb, regs[a], regs[a+1]) && !value_nan_p(regs[a])) {
+                       (MRB_BOP_NUMERIC(MRB_BOP_EQ) | MRB_BOP_SYMBOL_EQ |
+                        MRB_BOP_NIL_TRUE_FALSE_EQ)))) {
+        if (mrb_obj_eq(mrb, regs[a], regs[a+1]) && !value_nan_p(regs[a]) &&
+            (mrb_immediate_p(regs[a]) ||
+             !(mrb_obj_ptr(regs[a])->c->flags & MRB_FL_CLASS_EQ_DEFINED))) {
           SET_TRUE_VALUE(regs[a]);
           NEXT;
         }

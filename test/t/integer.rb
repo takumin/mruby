@@ -579,6 +579,9 @@ assert('Integer comparison redefined on Integer itself reaches the redefinition'
     gt = a > b
     ge = a >= b
     mixed = a < 2.5 if Object.const_defined?(:Float)
+    # `Array#index` compares through `mrb_equal()`, which answers an Integer
+    # pair from the values only while the builtin stands
+    index = [a].index(b)
   ensure
     Integer.class_eval do
       alias_method :==, :__eq_before_test
@@ -598,6 +601,7 @@ assert('Integer comparison redefined on Integer itself reaches the redefinition'
   assert_equal [:le, 7, 2], le
   assert_equal [:gt, 7, 2], gt
   assert_equal [:ge, 7, 2], ge
+  assert_equal 0, index
   assert_equal [:lt, 7, 2.5], mixed if Object.const_defined?(:Float)
   a = 7
   b = 2
