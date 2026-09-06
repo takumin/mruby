@@ -1747,8 +1747,11 @@ module DefinedDeepOuter
   def self.from_lexical_scope_miss; defined?(Mid::Missing); end
 end
 
-class DefinedPathRaises
-  def self.boom; raise 'defined? evaluated a constant path root'; end
+class DefinedPathRoot
+  @evaluated = 0
+  def self.count; @evaluated; end
+  def self.seen; @evaluated += 1; DefinedDeepOuter; end
+  def self.boom; raise 'defined? let a constant path root raise'; end
 end
 
 assert('defined? on a constant path of any depth') do
@@ -1813,10 +1816,36 @@ assert('defined? on a constant path resolves each name as reading it does') do
   assert_nil DefinedPathHooked.asked
 end
 
-assert('defined? does not evaluate a constant path') do
-  # a root that would have to be evaluated is not a path the compiler names,
-  # and the call it is built from stays unmade
-  assert_nil defined?(DefinedPathRaises.boom::Leaf)
+assert('defined? resolves a constant path from an evaluated root') do
+  # a root that is not a constant is evaluated, once, and the names are
+  # looked up from its value, the way a receiver is evaluated for its method
+  m = DefinedDeepOuter
+  assert_equal 'constant', defined?(m::Mid)
+  assert_equal 'constant', defined?(m::Mid::Leaf)
+  assert_nil defined?(m::Missing)
+  assert_nil defined?(m::Mid::Missing)
+  assert_nil defined?(m::NotAModule::Leaf)
+  before = DefinedPathRoot.count
+  assert_equal 'constant', defined?(DefinedPathRoot.seen::Mid::Leaf)
+  assert_equal before + 1, DefinedPathRoot.count
+  assert_nil defined?(DefinedPathRoot.seen::Missing)
+  assert_equal before + 2, DefinedPathRoot.count
+
+  # a root that is not a module, that is not itself defined, which leaves it
+  # unevaluated, or that raises, which answers nil rather than letting it out
+  n = 1
+  assert_nil defined?(n::Leaf)
+  assert_nil defined?(no_such_method_at_all::Leaf)
+  assert_nil defined?(DefinedPathRoot.seen(no_such_method_at_all)::Mid)
+  assert_equal before + 2, DefinedPathRoot.count
+  assert_nil defined?(DefinedPathRoot.boom::Leaf)
+
+  # the path is a receiver, or an argument, like any other
+  assert_equal 'method', defined?(m::Mid::Leaf.to_s)
+  assert_nil defined?(m::Mid::Leaf.no_such_method_at_all)
+  assert_nil defined?(m::Missing.to_s)
+  assert_equal 'method', defined?(assert(m::Mid::Leaf))
+  assert_nil defined?(assert(m::Missing))
 end
 
 class DefinedRecv

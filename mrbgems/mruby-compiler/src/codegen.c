@@ -4297,9 +4297,9 @@ defined_answer_for(mrc_node *value, struct defined_answer *a)
   case PM_CONSTANT_PATH_NODE:
     /* Walk the path to its root, collecting the names leaf first.  The
        root is either a plain constant, so the first name resolves in the
-       lexical scope, or nothing at all, so `::A` starts at Object.  A
-       root that is any other expression would have to be evaluated, and
-       falls through to nil. */
+       lexical scope, or nothing at all, so `::A` starts at Object, or any
+       other expression, which is evaluated the way a receiver is and has
+       the names looked up from its value. */
     {
       mrc_node *seg = value;
       pm_constant_id_t names[DEFINED_PATH_MAX];
@@ -4318,6 +4318,11 @@ defined_answer_for(mrc_node *value, struct defined_answer *a)
       if (!rooted && seg != NULL && nint(seg) == PM_CONSTANT_READ_NODE &&
           n < DEFINED_PATH_MAX) {
         names[n++] = ((pm_constant_read_node_t *)seg)->name;
+        rooted = TRUE;
+      }
+      else if (!rooted && seg != NULL && nint(seg) != PM_CONSTANT_PATH_NODE &&
+               nint(seg) != PM_CONSTANT_READ_NODE) {
+        a->recv = seg;
         rooted = TRUE;
       }
       if (rooted) {
@@ -4377,6 +4382,19 @@ defined_answer_for(mrc_node *value, struct defined_answer *a)
 
 static void codegen_defined(mrc_codegen_scope *s, mrc_node *value, int val);
 
+/* Leave the names of a constant path, root first, as an array at cursp(). */
+static void
+gen_defined_path(mrc_codegen_scope *s, struct defined_answer *a)
+{
+  for (int i = 0; i < a->path_len; i++) {
+    genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a->path[i]));
+    push();
+  }
+  pop_n(a->path_len);
+  genop_2(s, OP_ARRAY, cursp(), a->path_len);
+  push();
+}
+
 /* Emit the answer an operand's node type alone decides: a literal string, or
    the helper call that resolves it at run time. */
 static void
@@ -4393,13 +4411,8 @@ gen_defined_answer(mrc_codegen_scope *s, struct defined_answer *a)
     if (a->path_toplevel) genop_1(s, OP_OCLASS, cursp());
     else genop_1(s, OP_LOADNIL, cursp());
     push();
-    for (int i = 0; i < a->path_len; i++) {
-      genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a->path[i]));
-      push();
-    }
-    pop_n(a->path_len);
-    genop_2(s, OP_ARRAY, cursp(), a->path_len);
-    push(); push();         /* reserve args + block slots (nregs) */
+    gen_defined_path(s, a);
+    push();                 /* reserve the block slot (nregs) */
     pop_n(4);
     genop_3(s, OP_SSEND, cursp(), new_sym(s, a->helper), 2);
   }
@@ -4421,10 +4434,11 @@ gen_defined_answer(mrc_codegen_scope *s, struct defined_answer *a)
 static void gen_defined_parts(mrc_codegen_scope *s, mrc_node *value, uint32_t *nil_jmps);
 static void gen_defined_part(mrc_codegen_scope *s, mrc_node *part, uint32_t *nil_jmps);
 
-/* Ask `__defined_method_on?` about the receiver evaluated at cursp()-1.
-   With `keep` the receiver stays where it is and the answer lands above it,
-   for a link of a chain whose value the next link is called on; without it
-   the answer lands in the receiver's slot. */
+/* Ask `__defined_method_on?` about the receiver evaluated at cursp()-1, or
+   `__defined_const_path?` about the path rooted there.  With `keep` the
+   receiver stays where it is and the answer lands above it, for a link of a
+   chain whose value the next link is called on; without it the answer lands
+   in the receiver's slot. */
 static void
 gen_defined_ask_method_on(mrc_codegen_scope *s, struct defined_answer *a, int keep)
 {
@@ -4440,19 +4454,26 @@ gen_defined_ask_method_on(mrc_codegen_scope *s, struct defined_answer *a, int ke
     genop_1(s, OP_LOADSELF, recv);      /* receiver slot for the SSEND */
   }
   push();
-  genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a->arg));
-  push(); push();                       /* reserve args + block slots (nregs) */
+  if (a->path_len > 0) {
+    gen_defined_path(s, a);
+  }
+  else {
+    genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a->arg));
+    push();
+  }
+  push();                               /* reserve the block slot (nregs) */
   pop_n(4);
   genop_3(s, OP_SSEND, cursp(), new_sym(s, a->helper), 2);
   push();
 }
 
 /* Leave a receiver's value at cursp()-1, or jump to the nil answer.  A
-   receiver that is itself a call through a receiver is a chain, checked
-   link by link from the inside out, and each link is evaluated once: the
-   value its method was looked for on is the receiver it is then called on,
-   the way CRuby keeps the result of its `defined` instruction.  A link's
-   arguments are weighed before its receiver, as an operand's are. */
+   receiver that is itself a call through a receiver, or a constant path
+   from an evaluated root, is a chain, checked link by link from the inside
+   out, and each link is evaluated once: the value its method or constant
+   was looked for on is the one it is then read from, the way CRuby keeps
+   the result of its `defined` instruction.  A link's arguments are weighed
+   before its receiver, as an operand's are. */
 static void
 gen_defined_recv(mrc_codegen_scope *s, mrc_node *value, uint32_t *nil_jmps)
 {
@@ -4475,18 +4496,26 @@ gen_defined_recv(mrc_codegen_scope *s, mrc_node *value, uint32_t *nil_jmps)
   gen_defined_ask_method_on(s, &a, 1);
   pop();
   *nil_jmps = genjmp2(s, OP_JMPNOT, cursp(), *nil_jmps, NOVAL);
-  gen_call(s, value, VAL,
-           (((pm_call_node_t *)value)->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) ? 1 : 0,
-           1);
+  if (a.path_len > 0) {
+    for (int i = 0; i < a.path_len; i++) {
+      genop_2(s, OP_GETMCNST, cursp() - 1, new_sym(s, a.path[i]));
+    }
+  }
+  else {
+    gen_call(s, value, VAL,
+             (((pm_call_node_t *)value)->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) ? 1 : 0,
+             1);
+  }
   s->rlev = rlev;
 }
 
-/* `defined?(recv.meth)`.  The receiver must itself be defined, and must then
-   be evaluated before the method can be looked for on it.  That evaluation
-   is the one place `defined?` runs code the operand names, and CRuby answers
-   nil rather than letting what it raises out, so it sits under a catch
-   handler whose landing discards the exception.  Both ways of not answering
-   join the caller's nil exit. */
+/* `defined?(recv.meth)`, and `defined?(expr::NAME)` the same way.  The
+   receiver must itself be defined, and must then be evaluated before the
+   method can be looked for on it.  That evaluation is the one place
+   `defined?` runs code the operand names, and CRuby answers nil rather than
+   letting what it raises out, so it sits under a catch handler whose landing
+   discards the exception.  Both ways of not answering join the caller's nil
+   exit. */
 static void
 gen_defined_method_on(mrc_codegen_scope *s, struct defined_answer *a,
                       uint32_t *nil_jmps)
