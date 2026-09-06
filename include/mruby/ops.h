@@ -85,8 +85,8 @@ OPCODE(ADD,        B)        /* R[a] = R[a]+R[a+1] */
 OPCODE(ADDI,       BB)       /* R[a] = R[a]+mrb_int(b) */
 OPCODE(SUB,        B)        /* R[a] = R[a]-R[a+1] */
 OPCODE(SUBI,       BB)       /* R[a] = R[a]-mrb_int(b) */
-OPCODE(ADDILV,     BBB)      /* R[a] = R[a]+mrb_int(c); R[b],R[b+1] for method call */
-OPCODE(SUBILV,     BBB)      /* R[a] = R[a]-mrb_int(c); R[b],R[b+1] for method call */
+OPCODE(ADDILV,     BBB)      /* R[a] = R[a]+mrb_int(c); R[b],R[b+1] for method call; 4.0.x only */
+OPCODE(SUBILV,     BBB)      /* R[a] = R[a]-mrb_int(c); R[b],R[b+1] for method call; 4.0.x only */
 OPCODE(MUL,        B)        /* R[a] = R[a]*R[a+1] */
 OPCODE(DIV,        B)        /* R[a] = R[a]/R[a+1] */
 OPCODE(EQ,         B)        /* R[a] = R[a]==R[a+1] */
@@ -131,3 +131,9 @@ OPCODE(EXT1,       Z)        /* make 1st operand (a) 16bit */
 OPCODE(EXT2,       Z)        /* make 2nd operand (b) 16bit */
 OPCODE(EXT3,       Z)        /* make 1st and 2nd operands 16bit */
 OPCODE(STOP,       Z)        /* stop VM */
+
+/* Appended rather than placed beside OP_ADDILV so that the opcodes a 4.0.x
+   `.mrb` carries keep their numbers. These are what the compiler emits now;
+   OP_ADDILV and OP_SUBILV are read, not written. */
+OPCODE(ADDILVM,    BBB)      /* R[a] = R[a]+mrb_int(c); R[b],R[b+1] for method call; a MOVE a b follows */
+OPCODE(SUBILVM,    BBB)      /* R[a] = R[a]-mrb_int(c); R[b],R[b+1] for method call; a MOVE a b follows */

@@ -4193,10 +4193,20 @@ RETRY_TRY_BLOCK:
     VM_SET_FLOAT_VALUE(regs[a], z);                                         \
   }
 #endif
-#define OP_MATHILV(op_name)                                                 \
-  /* a=local, b=working space, c=immediate */                               \
+/* One body for the pair the compiler emits, OP_ADDILVM and OP_SUBILVM,     \
+   and for OP_ADDILV and OP_SUBILV, which only bytecode compiled by 4.0.x   \
+   carries. a=local, b=working space, c=immediate.                          \
+                                                                            \
+   `a` is a local variable slot, not a temporary, so the L_SEND_SYM path    \
+   the other OP_MATH opcodes take cannot lay the callee frame over the      \
+   locals from regs[a] on. The frame goes on the working space `b`, and     \
+   the `MOVE a, b` the compiler emits after the instruction copies the      \
+   result back once the callee returns. The fast paths leave `a` up to      \
+   date and enter past that MOVE. The older pair has none, so its entry     \
+   leaves `pc` alone and its fallback calls the operator from C. */         \
+#define OP_MATHILV(op_name, moved_insn)                                     \
   if (mrb_likely(mrb_integer_p(regs[a]) &&                                  \
-                 !(mrb->bop_redefined & MRB_BOP_INTEGER(OP_MATH_BOP_##op_name)))) { \
+                 !(mrb->bop_redefined & MRB_BOP_INTEGER(OP_MATH_BOP_##op_name)))) {\
     mrb_int x = mrb_integer(regs[a]), y = (mrb_int)c, z;                    \
     if (mrb_int_##op_name##_overflow(x, y, &z)) {                           \
       OP_MATH_OVERFLOW_INT(op_name,x,y);                                    \
@@ -4206,15 +4216,21 @@ RETRY_TRY_BLOCK:
     }                                                                       \
   }                                                                         \
   OP_MATHILV_ELSE_FLOAT(op_name)                                            \
+  else if (insn == moved_insn) {                                            \
+    ci->pc -= 3;                /* the callee returns into the MOVE */      \
+    b = ci->pc[-2];             /* refetched so that the fast paths need    \
+                                   not keep it (no OP_EXT: see codegen) */  \
+    regs[b] = regs[a];                                                      \
+    SET_INT_VALUE(mrb, regs[b+1], (mrb_int)c);                              \
+    a = b;                                                                  \
+    mid = MRB_OPSYM(op_name);                                               \
+    goto L_SEND_SYM;                                                        \
+  }                                                                         \
   else {                                                                    \
-    /* `a` is a local variable slot, not a temporary, so the L_SEND_SYM     \
-       path the other OP_MATH opcodes take cannot be used: it writes the    \
-       argument into regs[a+1] and lays the callee frame over the locals    \
-       from regs[a] on. `b` is the working space reserved for the call,     \
-       but a send set up there leaves its result in regs[b] and the         \
-       `MOVE local, temp` that used to copy it back is what the fusion      \
-       removed, so the call is made from C. It can move the stack, hence    \
-       the `ci` refresh before storing through `regs`. */                   \
+    /* 4.0.x bytecode: no MOVE follows, so a send set up on the working     \
+       space would leave its result there with nothing to copy it back,     \
+       and the call is made from C. It can move the stack, hence the        \
+       `ci` refresh before storing through `regs`. */                       \
     int ai_ = mrb_gc_arena_save(mrb);                                       \
     mrb_value arg_ = mrb_int_value(mrb, c);                                 \
     mrb_value v_ = mrb_funcall_argv(mrb, regs[a],                           \
@@ -4225,12 +4241,22 @@ RETRY_TRY_BLOCK:
   }                                                                         \
   NEXT
 
+    CASE(OP_ADDILVM, BBB) {
+      ci->pc += 3;              /* over the `MOVE a, b` (OP_MOVE, a, b) */
+    }
+    goto L_OP_ADDILV_BODY;
+
     CASE(OP_ADDILV, BBB) {
-      OP_MATHILV(add);
+      OP_MATHILV(add, OP_ADDILVM);
     }
 
+    CASE(OP_SUBILVM, BBB) {
+      ci->pc += 3;              /* over the `MOVE a, b` (OP_MOVE, a, b) */
+    }
+    goto L_OP_SUBILV_BODY;
+
     CASE(OP_SUBILV, BBB) {
-      OP_MATHILV(sub);
+      OP_MATHILV(sub, OP_SUBILVM);
     }
 
 #define OP_CMP_BODY(op,v1,v2) (v1(regs[a]) op v2(regs[a+1]))

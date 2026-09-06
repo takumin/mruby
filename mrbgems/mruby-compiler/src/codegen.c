@@ -941,10 +941,17 @@ gen_move(mrc_codegen_scope *s, uint16_t dst, uint16_t src, int nopeep)
       else {
         struct mrc_insn_data data0 = mrc_decode_insn(mrc_prev_pc(s, data.addr));
         if (data0.insn != OP_MOVE || data0.a != data.a || data0.b != dst) goto normal;
+        if (data.a > 0xff) goto normal;
         s->pc = addr_pc(s, data0.addr);
-        /* ADDILV/SUBILV fusion: MOVE temp local; ADDI/SUBI temp imm; MOVE local temp */
-        /* -> ADDILV/SUBILV local temp imm (temp is working space for method fallback) */
-        genop_3(s, data.insn == OP_ADDI ? OP_ADDILV : OP_SUBILV, dst, data.a, data.b);
+        /* ADDILVM/SUBILVM fusion: MOVE temp local; ADDI/SUBI temp imm; MOVE local temp */
+        /* -> ADDILVM/SUBILVM local temp imm; MOVE local temp */
+        /* The fast paths update the local in place and skip the MOVE by its
+           3-byte width, hence no OP_EXT on temp (the local is under nlocals);
+           the method fallback runs on temp and returns into the MOVE, which
+           makes the MOVE a jump target the peephole must not rewind. */
+        genop_3(s, data.insn == OP_ADDI ? OP_ADDILVM : OP_SUBILVM, dst, data.a, data.b);
+        genop_2(s, OP_MOVE, dst, data.a);
+        new_label(s);
         return;
       }
       genop_2(s, data.insn, dst, data.b);
