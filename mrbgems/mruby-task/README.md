@@ -825,16 +825,16 @@ The equivalent C entry points are `mrb_gc_scheduler_driven()`,
 ### Relationship with Fiber
 
 A fiber works as it does in any other build: create one, resume it, let it
-finish, inside a task body or outside one.  Adding this gem takes nothing away.
+finish, inside a task body or outside one. Adding this gem takes nothing away.
 
-What the two cannot do is share a context.  A `mrb_context` carries a 4-bit
+What the two cannot do is share a context. A `mrb_context` carries a 4-bit
 `status`, and the scheduler reads the same field mruby-fiber writes, down to
-the same value: `MRB_TASK_STOPPED` is `MRB_FIBER_TERMINATED`.  So a context is
+the same value: `MRB_TASK_STOPPED` is `MRB_FIBER_TERMINATED`. So a context is
 either a fiber's or a task's, and code that arranges for one context to be both
 leaves the scheduler unable to tell which it is looking at.
 
 - Tasks are scheduled by the scheduler; fibers are driven by `Fiber.yield` and
-  `#resume`.  Each owns its context for as long as it lives.
+  `#resume`. Each owns its context for as long as it lives.
 - Do not hand a task's context to a fiber or the other way round.
 
 ### Relationship with mruby-sleep
