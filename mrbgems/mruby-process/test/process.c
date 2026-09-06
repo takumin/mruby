@@ -30,7 +30,7 @@ test_status_build(mrb_state *mrb, mrb_value self)
 
 /* Read a decimal into an int64_t, refusing anything the type cannot hold. */
 static int64_t
-test_clock_int64(mrb_state *mrb, const char *s, const char *what)
+test_int64(mrb_state *mrb, const char *s, const char *what)
 {
   char *end;
   long long v;
@@ -71,7 +71,7 @@ test_clock_convert(mrb_state *mrb, mrb_value self)
   if (nsec < 0 || nsec >= NSEC_PER_SEC) {
     mrb_raisef(mrb, E_ARGUMENT_ERROR, "nsec outside one second: %i", nsec);
   }
-  t.sec = test_clock_int64(mrb, sec, "sec");
+  t.sec = test_int64(mrb, sec, "sec");
   t.nsec = (int64_t)nsec;
   return mrb_process_clock_result(mrb, unit, &t, resolution);
 }
@@ -105,14 +105,94 @@ test_clock_fits(mrb_state *mrb, mrb_value self)
 #endif
 }
 
+/* ProcessSysTest.fits?(decimal, size, signed) -> true or false
+ *
+ * Whether the number `decimal` spells is held by an ID type `size` bytes
+ * wide with that sign, which is what a port answers mrb_hal_process_id_fits()
+ * from.  The host has one width and one sign for each of its two ID types,
+ * and the reading has to be right for the others too, so they are asked
+ * about here rather than only the host's.  The number is a String because a
+ * build whose Integer is 32 bits cannot write the ones at the ends of a
+ * 32-bit type, and those are the ones worth asking about.
+ */
+static mrb_value
+test_sys_fits(mrb_state *mrb, mrb_value self)
+{
+  const char *decimal;
+  mrb_int size;
+  mrb_bool is_signed;
+
+  mrb_get_args(mrb, "zib", &decimal, &size, &is_signed);
+  if (size != 2 && size != 4 && size != 8) {
+    mrb_raisef(mrb, E_ARGUMENT_ERROR, "no ID type is %i bytes wide", size);
+  }
+  return mrb_bool_value(mrb_process_id_fits_type(test_int64(mrb, decimal, "id"),
+                                                 (size_t)size, is_signed));
+}
+
+/* ProcessSysTest.port_fits?(decimal) -> true or false
+ *
+ * What the port answers mrb_hal_process_id_fits() with for a user ID, which
+ * is the question a setter asks before it makes its call.  A test that wants
+ * to know the host's shape before making a call asks this rather than making
+ * the call and reading the refusal, since a number one host refuses is an
+ * ID on another and the call would then be made for real.  On a port that
+ * takes no ID there is no predicate and the method is not defined.
+ */
+#ifdef MRB_HAL_PROCESS_TAKES_ID
+static mrb_value
+test_sys_port_fits(mrb_state *mrb, mrb_value self)
+{
+  const char *decimal;
+
+  mrb_get_args(mrb, "z", &decimal);
+  return mrb_bool_value(mrb_hal_process_id_fits(MRB_PROCESS_ID_USER,
+                                                test_int64(mrb, decimal, "id")));
+}
+
+/* Whether the port reads a name out of the user table, and out of the group
+   table: which of the two answers a String gets from a setter is decided by
+   a macro the tests cannot see, and the two tables are declared one at a
+   time, so each is asked about on its own. */
+static mrb_value
+test_sys_port_user_names(mrb_state *mrb, mrb_value self)
+{
+#ifdef MRB_HAL_PROCESS_HAS_UID_BY_NAME
+  return mrb_true_value();
+#else
+  return mrb_false_value();
+#endif
+}
+
+static mrb_value
+test_sys_port_group_names(mrb_state *mrb, mrb_value self)
+{
+#ifdef MRB_HAL_PROCESS_HAS_GID_BY_NAME
+  return mrb_true_value();
+#else
+  return mrb_false_value();
+#endif
+}
+#endif
+
 void
 mrb_mruby_process_gem_test(mrb_state *mrb)
 {
   struct RClass *test = mrb_define_module(mrb, "ProcessStatusTest");
   struct RClass *clock = mrb_define_module(mrb, "ProcessClockTest");
+  struct RClass *sys = mrb_define_module(mrb, "ProcessSysTest");
 
   mrb_define_module_function(mrb, test, "build", test_status_build, MRB_ARGS_REQ(3));
   mrb_define_module_function(mrb, clock, "convert", test_clock_convert,
                              MRB_ARGS_ARG(3, 1));
   mrb_define_module_function(mrb, clock, "fits?", test_clock_fits, MRB_ARGS_REQ(1));
+  mrb_define_module_function(mrb, sys, "fits?", test_sys_fits, MRB_ARGS_REQ(3));
+#ifdef MRB_HAL_PROCESS_TAKES_ID
+  mrb_define_module_function(mrb, sys, "port_fits?", test_sys_port_fits,
+                             MRB_ARGS_REQ(1));
+  mrb_define_module_function(mrb, sys, "port_user_names?",
+                             test_sys_port_user_names, MRB_ARGS_NONE());
+  mrb_define_module_function(mrb, sys, "port_group_names?",
+                             test_sys_port_group_names, MRB_ARGS_NONE());
+#endif
 }
