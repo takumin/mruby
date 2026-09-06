@@ -11,6 +11,12 @@ assert("Regexp.new with regexp") do
   assert_true r2.match?("ABC")
 end
 
+assert("Regexp.new refuses what is neither a String nor a Regexp") do
+  [nil, 1, :abc, [], true].each do |arg|
+    assert_raise(TypeError, arg.inspect) { Regexp.new(arg) }
+  end
+end
+
 class RegexpInitializedTwice < Regexp
   def initialize(first, second)
     super(first)

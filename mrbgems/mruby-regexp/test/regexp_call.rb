@@ -182,6 +182,16 @@ assert("Regexp - calls and lookarounds") do
   assert_equal "xy", "xy".match(Regexp.new("(?<a>^x)y\\g<a>?"))[0]
 end
 
+assert("Regexp - a lookbehind on the way to a call") do
+  need_backtracking_stack
+  # A lookbehind before a group a call names, or inside one, is asserted
+  # where it stands each time the group runs, as in CRuby.
+  assert_equal "yy", "xyy".match(Regexp.new("(?<=x)(?<a>y)\\g<a>"))[0]
+  assert_nil "yy".match(Regexp.new("(?<=x)(?<a>y)\\g<a>"))
+  assert_equal "yxy", "xyxy".match(Regexp.new("(?<a>(?<=x)y)x\\g<a>"))[0]
+  assert_nil "xyy".match(Regexp.new("(?<a>(?<=x)y)\\g<a>"))
+end
+
 assert("Regexp - a call in a lookbehind must measure fixed") do
   need_backtracking_stack
   assert_equal "xy", "xy".match(Regexp.new("(?<a>xy)(?<=\\g<a>)"))[0]

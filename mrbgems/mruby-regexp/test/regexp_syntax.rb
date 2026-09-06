@@ -740,6 +740,31 @@ assert("Regexp - \\Z matches before a trailing newline under the backtracking en
   assert_equal "aX\n", "ab\n".sub(/b\Z(?=)/, "X")
 end
 
+assert("Regexp - \\A fails off the start wherever the pattern puts it") do
+  # \A inside an alternation is an assertion like any other: off the start
+  # it fails its own branch, the other branch is tried, and the search goes
+  # on to later positions. CRuby answers all three the same way.
+  assert_equal 1, (/(?:\A|b)c/ =~ "xbc")
+  assert_equal 0, (/(?:\A|b)c/ =~ "cbc")
+  assert_nil(/(?:\A|b)c/ =~ "xc")
+end
+
+assert("Regexp - a dot under /m crosses a newline under the backtracking engine too") do
+  need_backtracking_stack
+  # The backreference is what routes the pattern to the other engine.
+  assert_equal 0, (/(a).\1/m =~ "a\na")
+  assert_nil(/(a).\1/ =~ "a\na")
+  assert_equal 0, (/(a).\1/ =~ "aba")
+end
+
+assert("Regexp - \\B under the backtracking engine too") do
+  need_backtracking_stack
+  # The backreference routes the pattern the same way.
+  assert_equal 0, (/(a)\B\1/ =~ "aa")
+  assert_nil(/(a)\B\1/ =~ "a a")
+  assert_equal 1, (/(\s)\B\1/ =~ "a  b")
+end
+
 assert("Regexp - case insensitive") do
   re = Regexp.new("abc", Regexp::IGNORECASE)
   assert_true re.match?("ABC")
@@ -2747,6 +2772,20 @@ assert("Regexp - lookbehind at string start") do
   assert_equal "d", md[0]
 end
 
+assert("Regexp - a lookbehind body holds a zero-width assertion") do
+  need_backtracking_stack
+  # An anchor or a word boundary inside a lookbehind body is asserted at the
+  # position the body has rewound to, as in CRuby. CRuby refuses \z and \Z
+  # in a lookbehind, which this gem accepts, so neither is asked about here.
+  assert_equal 1, (/(?<=^a)b/ =~ "ab")
+  assert_nil(/(?<=^a)b/ =~ "xab")
+  assert_equal 1, (/(?<=\Aa)b/ =~ "ab")
+  assert_nil(/(?<=\Aa)b/ =~ "xab")
+  assert_equal 1, (/(?<=a$)/ =~ "a")
+  assert_equal 5, (/(?<=\ba)b/ =~ "xab ab")
+  assert_nil(/(?<=a\b)b/ =~ "a b")
+end
+
 assert("Regexp - negative lookbehind at string start") do
   need_backtracking_stack
   # negative lookbehind succeeds when not enough text before
@@ -3117,6 +3156,16 @@ assert("Regexp - octal and hex escapes") do
   end
 end
 
+assert("Regexp - the bell and escape characters have escapes of their own") do
+  # `\a` and `\e` name U+0007 and U+001B as the string escapes do, outside a
+  # class and inside one.
+  assert_equal 1, (/\a\e/ =~ "x\a\e")
+  assert_equal 1, (Regexp.new("\\a\\e") =~ "x\a\e")
+  assert_equal 2, "\a\e".scan(/[\a\e]/).size
+  assert_nil(/\a/ =~ "a")
+  assert_nil(/\e/ =~ "e")
+end
+
 assert("Regexp - a backslash the pattern ends after says which it was") do
   # A `\\` with nothing after it is an escape that ends early, which is what
   # CRuby calls it, and the same one it calls a `\\u` with no digits after
@@ -3324,6 +3373,35 @@ assert("Regexp - `&&` narrows a character class to what both sides hold") do
   assert_equal "&", "&"[/[\&]/]
   assert_equal "&", "x&y"[/[\&&]/]
   assert_equal "&", "x&y"[/[a\&&b&]/]
+end
+
+assert("Regexp - `&&` between ranges above ASCII") do
+  skip unless __ENCODING__ == "UTF-8"
+  # Two ranges above ASCII meet in the span they share, and in nothing when
+  # they share none. The same pair is asked both ways round: which of the
+  # two ends first must not matter.
+  assert_equal 0, (/[\u{100}-\u{200}&&[\u{150}-\u{300}]]/ =~ "\u{160}")
+  assert_nil(/[\u{100}-\u{200}&&[\u{150}-\u{300}]]/ =~ "\u{120}")
+  assert_nil(/[\u{100}-\u{200}&&[\u{150}-\u{300}]]/ =~ "\u{250}")
+  assert_equal 0, (/[\u{150}-\u{300}&&[\u{100}-\u{200}]]/ =~ "\u{160}")
+  assert_nil(/[\u{150}-\u{300}&&[\u{100}-\u{200}]]/ =~ "\u{120}")
+  assert_nil(/[\u{150}-\u{300}&&[\u{100}-\u{200}]]/ =~ "\u{250}")
+  # several entries on one side, one of which the other side misses entirely
+  assert_equal ["\u{210}"],
+    "\u{105}\u{130}\u{210}\u{280}".scan(/[\u{100}-\u{120}\u{200}-\u{300}&&[\u{110}-\u{250}]]/)
+end
+
+assert("Regexp - `&&` narrows a class holding everything above ASCII") do
+  skip unless __ENCODING__ == "UTF-8"
+  # \H and a negated nested class each hold every character above ASCII, so
+  # what they share with a range is the range: its members and no other
+  # character above ASCII, nor any below it that the other side leaves out.
+  assert_equal 0, (/[\H&&[\u{100}-\u{200}]]/ =~ "\u{150}")
+  assert_nil(/[\H&&[\u{100}-\u{200}]]/ =~ "\u{250}")
+  assert_nil(/[\H&&[\u{100}-\u{200}]]/ =~ "a")
+  assert_equal 0, (/[[^a]&&[\u{100}-\u{200}]]/ =~ "\u{150}")
+  assert_nil(/[[^a]&&[\u{100}-\u{200}]]/ =~ "\u{250}")
+  assert_nil(/[[^a]&&[\u{100}-\u{200}]]/ =~ "b")
 end
 
 assert("Regexp - a nested class carries its own intersection into the union") do
