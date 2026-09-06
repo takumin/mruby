@@ -108,12 +108,14 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
     }
     case MRB_TT_STRUCT:
     case MRB_TT_ARRAY: {
-      mrb_int len = RARRAY_LEN(obj);
-      /* Arrays that do not fit within an RArray perform a heap allocation
-      *  storing an array of pointers to the original objects*/
+      struct RArray *a = mrb_ary_ptr(obj);
       size += mrb_objspace_page_slot_size();
-      if (len > MRB_ARY_EMBED_LEN_MAX)
-        size += sizeof(mrb_value*) * len;
+      /* An array that does not fit within the RArray keeps its elements in
+       * a heap buffer sized by its capacity. A shared buffer belongs to a
+       * refcounted mrb_shared_array, as a shared string's does, and is
+       * charged to none of its owners. */
+      if (!ARY_EMBED_P(a) && !ARY_SHARED_P(a))
+        size += sizeof(mrb_value) * ARY_CAPA(a);
       break;
     }
     case MRB_TT_PROC: {

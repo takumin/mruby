@@ -54,6 +54,20 @@ assert 'ObjectSpace.memsize_of' do
   empty_array_size = ObjectSpace.memsize_of []
   assert_not_equal empty_array_size, 0, 'empty array size not zero'
   assert_operator empty_array_size, :<, ObjectSpace.memsize_of(Array.new(16)), 'large array size greater than embed'
+  assert_equal slot + 16 * ObjectSpace.__memsize_value_width, ObjectSpace.memsize_of(Array.new(16)), 'a heap buffer holds one mrb_value per slot of capacity'
+
+  # the buffer is sized by capacity; pop keeps it, so a push back into it costs nothing
+  grown = Array.new(16)
+  grown.pop
+  grown_size = ObjectSpace.memsize_of(grown)
+  grown << nil
+  assert_equal grown_size, ObjectSpace.memsize_of(grown), 'growing within capacity costs nothing'
+
+  # a dup of a long enough array shares one buffer, charged to neither owner
+  shared = Array.new(32)
+  shared_dup = shared.dup
+  assert_equal ObjectSpace.memsize_of(shared), ObjectSpace.memsize_of(shared_dup), 'shared arrays weigh the same'
+  assert_operator ObjectSpace.memsize_of(shared), :<, ObjectSpace.memsize_of(Array.new(32)), 'shared buffer not charged'
 
   # fiber
   empty_fiber_size = ObjectSpace.memsize_of(Fiber.new {})
