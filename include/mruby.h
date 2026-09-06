@@ -349,6 +349,7 @@ enum mrb_bop {
 #define MRB_BOP_NUMERIC(op) (MRB_BOP_INTEGER(op) | MRB_BOP_FLOAT(op))
 #define MRB_BOP_SYMBOL_EQ   (1u << (2 * MRB_BOP_COUNT))    /* Symbol#==  */
 #define MRB_BOP_SLOT_COUNT  (2 * MRB_BOP_COUNT + 1)
+#define MRB_BOP_NIL_P       (1u << MRB_BOP_SLOT_COUNT)     /* `nil?`, any class */
 
 #ifdef MRB_USE_TASK_SCHEDULER
 struct mrb_task;
@@ -497,9 +498,18 @@ struct mrb_state {
      slot to disarm; each (class, operator) pair owns a bit here instead, clear
      while the operator still resolves to the builtin recorded in
      `bop_builtin` and set once it does not.  Bit numbers are the `MRB_BOP_*`
-     macros, which also index `bop_builtin`. */
+     macros, which also index `bop_builtin`.
+
+     `MRB_BOP_NIL_P` is the one bit no class owns: a conditional on `x.nil?`
+     is answered from C for a receiver of any class, so the bit is set once
+     `nil?` stops resolving to the builtin from any class, a singleton class
+     included, and is never cleared.  The opcode then resolves `nil?` for its
+     receiver itself and answers from C only while that is `Kernel#nil?` or
+     `NilClass#nil?`, recorded in `nil_p_kernel` and `nil_p_nilclass`. */
   uint32_t bop_redefined;
   mrb_method_t bop_builtin[MRB_BOP_SLOT_COUNT];
+  mrb_method_t nil_p_kernel;
+  mrb_method_t nil_p_nilclass;
 
 #ifdef MRB_USE_TASK_SCHEDULER
   mrb_task_state task;                    /* Task scheduler state */

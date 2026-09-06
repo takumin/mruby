@@ -524,3 +524,14 @@ assert('Module#remove_method on a module prepended to Integer restores the built
   a = 7
   assert_equal 5, a - 2
 end
+
+assert('Module#remove_method on a nil? redefinition resolves it back to the builtin') do
+  # Once `nil?` has been defined anywhere, `OP_NILP` resolves it for its
+  # receiver and answers from C only while that is the builtin; removing the
+  # definition resolves it back, and the opcode answers itself once more.
+  c = Class.new { def nil?; true; end }
+  o = c.new
+  assert_equal :then, (o.nil? ? :then : :else)
+  c.class_eval { remove_method :nil? }
+  assert_equal :else, (o.nil? ? :then : :else)
+end

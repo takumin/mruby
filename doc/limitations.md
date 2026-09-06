@@ -103,20 +103,6 @@ alias $a $__a__
 
 Syntax error
 
-## `nil?` redefinition in conditional expressions
-
-Redefinition of `nil?` is ignored in conditional expressions.
-
-```ruby
-a = "a"
-def a.nil?
-  true
-end
-puts(a.nil? ? "truthy" : "falsy")
-```
-
-Ruby outputs `truthy`. mruby outputs `falsy`.
-
 ## No Double Dispatch in Module Loading
 
 To make implementation simpler, mruby does not use double dispatching in module loading (`include`/`prepend`/`extend`).

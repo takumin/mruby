@@ -5618,31 +5618,25 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         pm_call_node_t *n = (pm_call_node_t *)predicate;
         mrc_sym mid = n->name;
         mrc_sym sym_nil_p = MRC_SYM_2(nil_p);
-        if (mid == sym_nil_p && n->arguments == NULL) {
+        /* only the plain `x.nil?`: a bare `nil?` may reach a private one
+           where OP_NILP, which sends as OP_SEND0 does, may not; `x&.nil?`
+           and a block change what is sent */
+        if (mid == sym_nil_p && n->receiver && n->arguments == NULL && n->block == NULL &&
+            !(n->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
           nil_p = TRUE;
-          if (n->receiver) {
-            codegen(s, (mrc_node *)n->receiver, VAL);
-          }
-          else {
-            /* implicit receiver: bare `nil?` means `self.nil?` (#6874) */
-            genop_1(s, OP_LOADSELF, cursp());
-            push();
-          }
+          codegen(s, (mrc_node *)n->receiver, VAL);
         }
       }
       if (!nil_p) {
         codegen(s, predicate, VAL);
       }
       pop();
+      if (nil_p) {
+        genop_1(s, OP_NILP, cursp());
+        push_n(2); pop_n(2);  /* touch block slot so nregs covers the send OP_NILP falls back to */
+      }
       if (val || statements) {
-        if (nil_p) {
-          pos2 = genjmp2_0(s, OP_JMPNIL, cursp(), val);
-          pos1 = genjmp_0(s, OP_JMP);
-          dispatch(s, pos2);
-        }
-        else {
-          pos1 = genjmp2_0(s, OP_JMPNOT, cursp(), val);
-        }
+        pos1 = genjmp2_0(s, OP_JMPNOT, cursp(), val);
         codegen(s, statements, val);
         if (val) pop();
         if (subsequent || val) {
@@ -5657,16 +5651,11 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
       }
       else {                   /* empty then-part */
         if (subsequent) {
-          if (nil_p) {
-            pos1 = genjmp2_0(s, OP_JMPNIL, cursp(), val);
-          }
-          else {
-            pos1 = genjmp2_0(s, OP_JMPIF, cursp(), val);
-          }
+          pos1 = genjmp2_0(s, OP_JMPIF, cursp(), val);
           codegen(s, subsequent, val);
           dispatch(s, pos1);
         }
-        else if (val && !nil_p) {
+        else if (val) {
           genop_1(s, OP_LOADNIL, cursp());
           push();
         }
