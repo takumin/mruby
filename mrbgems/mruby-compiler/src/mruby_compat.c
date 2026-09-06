@@ -32,11 +32,14 @@ static void
 copy_upper_scopes_to_mrc(mrc_ccontext *dst, const struct RProc *upper)
 {
   const struct RProc *u;
+  /* One scratch for the whole walk, grown to the widest frame it meets. */
+  mrc_upper_local *locals = NULL;
+  char *names = NULL;
+  size_t locals_capa = 0, names_capa = 0;
 
   for (u = upper; u && !MRB_PROC_CFUNC_P(u); u = u->upper) {
     const mrb_irep *irep = u->body.irep;
     mrc_upper_scope scope;
-    mrc_upper_local *locals = NULL;
     uint16_t i, count;
 
     if (irep == NULL) break;
@@ -54,35 +57,44 @@ copy_upper_scopes_to_mrc(mrc_ccontext *dst, const struct RProc *upper)
     scope.lvspace = u->upper != NULL && irep->lv == NULL && irep->nlocals == 1;
 
     if (scope.has_locals && count > 0) {
-      locals = (mrc_upper_local*)mrc_calloc(dst, count, sizeof(mrc_upper_local));
+      size_t total = 0, offset = 0;
+
+      /* An inline symbol is unpacked into a buffer the state reuses on the
+         next call, so each name is copied before the next one is asked for.
+         The lengths are taken first and the copies share one block: a malloc
+         per name is what an eval would pay for every local of every frame
+         around it. */
       for (i = 0; i < count; i++) {
         mrb_int len = 0;
+        if (mrb_sym_name_len(dst->mrb, irep->lv[i], &len)) total += (size_t)len;
+      }
+      if (locals_capa < count) {
+        locals = (mrc_upper_local*)mrc_realloc(dst, locals, sizeof(mrc_upper_local) * count);
+        locals_capa = count;
+      }
+      memset(locals, 0, sizeof(mrc_upper_local) * count);
+      if (names_capa < total) {
+        names = (char*)mrc_realloc(dst, names, total);
+        names_capa = total;
+      }
+      for (i = 0; i < count && total > 0; i++) {
+        mrb_int len = 0;
         const char *name = mrb_sym_name_len(dst->mrb, irep->lv[i], &len);
-        char *copy;
 
-        /* An inline symbol is unpacked into a buffer the state reuses on the
-           next call, so each name is copied before the next one is asked
-           for. */
         if (name == NULL) continue;
-        copy = (char*)mrc_malloc(dst, (size_t)len + 1);
-        memcpy(copy, name, (size_t)len);
-        copy[len] = '\0';
-        locals[i].name = copy;
+        memcpy(names + offset, name, (size_t)len);
+        locals[i].name = names + offset;
         locals[i].length = (size_t)len;
+        offset += (size_t)len;
       }
       scope.locals = locals;
       scope.locals_count = count;
     }
-    /* The context keeps its own copy of the names, so the scratch array goes
-       back as soon as the scope is pushed. */
     mrc_ccontext_push_upper_scope(dst, &scope);
-    if (locals) {
-      for (i = 0; i < count; i++) {
-        if (locals[i].name) mrc_free(dst, (void*)locals[i].name);
-      }
-      mrc_free(dst, locals);
-    }
   }
+  /* The context keeps its own copy of the names. */
+  if (names) mrc_free(dst, names);
+  if (locals) mrc_free(dst, locals);
 }
 
 static void
@@ -130,6 +142,7 @@ copy_context_to_mrc(mrc_ccontext *dst, const mrb_ccontext *src)
       }
     }
     dst->options = options;
+    dst->options_locals_owned = TRUE;
   }
 }
 

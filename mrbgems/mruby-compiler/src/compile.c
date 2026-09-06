@@ -109,17 +109,17 @@ mrc_pm_options_init(mrc_ccontext *cc)
     pm_options_scope_init(scope, named);
     for (j = 0; j < up->locals_count; j++) {
       const mrc_upper_local *local = &up->locals[j];
-      char *copy;
 
       if (local->name == NULL) continue;
-      copy = (char *)mrc_malloc(cc, local->length + 1);
-      memcpy(copy, local->name, local->length);
-      copy[local->length] = '\0';
-      pm_string_constant_init(&scope->locals[local_index++], copy, local->length);
+      /* A Prism constant string is a pointer and a length that Prism never
+         frees, and the scope table holds these names for as long as the
+         context does, so they are shared rather than copied again. */
+      pm_string_constant_init(&scope->locals[local_index++], local->name, local->length);
     }
   }
 
   cc->options = options;
+  cc->options_locals_owned = FALSE;
 }
 
 static void

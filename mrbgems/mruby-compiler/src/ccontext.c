@@ -32,8 +32,10 @@ mrc_ccontext_cleanup_local_variables(mrc_ccontext *cc)
   cc->keep_lv = FALSE;
 
   if (cc->options && cc->options->scopes) {
-    for (size_t i = 0; i < cc->options->scopes[0].locals_count; i++) {
-      mrc_free(cc, (void *)cc->options->scopes[0].locals[i].source);
+    if (cc->options_locals_owned) {
+      for (size_t i = 0; i < cc->options->scopes[0].locals_count; i++) {
+        mrc_free(cc, (void *)cc->options->scopes[0].locals[i].source);
+      }
     }
     mrc_free(cc, cc->options);
   }
@@ -54,27 +56,35 @@ mrc_ccontext_push_upper_scope(mrc_ccontext *c, const mrc_upper_scope *scope)
   *dst = *scope;
   dst->locals = NULL;
   dst->locals_count = 0;
+  dst->name_pool = NULL;
   /* Counted before it is filled in, so that whatever has been copied so far is
      released with the context even if a copy below fails. */
   c->upper_scopes_count++;
 
   if (scope->locals_count > 0) {
+    size_t total = 0, offset = 0;
+
     dst->locals = (mrc_upper_local *)mrc_calloc(c, scope->locals_count, sizeof(mrc_upper_local));
     if (dst->locals == NULL) return FALSE;
     dst->locals_count = scope->locals_count;
+
+    /* The names go in one block rather than one allocation each: an eval sees
+       every local of every frame around it, and a malloc per name was the
+       largest part of what this handoff costs. */
+    for (i = 0; i < scope->locals_count; i++) {
+      total += scope->locals[i].name ? scope->locals[i].length : 0;
+    }
+    if (total == 0) return TRUE;
+    dst->name_pool = (char *)mrc_malloc(c, total);
+    if (dst->name_pool == NULL) return FALSE;
     for (i = 0; i < scope->locals_count; i++) {
       const mrc_upper_local *src = &scope->locals[i];
-      char *copy;
 
       if (src->name == NULL) continue;
-      /* One byte over the length: the names are compared by length, but a
-         terminator keeps them printable in a debugger. */
-      copy = (char *)mrc_malloc(c, src->length + 1);
-      if (copy == NULL) return FALSE;
-      memcpy(copy, src->name, src->length);
-      copy[src->length] = '\0';
-      dst->locals[i].name = copy;
+      memcpy(dst->name_pool + offset, src->name, src->length);
+      dst->locals[i].name = dst->name_pool + offset;
       dst->locals[i].length = src->length;
+      offset += src->length;
     }
   }
   return TRUE;
@@ -83,13 +93,11 @@ mrc_ccontext_push_upper_scope(mrc_ccontext *c, const mrc_upper_scope *scope)
 static void
 mrc_ccontext_upper_scopes_free(mrc_ccontext *c)
 {
-  size_t i, j;
+  size_t i;
 
   for (i = 0; i < c->upper_scopes_count; i++) {
     mrc_upper_scope *scope = &c->upper_scopes[i];
-    for (j = 0; j < scope->locals_count; j++) {
-      if (scope->locals[j].name) mrc_free(c, (void *)scope->locals[j].name);
-    }
+    if (scope->name_pool) mrc_free(c, scope->name_pool);
     if (scope->locals) mrc_free(c, scope->locals);
   }
   if (c->upper_scopes) mrc_free(c, c->upper_scopes);
@@ -122,10 +130,12 @@ mrc_ccontext_free(mrc_ccontext *c)
        per-local name copies (they are PM_STRING_CONSTANT, which pm_string_free
        leaves alone) nor the options struct itself, so free those here. The
        copies must go first, before pm_options_free() releases the arrays. */
-    for (size_t s = 0; s < c->options->scopes_count; s++) {
-      pm_options_scope_t *scope = &c->options->scopes[s];
-      for (size_t l = 0; l < scope->locals_count; l++) {
-        mrc_free(c, (void *)scope->locals[l].source);
+    if (c->options_locals_owned) {
+      for (size_t s = 0; s < c->options->scopes_count; s++) {
+        pm_options_scope_t *scope = &c->options->scopes[s];
+        for (size_t l = 0; l < scope->locals_count; l++) {
+          mrc_free(c, (void *)scope->locals[l].source);
+        }
       }
     }
     pm_options_free(c->options);

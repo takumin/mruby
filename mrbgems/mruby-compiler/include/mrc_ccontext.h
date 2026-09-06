@@ -43,6 +43,10 @@ typedef struct mrc_upper_scope {
   mrc_bool has_locals:1;        /* the frame carries a local variable table */
   mrc_bool boundary:1;          /* the search for an outer local stops here */
   mrc_bool lvspace:1;           /* holds no locals of its own; not a parser scope */
+  /* The one block the copied names of this scope live in.  It belongs to the
+     context that stored the scope; a caller filling a scope to push leaves it
+     NULL and keeps its own names wherever they already are. */
+  char *name_pool;
 } mrc_upper_scope;
 
 typedef struct mrc_ccontext {
@@ -62,6 +66,9 @@ typedef struct mrc_ccontext {
   mrc_bool keep_lv:1;
   mrc_bool no_optimize:1;
   mrc_bool no_ext_ops:1;
+  /* the local names in `options` are this context's to free; clear when they
+     point into the name pool of an enclosing scope, which owns them instead */
+  mrc_bool options_locals_owned:1;
   /* enclosing scopes, innermost first */
   mrc_upper_scope *upper_scopes;
   size_t upper_scopes_count;
