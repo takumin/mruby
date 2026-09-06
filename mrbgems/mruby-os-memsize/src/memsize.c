@@ -11,31 +11,87 @@
 #include <mruby/proc.h>
 #include <mruby/value.h>
 #include <mruby/range.h>
+#include <mruby/debug.h>
 #include <mruby/internal.h>
 
+/* Heap behind an irep's debug info, as mrb_debug_info_free() releases
+ * it: the info, its file table, and one line table per file. */
+static size_t
+os_memsize_of_debug_info(const mrb_irep_debug_info *d)
+{
+  size_t size = sizeof(*d);
+
+  if (!d->files) return size;
+  size += d->flen * sizeof(*d->files);
+  for (uint32_t i = 0; i < d->flen; i++) {
+    const mrb_irep_debug_info_file *f = d->files[i];
+    if (!f) continue;
+    size += sizeof(*f);
+    switch (f->line_type) {
+      case mrb_debug_line_ary:
+        size += f->line_entry_count * sizeof(uint16_t);
+        break;
+      case mrb_debug_line_flat_map:
+        size += f->line_entry_count * sizeof(mrb_irep_debug_info_line);
+        break;
+      case mrb_debug_line_packed_map:
+        size += f->line_entry_count;
+        break;
+    }
+  }
+  return size;
+}
+
+/* Heap behind an irep, the struct included, following what
+ * mrb_irep_free() releases. An irep loaded from a binary keeps its pool,
+ * syms and reps in one block with the struct; the same bytes are counted
+ * here, only the padding between them is not. */
 static size_t
 os_memsize_of_irep(mrb_state* state, const struct mrb_irep *irep)
 {
-  size_t size = (irep->slen * sizeof(mrb_sym)) +
+  /* a static irep and everything it points to live in read-only data */
+  if (irep->flags & MRB_IREP_NO_FREE) return 0;
+
+  size_t size = sizeof(struct mrb_irep) +
+                (irep->slen * sizeof(mrb_sym)) +
                 (irep->plen * sizeof(mrb_irep_pool)) +
-                (irep->ilen * sizeof(mrb_code)) +
                 (irep->rlen * sizeof(struct mrb_irep*));
+
+  /* the catch handler table sits in the same block, after the iseq */
+  if (!(irep->flags & MRB_ISEQ_NO_FREE)) {
+    size += (irep->ilen * sizeof(mrb_code)) +
+            (irep->clen * sizeof(struct mrb_irep_catch_handler));
+  }
 
   for (int i = 0; i < irep->plen; i++) {
     const mrb_irep_pool *p = &irep->pool[i];
-    if ((p->tt & IREP_TT_NFLAG) == 0) { /* string pool value */
-      size += (p->tt>>2);
+    if ((p->tt & (IREP_TT_NFLAG|IREP_TT_SFLAG)) == IREP_TT_STR) {
+      size += (p->tt>>2) + 1; /* copied with its NUL; a static one is not */
     }
-    else if (p->tt == IREP_TT_BIGINT) { /* bigint pool value */
-      size += p->u.str[0];
+    else if (p->tt == IREP_TT_BIGINT) {
+      size += (uint8_t)p->u.str[0] + 2; /* length byte, sign byte, digits */
     }
   }
 
+  /* local variable names, one per local past self */
+  if (irep->lv) size += (irep->nlocals - 1) * sizeof(mrb_sym);
+
   for (int i = 0; i < irep->rlen; i++) {
-    size += sizeof(struct mrb_irep); /* size of irep structure */
-    size += os_memsize_of_irep(state, irep->reps[i]);
+    if (irep->reps[i]) size += os_memsize_of_irep(state, irep->reps[i]);
   }
+
+  if (irep->debug_info) size += os_memsize_of_debug_info(irep->debug_info);
   return size;
+}
+
+/* Heap behind the code a proc runs. A C function has none, and neither
+ * does an alias, whose body holds the aliased method's id, not an irep. */
+static size_t
+os_memsize_of_proc_body(mrb_state* mrb, const struct RProc *proc)
+{
+  if (MRB_PROC_CFUNC_P(proc) || MRB_PROC_ALIAS_P(proc) || !proc->body.irep)
+    return 0;
+  return os_memsize_of_irep(mrb, proc->body.irep);
 }
 
 static size_t
@@ -46,9 +102,7 @@ os_memsize_of_method(mrb_state* mrb, mrb_value method_obj)
   if (mrb_nil_p(proc_value)) return 0;
   struct RProc *proc = mrb_proc_ptr(proc_value);
 
-  size_t size = sizeof(struct RProc);
-  if (!MRB_PROC_CFUNC_P(proc)) size += os_memsize_of_irep(mrb, proc->body.irep);
-  return size;
+  return sizeof(struct RProc) + os_memsize_of_proc_body(mrb, proc);
 }
 
 static mrb_bool
@@ -70,13 +124,19 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
   size_t size = 0;
 
   switch(mrb_type(obj)) {
-    case MRB_TT_STRING:
+    case MRB_TT_STRING: {
+      struct RString *s = RSTRING(obj);
       size += mrb_objspace_page_slot_size();
-      if (!RSTR_EMBED_P(RSTRING(obj)) && !RSTR_SHARED_P(RSTRING(obj))) {
-        size += RSTRING_CAPA(obj);
+      /* the buffer is the string's own only when the GC would free it:
+       * not embedded, not a refcounted shared buffer, not borrowed from a
+       * frozen string (FSHARED), and not static storage (NOFREE) */
+      if (!RSTR_EMBED_P(s) && !RSTR_SHARED_P(s) &&
+          !RSTR_FSHARED_P(s) && !RSTR_NOFREE_P(s)) {
+        size += RSTR_CAPA(s);
         size++; /* NUL terminator */
       }
       break;
+    }
     case MRB_TT_CLASS:
     case MRB_TT_MODULE:
     case MRB_TT_SCLASS:
@@ -100,12 +160,14 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
     }
     case MRB_TT_STRUCT:
     case MRB_TT_ARRAY: {
-      mrb_int len = RARRAY_LEN(obj);
-      /* Arrays that do not fit within an RArray perform a heap allocation
-      *  storing an array of pointers to the original objects*/
+      struct RArray *a = mrb_ary_ptr(obj);
       size += mrb_objspace_page_slot_size();
-      if (len > MRB_ARY_EMBED_LEN_MAX)
-        size += sizeof(mrb_value*) * len;
+      /* An array that does not fit within the RArray keeps its elements in
+       * a heap buffer sized by its capacity. A shared buffer belongs to a
+       * refcounted mrb_shared_array, as a shared string's does, and is
+       * charged to none of its owners. */
+      if (!ARY_EMBED_P(a) && !ARY_SHARED_P(a))
+        size += sizeof(mrb_value) * ARY_CAPA(a);
       break;
     }
     case MRB_TT_PROC: {
@@ -118,8 +180,7 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
         size += MRB_ENV_LEN(env) * sizeof(mrb_value);
         if (MRB_ENV_SVAR_P(env)) size += sizeof(mrb_value);
       }
-      if (!MRB_PROC_CFUNC_P(proc))
-        size += os_memsize_of_irep(mrb, proc->body.irep);
+      size += os_memsize_of_proc_body(mrb, proc);
       break;
     }
     case MRB_TT_RANGE:
@@ -130,21 +191,26 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
       break;
     case MRB_TT_FIBER: {
       struct RFiber* f = (struct RFiber*)mrb_ptr(obj);
-      ptrdiff_t stack_size = f->cxt->stend - f->cxt->stbase;
-      ptrdiff_t ci_size = f->cxt->ciend - f->cxt->cibase;
+      const struct mrb_context *c = f->cxt;
 
-      size += mrb_objspace_page_slot_size() +
-        sizeof(struct mrb_context) +
-        sizeof(mrb_value) * stack_size +
-        sizeof(mrb_callinfo) * ci_size;
+      size += mrb_objspace_page_slot_size();
+      /* Fiber.allocate leaves cxt NULL until initialize runs */
+      if (c) {
+        ptrdiff_t stack_size = c->stend - c->stbase;
+        ptrdiff_t ci_size = c->ciend - c->cibase;
+
+        size += sizeof(struct mrb_context) +
+          sizeof(mrb_value) * stack_size +
+          sizeof(mrb_callinfo) * ci_size;
+      }
       break;
     }
-#ifndef MRB_NO_FLOAT
-    case MRB_TT_FLOAT:
-#endif
+    case MRB_TT_FLOAT: /* the type exists without a Float, only no value has it */
     case MRB_TT_INTEGER:
-      if (mrb_immediate_p(obj))
-        break;
+      /* boxed as RFloat/RInteger when the value does not fit the word */
+      if (!mrb_immediate_p(obj))
+        size += mrb_objspace_page_slot_size();
+      break;
     case MRB_TT_RATIONAL:
 #if defined(MRB_USE_RATIONAL)
 #if defined(MRB_INT64) && defined(MRB_32BIT)
@@ -177,6 +243,7 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
       size += mrb_objspace_page_slot_size();
       break;
     case MRB_TT_BACKTRACE:
+      size += mrb_objspace_page_slot_size();
       size += ((struct RBacktrace*)mrb_obj_ptr(obj))->len * sizeof(struct mrb_backtrace_location);
       break;
     case MRB_TT_SVAR:
