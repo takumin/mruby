@@ -13,27 +13,44 @@
 #include <mruby/range.h>
 #include <mruby/internal.h>
 
+/* Heap memory behind an irep, following what mrb_irep_free() releases.
+ * The irep struct itself is the caller's to add, as the reps loop does
+ * for each child. */
 static size_t
 os_memsize_of_irep(mrb_state* state, const struct mrb_irep *irep)
 {
+  /* a static irep and everything it points to live in read-only data */
+  if (irep->flags & MRB_IREP_NO_FREE) return 0;
+
   size_t size = (irep->slen * sizeof(mrb_sym)) +
                 (irep->plen * sizeof(mrb_irep_pool)) +
-                (irep->ilen * sizeof(mrb_code)) +
                 (irep->rlen * sizeof(struct mrb_irep*));
+
+  /* the catch handler table sits in the same block, after the iseq */
+  if (!(irep->flags & MRB_ISEQ_NO_FREE)) {
+    size += (irep->ilen * sizeof(mrb_code)) +
+            (irep->clen * sizeof(struct mrb_irep_catch_handler));
+  }
 
   for (int i = 0; i < irep->plen; i++) {
     const mrb_irep_pool *p = &irep->pool[i];
-    if ((p->tt & IREP_TT_NFLAG) == 0) { /* string pool value */
-      size += (p->tt>>2);
+    if ((p->tt & (IREP_TT_NFLAG|IREP_TT_SFLAG)) == IREP_TT_STR) {
+      size += (p->tt>>2) + 1; /* copied with its NUL; a static one is not */
     }
-    else if (p->tt == IREP_TT_BIGINT) { /* bigint pool value */
-      size += p->u.str[0];
+    else if (p->tt == IREP_TT_BIGINT) {
+      size += (uint8_t)p->u.str[0] + 2; /* length byte, sign byte, digits */
     }
   }
 
+  /* local variable names, one per local past self */
+  if (irep->lv) size += (irep->nlocals - 1) * sizeof(mrb_sym);
+
   for (int i = 0; i < irep->rlen; i++) {
-    size += sizeof(struct mrb_irep); /* size of irep structure */
-    size += os_memsize_of_irep(state, irep->reps[i]);
+    const struct mrb_irep *rep = irep->reps[i];
+    if (rep && !(rep->flags & MRB_IREP_NO_FREE)) {
+      size += sizeof(struct mrb_irep);
+      size += os_memsize_of_irep(state, rep);
+    }
   }
   return size;
 }
