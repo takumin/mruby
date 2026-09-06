@@ -549,6 +549,14 @@ mrb_f_raise(mrb_state *mrb, mrb_value self)
   mrb->c->ci->mid = 0;
   switch (argc) {
   case 0:
+    /* Re-raise what a rescue clause is running, which is what `$!` names.
+       Outside one it is nil, and there being nothing to re-raise is itself
+       the RuntimeError.  `!` is not a word, so MRB_GVSYM() cannot spell the
+       name and it is interned here, as `$~` and `$?` are. */
+    exc = mrb_gv_get(mrb, mrb_intern_lit(mrb, "$!"));
+    if (!mrb_nil_p(exc)) {
+      mrb_exc_raise(mrb, exc);
+    }
     mrb_raise(mrb, E_RUNTIME_ERROR, "");
     break;
   case 1:

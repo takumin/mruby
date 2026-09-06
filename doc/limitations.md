@@ -32,35 +32,6 @@ providing this feature is not linked in" rather than "mruby does not
 support it." Adding the relevant gem to the build configuration is
 usually enough.
 
-## `Kernel.raise` in rescue clause
-
-`Kernel.raise` without arguments does not raise the current exception within
-a rescue clause.
-
-```ruby
-begin
-  1 / 0
-rescue
-  raise
-end
-```
-
-#### CRuby
-
-`ZeroDivisionError` is raised.
-
-#### mruby
-
-`RuntimeError` is raised instead of `ZeroDivisionError`. To re-raise the exception, you have to do:
-
-```ruby
-begin
-  1 / 0
-rescue => e
-  raise e
-end
-```
-
 ## Fiber execution can't cross C function boundary
 
 mruby's `Fiber` is implemented similarly to Lua's co-routine. This

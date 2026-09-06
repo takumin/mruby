@@ -504,3 +504,44 @@ assert('$! names the exception a rescue clause is running') do
                          end)
   assert_nil $!
 end
+
+assert('raise without arguments re-raises the exception being rescued') do
+  # Inside a rescue clause it is that exception, which `$!` names, and so
+  # it works across a method boundary too.
+  e = nil
+  begin
+    begin
+      raise TypeError, "inner"
+    rescue
+      raise
+    end
+  rescue => ex
+    e = ex
+  end
+  assert_equal TypeError, e.class
+  assert_equal "inner", e.message
+
+  def reraise_now
+    raise
+  end
+  begin
+    begin
+      raise ArgumentError, "through a method"
+    rescue
+      reraise_now
+    end
+  rescue => ex
+    e = ex
+  end
+  assert_equal ArgumentError, e.class
+  assert_equal "through a method", e.message
+
+  # Where there is nothing being rescued there is nothing to re-raise, and
+  # that is a RuntimeError: outside any clause, and after one has finished.
+  assert_raise(RuntimeError) { raise }
+  begin
+    raise TypeError, "done with"
+  rescue
+  end
+  assert_raise(RuntimeError) { raise }
+end
