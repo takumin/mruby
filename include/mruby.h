@@ -357,6 +357,11 @@ enum mrb_bop {
    records a builtin for it and nothing rechecks it, since nothing clears the
    flag it mirrors. */
 #define MRB_BOP_NIL_TRUE_FALSE_EQ (1u << MRB_BOP_SLOT_COUNT)
+/* `nil?` is answered from C for a receiver of any class, so no slot can watch
+   it either.  The bit above `MRB_BOP_NIL_TRUE_FALSE_EQ` is set once `nil?` is
+   defined anywhere and is never cleared; the builtins it stands for are kept
+   in `nil_p_kernel` and `nil_p_nilclass`, not in `bop_builtin`. */
+#define MRB_BOP_NIL_P       (1u << (MRB_BOP_SLOT_COUNT + 1))
 
 #ifdef MRB_USE_TASK_SCHEDULER
 struct mrb_task;
@@ -505,11 +510,20 @@ struct mrb_state {
      slot to disarm; each (class, operator) pair owns a bit here instead, clear
      while the operator still resolves to the builtin recorded in
      `bop_builtin` and set once it does not.  Bit numbers are the `MRB_BOP_*`
-     macros, which also index `bop_builtin`; the one bit above them,
-     `MRB_BOP_NIL_TRUE_FALSE_EQ`, mirrors a class flag instead of a builtin
-     and indexes nothing. */
+     macros, which also index `bop_builtin`; the two bits above them index
+     nothing.  `MRB_BOP_NIL_TRUE_FALSE_EQ` mirrors a class flag instead of a
+     builtin.
+
+     `MRB_BOP_NIL_P` is the bit no class owns: a conditional on `x.nil?` is
+     answered from C for a receiver of any class, so the bit is set once
+     `nil?` stops resolving to the builtin from any class, a singleton class
+     included, and is never cleared.  The opcode then resolves `nil?` for its
+     receiver itself and answers from C only while that is `Kernel#nil?` or
+     `NilClass#nil?`, recorded in `nil_p_kernel` and `nil_p_nilclass`. */
   uint32_t bop_redefined;
   mrb_method_t bop_builtin[MRB_BOP_SLOT_COUNT];
+  mrb_method_t nil_p_kernel;
+  mrb_method_t nil_p_nilclass;
 
 #ifdef MRB_USE_TASK_SCHEDULER
   mrb_task_state task;                    /* Task scheduler state */

@@ -1192,7 +1192,7 @@ mrb_define_method_raw(mrb_state *mrb, struct RClass *c, mrb_sym mid, mrb_method_
   mt_put(mrb, h, mid, flags, ptr);
   if (!mrb->bootstrapping) {
     mc_clear_by_id(mrb, mid);
-    mrb_builtin_op_update(mrb, mid);
+    mrb_builtin_op_update(mrb, named, mid);
     if (mid == MRB_OPSYM(eq)) eq_defined_mark(mrb, named);
   }
   if (modfunc) {
@@ -2241,7 +2241,7 @@ include_module_at(mrb_state *mrb, struct RClass *c, struct RClass *ins_pos, stru
     mrb_method_cache_clear(mrb);
     /* An included or prepended module can carry both operators, and it is not
        one method name that changed, so recheck every slot. */
-    mrb_builtin_op_update(mrb, 0);
+    mrb_builtin_op_update(mrb, c, 0);
     /* and it can carry a `==` of its own, or of a module it includes, which
        marked it in turn */
     if (m0->flags & MRB_FL_CLASS_EQ_DEFINED) eq_defined_mark(mrb, c);
@@ -2674,7 +2674,7 @@ mrb_mod_visibility(mrb_state *mrb, mrb_value mod, int vis)
       }
       mt_put(mrb, h, mid, m.flags, ptr);
       mc_clear_by_id(mrb, mid);
-      mrb_builtin_op_update(mrb, mid);
+      mrb_builtin_op_update(mrb, c, mid);
     }
   }
 }
@@ -3151,6 +3151,47 @@ bop_arm(mrb_state *mrb, int slot)
   mrb->bop_redefined &= ~(1u << slot);
 }
 
+static mrb_bool
+same_method_p(mrb_method_t a, mrb_method_t b)
+{
+  return a.flags == b.flags && a.as.func == b.as.func;
+}
+
+static mrb_bool
+nil_p_builtin_p(mrb_state *mrb, mrb_method_t m)
+{
+  return same_method_p(m, mrb->nil_p_kernel) || same_method_p(m, mrb->nil_p_nilclass);
+}
+
+static void
+nil_p_arm(mrb_state *mrb)
+{
+  struct RClass *c;
+
+  c = mrb->kernel_module;
+  mrb->nil_p_kernel = mrb_vm_find_method(mrb, c, &c, MRB_SYM_Q(nil));
+  c = mrb->nil_class;
+  mrb->nil_p_nilclass = mrb_vm_find_method(mrb, c, &c, MRB_SYM_Q(nil));
+}
+
+/* `nil?` has no class of its own to resolve from, so a change under that
+   name sets the bit wherever it lands, a singleton class included; a module
+   inclusion carries no name, and sets it when `nil?` now resolves from the
+   class that took the module to a method that is not a builtin. */
+static void
+nil_p_refresh(mrb_state *mrb, struct RClass *c, mrb_sym mid)
+{
+  if (mid == MRB_SYM_Q(nil)) {
+    mrb->bop_redefined |= MRB_BOP_NIL_P;
+  }
+  else if (mid == 0) {
+    mrb_method_t m = mrb_vm_find_method(mrb, c, &c, MRB_SYM_Q(nil));
+    if (!MRB_METHOD_UNDEF_P(m) && !nil_p_builtin_p(mrb, m)) {
+      mrb->bop_redefined |= MRB_BOP_NIL_P;
+    }
+  }
+}
+
 /* Records the builtin operators of each core class and arms their slots.
    Called once, after core initialization has installed them. */
 void
@@ -3162,13 +3203,15 @@ mrb_builtin_op_init(mrb_state *mrb)
   for (int slot = 0; slot < MRB_BOP_SLOT_COUNT; slot++) {
     bop_arm(mrb, slot);
   }
+  nil_p_arm(mrb);
 }
 
-/* Rechecks the slots that `mid` can affect.  Call after any change to a method
-   table that could change what a guarded operator resolves to; pass 0 for
-   `mid` when the change is not tied to one name, as module inclusion is not. */
+/* Rechecks the slots that a change to the method table of `c` under `mid` can
+   affect.  Call after any such change that could change what a guarded
+   operator resolves to; pass 0 for `mid` when the change is not tied to one
+   name, as module inclusion is not. */
 void
-mrb_builtin_op_update(mrb_state *mrb, mrb_sym mid)
+mrb_builtin_op_update(mrb_state *mrb, struct RClass *c, mrb_sym mid)
 {
   if (mrb->bootstrapping) return;
   for (int slot = 0; slot < MRB_IDX_OP_SLOT_COUNT; slot++) {
@@ -3177,6 +3220,7 @@ mrb_builtin_op_update(mrb_state *mrb, mrb_sym mid)
   for (int slot = 0; slot < MRB_BOP_SLOT_COUNT; slot++) {
     if (mid == 0 || mid == bop_mid(slot)) bop_refresh(mrb, slot);
   }
+  nil_p_refresh(mrb, c, mid);
 }
 
 mrb_method_t
@@ -4165,7 +4209,7 @@ mrb_remove_method(mrb_state *mrb, struct RClass *c0, mrb_sym mid)
     mrb_name_error(mrb, mid, "method '%n' not defined in %C", mid, c);
   }
   mc_clear_by_id(mrb, mid);
-  mrb_builtin_op_update(mrb, mid);
+  mrb_builtin_op_update(mrb, c0, mid);
   if (c0->tt == MRB_TT_SCLASS) {
     mrb_sym cb = MRB_SYM(singleton_method_removed);
     mrb_value recv = mrb_iv_get(mrb, mrb_obj_value(c0), MRB_SYM(__attached__));
