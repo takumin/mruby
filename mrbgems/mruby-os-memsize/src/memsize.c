@@ -130,13 +130,18 @@ os_memsize_of_object(mrb_state* mrb, mrb_value obj)
       break;
     case MRB_TT_FIBER: {
       struct RFiber* f = (struct RFiber*)mrb_ptr(obj);
-      ptrdiff_t stack_size = f->cxt->stend - f->cxt->stbase;
-      ptrdiff_t ci_size = f->cxt->ciend - f->cxt->cibase;
+      const struct mrb_context *c = f->cxt;
 
-      size += mrb_objspace_page_slot_size() +
-        sizeof(struct mrb_context) +
-        sizeof(mrb_value) * stack_size +
-        sizeof(mrb_callinfo) * ci_size;
+      size += mrb_objspace_page_slot_size();
+      /* Fiber.allocate leaves cxt NULL until initialize runs */
+      if (c) {
+        ptrdiff_t stack_size = c->stend - c->stbase;
+        ptrdiff_t ci_size = c->ciend - c->cibase;
+
+        size += sizeof(struct mrb_context) +
+          sizeof(mrb_value) * stack_size +
+          sizeof(mrb_callinfo) * ci_size;
+      }
       break;
     }
 #ifndef MRB_NO_FLOAT
