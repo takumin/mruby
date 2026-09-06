@@ -30,10 +30,17 @@ assert 'ObjectSpace.memsize_of' do
       a = 0
       a + 1
     end
+    alias bar foo
   end
 
   m_size = ObjectSpace.memsize_of class_with_methods.instance_method(:foo)
   assert_not_equal m_size, 0, 'method size not zero'
+
+  # an alias proc carries a method id where an irep would be; must not crash
+  alias_size = ObjectSpace.memsize_of class_with_methods.instance_method(:bar)
+  assert_not_equal alias_size, 0, 'alias size not zero'
+  assert_operator alias_size, :<, m_size, 'alias carries no code of its own'
+  assert_operator ObjectSpace.memsize_of_all, :>=, alias_size, 'memsize_of_all walks past the alias'
 
   # collections
   empty_array_size = ObjectSpace.memsize_of []
