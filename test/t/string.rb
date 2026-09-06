@@ -897,6 +897,51 @@ assert('String#length(UTF-8)', '15.2.10.5.26') do
   assert_equal 2, "\xe3\x81".length
 end if UTF8STRING
 
+assert('String#length over every lead byte') do
+  # Every lead byte followed by up to five continuation bytes, once with the
+  # lowest continuation byte and once with the highest, so that each sequence
+  # reaches both sides of every boundary RFC 3629 draws: a shorter spelling
+  # (C0, C1, E0 80, F0 80), a surrogate (ED A0 and above), U+10FFFF (F4 90 and
+  # above, F5 to F7), and the five and six byte lengths (F8 to FD). The count
+  # a character-indexed build owes is what the reading of RFC 3629 below
+  # answers; over these 3072 strings its answers are CRuby's. A byte-indexed
+  # build owes one per byte.
+  min = [0, 128, 2048, 65536, 2097152, 67108864]
+  claim = ->(c) {
+    if c < 0x80 then 1 elsif c < 0xC0 then 0 elsif c < 0xE0 then 2
+    elsif c < 0xF0 then 3 elsif c < 0xF8 then 4 elsif c < 0xFC then 5
+    elsif c < 0xFE then 6 else 0 end
+  }
+  # the byte length of the character at bytes[i], or 1 where the bytes there
+  # spell none; the fillers are continuation bytes, so only the count and the
+  # value can fall short
+  charlen = ->(bytes, i) {
+    c = bytes[i]
+    n = claim.call(c)
+    next 1 if n < 2 || n > 4 || bytes.size - i < n
+    v = c & (0x7F >> n)
+    (1...n).each {|k| v = (v << 6) | (bytes[i + k] & 0x3F) }
+    next 1 if v < min[n - 1] || v > 0x10FFFF || (0xD800 <= v && v <= 0xDFFF)
+    n
+  }
+  0.upto(255) do |c|
+    [0x80, 0xBF].each do |f|
+      0.upto(5) do |k|
+        bytes = [c] + [f] * k
+        s = "\0" * bytes.size
+        bytes.each_with_index {|b, i| s.setbyte(i, b) }
+        expected = 0
+        i = 0
+        while i < bytes.size
+          i += UTF8STRING ? charlen.call(bytes, i) : 1
+          expected += 1
+        end
+        assert_equal expected, s.length, bytes.inspect
+      end
+    end
+  end
+end
+
 # 'String#match', '15.2.10.5.27' will be tested in mrbgems.
 
 assert('String#replace', '15.2.10.5.28') do
