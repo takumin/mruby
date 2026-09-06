@@ -17,6 +17,36 @@ assert('Symbol#===', '15.2.11.3.1') do
   assert_false :abc === :cba
 end
 
+assert('Symbol#== redefined on Symbol itself reaches the redefinition') do
+  # `OP_EQ` answers `:a == x` from the identity of its two operands whenever
+  # the receiver is a Symbol, which it may only do while `Symbol#==` is still
+  # the builtin it stands in for; `mrb->bop_redefined` records the moment it
+  # is replaced, so a redefinition installed on `Symbol` is honored as in
+  # CRuby. The results are read before the operator is put back because the
+  # assertions themselves compare symbols.
+  Symbol.class_eval do
+    alias_method :__eq_before_test, :==
+    def ==(other) [:eq, self, other] end
+  end
+  begin
+    a = :abc
+    same = a == :abc
+    different = a == :xyz
+    string = a == 'abc'
+  ensure
+    Symbol.class_eval do
+      alias_method :==, :__eq_before_test
+      remove_method :__eq_before_test if respond_to?(:remove_method, true)
+    end
+  end
+  assert_equal [:eq, :abc, :abc], same
+  assert_equal [:eq, :abc, :xyz], different
+  assert_equal [:eq, :abc, 'abc'], string
+  assert_true :abc == :abc
+  assert_false :abc == :xyz
+  assert_false :abc == 'abc'
+end
+
 assert('Symbol#to_s', '15.2.11.3.3') do
   assert_equal  'abc', :abc.to_s
 end

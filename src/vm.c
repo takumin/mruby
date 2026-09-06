@@ -4321,13 +4321,15 @@ RETRY_TRY_BLOCK:
          in either. A Symbol is equal to nothing but itself, so it is answered
          here in full.
 
-         Neither answer may stand in for a redefined `==`: whether an Integer
-         or Float equals itself is then the redefinition's to say. While either
-         is redefined both shortcuts are skipped for every receiver, and the
-         comparison below sends `==` to whatever its type dispatch does not
-         answer. That costs a heap object its identity answer in that state
-         alone; the usual state pays one test. */
-      if (mrb_likely(!(mrb->bop_redefined & MRB_BOP_NUMERIC(MRB_BOP_EQ)))) {
+         Neither answer may stand in for a redefined `==`: whether an Integer,
+         Float or Symbol equals itself, or a Symbol anything else, is then the
+         redefinition's to say. While any of the three is redefined both
+         shortcuts are skipped for every receiver, and the comparison below
+         sends `==` to whatever its type dispatch does not answer. That costs
+         a heap object its identity answer in that state alone; the usual
+         state pays one test. */
+      if (mrb_likely(!(mrb->bop_redefined &
+                       (MRB_BOP_NUMERIC(MRB_BOP_EQ) | MRB_BOP_SYMBOL_EQ)))) {
         if (mrb_obj_eq(mrb, regs[a], regs[a+1]) && !value_nan_p(regs[a])) {
           SET_TRUE_VALUE(regs[a]);
           NEXT;
