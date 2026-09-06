@@ -551,3 +551,58 @@ assert('Integer arithmetic redefined on Integer itself reaches the redefinition'
   a += 1
   assert_equal 8, a
 end
+
+assert('Integer comparison redefined on Integer itself reaches the redefinition') do
+  # `OP_EQ`, `OP_LT`, `OP_LE`, `OP_GT` and `OP_GE` answer `a < b` from C for
+  # an Integer receiver on the same terms as the arithmetic opcodes above.
+  # `a == a` is answered without any comparison whenever the two hold the
+  # same value, which a redefined `Integer#==` must still be asked about.
+  Integer.class_eval do
+    alias_method :__eq_before_test, :==
+    alias_method :__lt_before_test, :<
+    alias_method :__le_before_test, :<=
+    alias_method :__gt_before_test, :>
+    alias_method :__ge_before_test, :>=
+    def ==(other) [:eq, self, other] end
+    def <(other) [:lt, self, other] end
+    def <=(other) [:le, self, other] end
+    def >(other) [:gt, self, other] end
+    def >=(other) [:ge, self, other] end
+  end
+  begin
+    a = 7
+    b = 2
+    eq = a == b
+    same = a == a
+    lt = a < b
+    le = a <= b
+    gt = a > b
+    ge = a >= b
+    mixed = a < 2.5 if Object.const_defined?(:Float)
+  ensure
+    Integer.class_eval do
+      alias_method :==, :__eq_before_test
+      alias_method :<, :__lt_before_test
+      alias_method :<=, :__le_before_test
+      alias_method :>, :__gt_before_test
+      alias_method :>=, :__ge_before_test
+      if respond_to?(:remove_method, true)
+        remove_method :__eq_before_test, :__lt_before_test, :__le_before_test,
+                      :__gt_before_test, :__ge_before_test
+      end
+    end
+  end
+  assert_equal [:eq, 7, 2], eq
+  assert_equal [:eq, 7, 7], same
+  assert_equal [:lt, 7, 2], lt
+  assert_equal [:le, 7, 2], le
+  assert_equal [:gt, 7, 2], gt
+  assert_equal [:ge, 7, 2], ge
+  assert_equal [:lt, 7, 2.5], mixed if Object.const_defined?(:Float)
+  a = 7
+  b = 2
+  assert_false a == b
+  assert_true a == a
+  assert_false a < b
+  assert_true a >= b
+end

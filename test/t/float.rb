@@ -527,4 +527,61 @@ assert('Float arithmetic redefined on Float itself reaches the redefinition') do
   assert_float 8.5, a
 end
 
+assert('Float comparison redefined on Float itself reaches the redefinition') do
+  # `OP_EQ`, `OP_LT`, `OP_LE`, `OP_GT` and `OP_GE` answer `a < b` from C for
+  # a Float receiver on the same terms as the arithmetic opcodes above, and
+  # `a == a` is answered without any comparison whenever the two hold the
+  # same value; see the Integer test.
+  Float.class_eval do
+    alias_method :__eq_before_test, :==
+    alias_method :__lt_before_test, :<
+    alias_method :__le_before_test, :<=
+    alias_method :__gt_before_test, :>
+    alias_method :__ge_before_test, :>=
+    def ==(other) [:eq, self, other] end
+    def <(other) [:lt, self, other] end
+    def <=(other) [:le, self, other] end
+    def >(other) [:gt, self, other] end
+    def >=(other) [:ge, self, other] end
+  end
+  begin
+    a = 7.5
+    b = 2.0
+    eq = a == b
+    same = a == a
+    lt = a < b
+    le = a <= b
+    gt = a > b
+    ge = a >= b
+    int_arg = a < 2
+    int_recv = 2 < a
+  ensure
+    Float.class_eval do
+      alias_method :==, :__eq_before_test
+      alias_method :<, :__lt_before_test
+      alias_method :<=, :__le_before_test
+      alias_method :>, :__gt_before_test
+      alias_method :>=, :__ge_before_test
+      if respond_to?(:remove_method, true)
+        remove_method :__eq_before_test, :__lt_before_test, :__le_before_test,
+                      :__gt_before_test, :__ge_before_test
+      end
+    end
+  end
+  assert_equal [:eq, 7.5, 2.0], eq
+  assert_equal [:eq, 7.5, 7.5], same
+  assert_equal [:lt, 7.5, 2.0], lt
+  assert_equal [:le, 7.5, 2.0], le
+  assert_equal [:gt, 7.5, 2.0], gt
+  assert_equal [:ge, 7.5, 2.0], ge
+  assert_equal [:lt, 7.5, 2], int_arg
+  assert_true int_recv
+  a = 7.5
+  b = 2.0
+  assert_false a == b
+  assert_true a == a
+  assert_false a < b
+  assert_true a >= b
+end
+
 end # const_defined?(:Float)

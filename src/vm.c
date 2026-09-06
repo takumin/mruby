@@ -4227,14 +4227,19 @@ RETRY_TRY_BLOCK:
     }
 
 #define OP_CMP_BODY(op,v1,v2) (v1(regs[a]) op v2(regs[a+1]))
+#define OP_CMP_BOP_eq MRB_BOP_EQ
+#define OP_CMP_BOP_lt MRB_BOP_LT
+#define OP_CMP_BOP_le MRB_BOP_LE
+#define OP_CMP_BOP_gt MRB_BOP_GT
+#define OP_CMP_BOP_ge MRB_BOP_GE
 
 #ifdef MRB_NO_FLOAT
 #define value_nan_p(v) FALSE
 #define OP_CMP(op,sym) do {\
   int result;\
-  /* need to check if op is overridden */\
   if (mrb_likely(TYPES2(mrb_type(regs[a]),mrb_type(regs[a+1])) == \
-                 TYPES2(MRB_TT_INTEGER,MRB_TT_INTEGER))) {\
+                 TYPES2(MRB_TT_INTEGER,MRB_TT_INTEGER) &&\
+                 !(mrb->bop_redefined & MRB_BOP_INTEGER(OP_CMP_BOP_##sym)))) {\
     result = OP_CMP_BODY(op,mrb_integer,mrb_integer);\
   }\
   else {\
@@ -4265,10 +4270,14 @@ RETRY_TRY_BLOCK:
 } while (0)
 #define OP_CMP(op, sym) do {\
   int result;\
-  /* need to check if op is overridden */\
   uint16_t tt = TYPES2(mrb_type(regs[a]),mrb_type(regs[a+1]));\
-  if (mrb_likely(tt == TYPES2(MRB_TT_INTEGER,MRB_TT_INTEGER))) {\
+  if (mrb_likely(tt == TYPES2(MRB_TT_INTEGER,MRB_TT_INTEGER) &&\
+                 !(mrb->bop_redefined & MRB_BOP_INTEGER(OP_CMP_BOP_##sym)))) {\
     result = OP_CMP_BODY(op,mrb_integer,mrb_integer);\
+  }\
+  else if (mrb_unlikely(mrb->bop_redefined & MRB_BOP_NUMERIC(OP_CMP_BOP_##sym))) {\
+    mid = MRB_OPSYM(sym);\
+    goto L_SEND_SYM;\
   }\
   else switch (tt) {\
   case TYPES2(MRB_TT_INTEGER,MRB_TT_FLOAT):\
@@ -4302,16 +4311,26 @@ RETRY_TRY_BLOCK:
          without the test below `Float::NAN == Float::NAN` answered true in a
          boxed build and false in `MRB_NO_BOXING`. The pair falls through to
          the comparison instead, which reads it as numbers and answers false
-         in either. */
-      if (mrb_obj_eq(mrb, regs[a], regs[a+1]) && !value_nan_p(regs[a])) {
-        SET_TRUE_VALUE(regs[a]);
+         in either. A Symbol is equal to nothing but itself, so it is answered
+         here in full.
+
+         Neither answer may stand in for a redefined `==`: whether an Integer
+         or Float equals itself is then the redefinition's to say. While either
+         is redefined both shortcuts are skipped for every receiver, and the
+         comparison below sends `==` to whatever its type dispatch does not
+         answer. That costs a heap object its identity answer in that state
+         alone; the usual state pays one test. */
+      if (mrb_likely(!(mrb->bop_redefined & MRB_BOP_NUMERIC(MRB_BOP_EQ)))) {
+        if (mrb_obj_eq(mrb, regs[a], regs[a+1]) && !value_nan_p(regs[a])) {
+          SET_TRUE_VALUE(regs[a]);
+          NEXT;
+        }
+        if (mrb_symbol_p(regs[a])) {
+          SET_FALSE_VALUE(regs[a]);
+          NEXT;
+        }
       }
-      else if (mrb_symbol_p(regs[a])) {
-        SET_FALSE_VALUE(regs[a]);
-      }
-      else {
-        OP_CMP(==,eq);
-      }
+      OP_CMP(==,eq);
       NEXT;
     }
 
