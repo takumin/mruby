@@ -51,6 +51,15 @@ memsize_heap_number(mrb_state *mrb, mrb_value self)
   return ary;
 }
 
+/* A string over static storage, as OP_STRING builds from a pool string a
+ * static irep holds; long enough not to embed in the object header. */
+static mrb_value
+memsize_nofree_string(mrb_state *mrb, mrb_value self)
+{
+  static const char body[] = "a body long enough to sit outside the object header";
+  return mrb_str_new_static(mrb, body, sizeof(body) - 1);
+}
+
 void
 mrb_mruby_os_memsize_gem_test(mrb_state *mrb)
 {
@@ -58,4 +67,5 @@ mrb_mruby_os_memsize_gem_test(mrb_state *mrb)
   mrb_define_module_function(mrb, os, "__memsize_slot", memsize_slot, MRB_ARGS_NONE());
   mrb_define_module_function(mrb, os, "__memsize_value_width", memsize_value_width, MRB_ARGS_NONE());
   mrb_define_module_function(mrb, os, "__memsize_heap_number", memsize_heap_number, MRB_ARGS_NONE());
+  mrb_define_module_function(mrb, os, "__memsize_nofree_string", memsize_nofree_string, MRB_ARGS_NONE());
 }

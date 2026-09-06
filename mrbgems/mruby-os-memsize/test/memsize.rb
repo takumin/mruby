@@ -18,6 +18,7 @@ assert 'ObjectSpace.memsize_of' do
   end
 
   assert_not_equal ObjectSpace.memsize_of('a'), 0, 'memsize of str'
+  assert_equal slot, ObjectSpace.memsize_of(ObjectSpace.__memsize_nofree_string), 'static storage is not the string\'s to free'
 
   if __ENCODING__ == "UTF-8"
     assert_not_equal ObjectSpace.memsize_of("こんにちは世界"), 0, 'memsize of utf8 str'
