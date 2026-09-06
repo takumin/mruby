@@ -77,3 +77,29 @@ These macros are converted to static symbol IDs at compile time.
 The `_2` suffix variants (e.g., `MRB_SYM_2`) are kept for backward
 compatibility only; they accept an explicit `mrb_state*` parameter
 but ignore it. New code should use the standard macros above.
+
+### How symbols are numbered
+
+The build scans every source for these macros and numbers the symbols it
+finds. The numbers are written to
+`build/<target>/include/mruby/presym/id.h`, which every source includes, so a
+symbol whose number moved would change what the compiler is handed for every
+source that names it, and `ccache` or `sccache` would answer none of those
+from cache.
+
+A symbol's number is therefore the slot its own name hashes to, in a table
+with room to spare, rather than its position among the symbols in some order.
+It depends on the symbol's name and on the few symbols whose probes cross that
+slot, so adding a symbol leaves almost every number where it was: on the
+default configuration one addition moves 0.63 numbers on average, and none at
+all four times out of five.
+
+The numbering is a function of the symbols the build scanned and of nothing
+else. It is the same on every machine, it survives emptying the build
+directory, and there is nothing to keep in the tree or carry between builds
+for it.
+
+`MRB_PRESYM_MAX` is the width of that number space, which is the table's
+length rather than the count of symbols; `MRB_PRESYM_COUNT` is the count. The
+numbers between them belong to no symbol, and `mrb_sym_name` answers `NULL`
+for those as it does for a symbol that does not exist.

@@ -20,37 +20,65 @@
 
 #ifndef MRB_PRESYM_SCANNING
 /* const uint16_t presym_length_table[]   */
-/* const char * const presym_name_table[] */
+/* const char     presym_name_blob[]      */
+/* const uint16_t presym_offset_table[]   */
 # include <mruby/presym/table.h>
 #endif
 
+/* 32-bit FNV-1a with a final avalanche.
+
+   `MRuby::Presym.hash32` in `lib/mruby/presym.rb` computes this same value
+   when it builds the tables below, so the two are changed together. */
+static uint32_t
+presym_hash(const char *name, size_t len)
+{
+  uint32_t h = 2166136261u;
+
+  for (size_t i = 0; i < len; i++) {
+    h ^= (uint8_t)name[i];
+    h *= 16777619u;
+  }
+  h ^= h >> 15;
+  h *= 2246822519u;
+  h ^= h >> 13;
+  return h;
+}
+
+/* Look a name up in the presym tables.
+
+   A symbol's number is the slot its name hashes to, so the table has slots
+   no symbol occupies and the lookup is the probe that finds the name or the
+   first free slot. The step is odd and the table is a power of two long, so
+   the probe reaches every slot and ends at the free one the table always
+   has. */
 static mrb_sym
 presym_find(const char *name, size_t len)
 {
-  if (presym_length_table[MRB_PRESYM_MAX-1] < len) return 0;
+  if (len > MRB_PRESYM_MAX_LENGTH) return 0;
 
-  mrb_sym presym_size = MRB_PRESYM_MAX;
-  for (mrb_sym start = 0; presym_size != 0; presym_size/=2) {
-    mrb_sym idx = start+presym_size/2;
-    int cmp = (int)len-(int)presym_length_table[idx];
-    if (cmp == 0) {
-      cmp = memcmp(name, presym_name_table[idx], len);
-      if (cmp == 0) return idx+1;
+  uint32_t h = presym_hash(name, len);
+  uint32_t i = h & (MRB_PRESYM_MAX-1);
+  uint32_t step = ((h >> 16) | 1) & (MRB_PRESYM_MAX-1);
+
+  for (;;) {
+    uint32_t off = presym_offset_table[i];
+    if (off == 0) return 0;
+    if (presym_length_table[i] == len &&
+        memcmp(name, presym_name_blob + off, len) == 0) {
+      return (mrb_sym)i + 1;
     }
-    if (0 < cmp) {
-      start = ++idx;
-      --presym_size;
-    }
+    i = (i + step) & (MRB_PRESYM_MAX-1);
   }
-  return 0;
 }
 
 static const char*
 presym_sym2name(mrb_sym sym, mrb_int *lenp)
 {
   if (sym > MRB_PRESYM_MAX) return NULL;
+  uint32_t off = presym_offset_table[sym-1];
+  if (off == 0) return NULL;   /* a number no symbol occupies */
   if (lenp) *lenp = presym_length_table[sym-1];
-  return presym_name_table[sym-1];
+  return presym_name_blob + off;
 }
 
 /* ------------------------------------------------------ */
@@ -626,6 +654,9 @@ sym2name_len(mrb_state *mrb, mrb_sym sym, char *buf, mrb_int *lenp)
   {
     const char *name = presym_sym2name(sym, lenp);
     if (name) return name;
+    /* A presym number no symbol occupies: the table has slots nothing
+       hashed to, and none of them names a runtime symbol either. */
+    if (sym <= MRB_PRESYM_MAX) goto outofsym;
   }
   sym -= MRB_PRESYM_MAX;
 

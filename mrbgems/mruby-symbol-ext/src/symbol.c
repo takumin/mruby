@@ -26,6 +26,9 @@ mrb_sym_all_symbols(mrb_state *mrb, mrb_value self)
   mrb_value ary = mrb_ary_new_capa(mrb, mrb->symidx);
 
   for (mrb_sym i=1; i<=MRB_PRESYM_MAX; i++) {
+    /* A presym number is the slot its name hashed to, so the numbers no
+       symbol occupies are skipped rather than listed. */
+    if (mrb_sym_name(mrb, i) == NULL) continue;
     mrb_ary_push(mrb, ary, mrb_symbol_value(i));
   }
   mrb_sym lim = mrb->symidx + 1;
