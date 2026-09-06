@@ -164,36 +164,6 @@ puts(a.nil? ? "truthy" : "falsy")
 
 Ruby outputs `truthy`. mruby outputs `falsy`.
 
-## Argument Destructuring
-
-```ruby
-def m(a,(b,c),d); p [a,b,c,d]; end
-m(1,[2,3],4)  # => [1,2,3,4]
-```
-
-Destructured arguments (`b` and `c` in above example) cannot be accessed
-from the default expression of optional arguments and keyword arguments,
-since actual assignment is done after the evaluation of those default
-expressions. Thus:
-
-```ruby
-def f(a,(b,c),d=b)
-  p [a,b,c,d]
-end
-f(1,[2,3])
-```
-
-CRuby gives `[1,2,3,nil]`. mruby raises `NoMethodError` for `b`.
-
-Keyword argument expansion has similar restrictions. The following example, gives `[1, 1]` for CRuby, mruby raises `NoMethodError` for `b`.
-
-```ruby
-def g(a: 1, b: a)
-  p [a,b]
-end
-g(a:1)
-```
-
 ## No Double Dispatch in Module Loading
 
 To make implementation simpler, mruby does not use double dispatching in module loading (`include`/`prepend`/`extend`).
