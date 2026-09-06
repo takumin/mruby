@@ -4259,7 +4259,7 @@ defined_answer_for(mrc_node *value, struct defined_answer *a)
   case PM_SELF_NODE:
     a->type = "self";
     break;
-  case PM_LOCAL_VARIABLE_READ_NODE:
+  case PM_LOCAL_VARIABLE_READ_NODE: case PM_IT_LOCAL_VARIABLE_READ_NODE:
     a->type = "local-variable";
     break;
   case PM_LOCAL_VARIABLE_WRITE_NODE: case PM_INSTANCE_VARIABLE_WRITE_NODE:

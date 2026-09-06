@@ -2028,6 +2028,12 @@ assert('defined? on control flow, jumps and definitions') do
   assert_equal 'expression', defined?(begin; END { }; end)
 end
 
+assert('defined? names it a local variable') do
+  assert_equal ['local-variable'], [1].map { defined?(it) }
+  assert_equal ['method'], [1].map { defined?(it.to_s) }
+  assert_equal [nil], [1].map { defined?(it.no_such_method_at_all) }
+end
+
 assert('defined? sees through parentheses around one expression') do
   lv = 1
   @defined_paren_iv = 1
