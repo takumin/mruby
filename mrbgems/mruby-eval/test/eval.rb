@@ -268,3 +268,57 @@ assert('eval in a scope whose locals are named after a presym literal') do
   }
   assert_equal ['caught', 6, 1], results
 end
+
+##
+# Enclosing scopes reach the compiler as names
+#
+# `eval` compiles against the scopes around it.  Those scopes live in the VM,
+# so the host walks them and hands the compiler their local variable names;
+# the parser and the code generator never read a call frame or intern into the
+# symbol table.  What follows exercises that handoff from both ends.
+
+def eval_test_outer_binding
+  z = 'z'
+  binding
+end
+
+def eval_test_method_call
+  'called'
+end
+
+assert('eval sees every local of one enclosing scope') do
+  # Short names are inline symbols, which mruby unpacks into one buffer it
+  # reuses on the next call.  A handoff that kept those pointers instead of the
+  # bytes answered every local with the name of the last one.
+  aa = 1
+  bb = 2
+  cc = 3
+  assert_equal [1, 2, 3], eval('[aa, bb, cc]')
+end
+
+assert('eval sees the locals of nested enclosing scopes') do
+  a = 1
+  [10].each do |x|
+    b = 2
+    [20].each do |y|
+      c = 3
+      assert_equal [1, 2, 3, 10, 20], eval('[a, b, c, x, y]')
+    end
+  end
+end
+
+assert('eval assigns to a local of an enclosing scope') do
+  v = 0
+  eval('v = 9')
+  assert_equal 9, v
+end
+
+assert('eval reaches a binding taken elsewhere') do
+  assert_equal 'z', eval('z', eval_test_outer_binding)
+end
+
+assert('eval leaves a method call a method call') do
+  # The counterpart the scopes must not swallow: a name that is no outer local
+  # still has to compile to a call.
+  assert_equal 'called', eval('eval_test_method_call')
+end
