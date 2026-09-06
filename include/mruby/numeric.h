@@ -47,6 +47,18 @@ MRB_API mrb_value mrb_num_mul(mrb_state *mrb, mrb_value x, mrb_value y);
 MRB_API mrb_value mrb_uint64_value(mrb_state *mrb, uint64_t v);
 MRB_API mrb_value mrb_int64_value(mrb_state *mrb, int64_t v);
 
+/* The same boundary read from the other side: the C integer an Integer holds.
+   A value inside the width answers itself however it is stored, a Fixnum and
+   a Bignum alike, and one outside it raises RangeError, so what went through
+   the calls above comes back through these.  A Float or a Rational is taken
+   as mrb_ensure_integer_type() takes it, and what has no integer to give
+   raises TypeError.
+
+   Spelled `as` because that is what this direction is called here, as in
+   mrb_as_int(), mrb_as_float() and mrb_bint_as_int64(). */
+MRB_API uint64_t mrb_as_uint64(mrb_state *mrb, mrb_value x);
+MRB_API int64_t mrb_as_int64(mrb_state *mrb, mrb_value x);
+
 /* The same, spelled for the C types a library counts in, whose own width
    varies by platform: a size_t is 32 bits where the time_t beside it is 64.
    A caller passes what it holds and does not have to know which of the two

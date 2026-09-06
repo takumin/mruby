@@ -79,6 +79,55 @@ mrb_int64_value(mrb_state *mrb, int64_t v)
 }
 
 /**
+ * Answer with the C integer `x` holds, whatever width the Integer is stored
+ * in.  A Fixnum answers what it holds, a Bignum that suits `uint64_t` answers
+ * that, and one that does not raises RangeError.  This reads what
+ * mrb_uint64_value() writes: a value that went through that call comes back
+ * out of this one.
+ *
+ * `x` that is not an Integer is taken as mrb_ensure_integer_type() takes it,
+ * so a Float truncates and an object with no integer to give raises TypeError.
+ * A negative Integer has no `uint64_t` to answer with, however it is stored,
+ * and raises RangeError.
+ *
+ * A caller reaching for this has a C integer to fill that mrb_int may be too
+ * narrow for, and reaches for it rather than mrb_bint_* so it needs neither
+ * the gem's headers nor an #ifdef of its own.
+ */
+MRB_API uint64_t
+mrb_as_uint64(mrb_state *mrb, mrb_value x)
+{
+  mrb_int i;
+
+  x = mrb_ensure_integer_type(mrb, x);
+#ifdef MRB_USE_BIGINT
+  if (mrb_bigint_p(x)) {
+    return mrb_bint_as_uint64(mrb, x);
+  }
+#endif
+  i = mrb_integer(x);
+  if (i < 0) {
+    mrb_raise(mrb, E_RANGE_ERROR, "integer out of range");
+  }
+  return (uint64_t)i;
+}
+
+/**
+ * The signed counterpart of mrb_as_uint64().  See its comment.
+ */
+MRB_API int64_t
+mrb_as_int64(mrb_state *mrb, mrb_value x)
+{
+  x = mrb_ensure_integer_type(mrb, x);
+#ifdef MRB_USE_BIGINT
+  if (mrb_bigint_p(x)) {
+    return mrb_bint_as_int64(mrb, x);
+  }
+#endif
+  return (int64_t)mrb_integer(x);
+}
+
+/**
  * This function is called to raise a ZeroDivisionError. It's marked
  * mrb_noreturn as it always raises an exception and does not return.
  *
