@@ -62,23 +62,29 @@ p Liste.new "foobar"
 
 ## `defined?`
 
-The `defined?` keyword is considered too complex to be fully
-implemented. It is recommended to use `const_defined?` and
-other reflection methods instead.
+The answer is not the same object each time, and a constant path of
+more than 32 names is answered `nil`. A name mruby does not have, such
+as `$PROGRAM_NAME` or `__dir__`, is answered `nil` as well, since it is
+absent rather than undefined differently.
 
 ```ruby
-defined?(Foo)
+defined?(self).equal?(defined?(self))
+defined?(A::B::C::D::E::F::G::H::I::J::K::L::M::N::O::P::Q::R::S::T::U::V::W::X::Y::Z::A::B::C::D::E::F::G)
 ```
 
 #### CRuby
 
 ```
-nil
+true
+"constant"
 ```
 
 #### mruby
 
-`NameError` is raised.
+```
+false
+nil
+```
 
 ## `alias` on global variables
 

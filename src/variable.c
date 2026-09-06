@@ -1471,6 +1471,16 @@ mrb_vm_const_defined_p(mrb_state *mrb, const struct RProc *proc, mrb_sym sym)
   return !mrb_undef_p(mrb_vm_const_get_noraise(mrb, proc, sym));
 }
 
+/* The lookup a constant path read makes from a module, `Mod::NAME`, without
+   its hooks: the value, or undef where the name is missing, with no
+   const_missing call and nothing raised.  A constant Object holds is out of
+   reach from any other module here, as it is for the read. */
+mrb_value
+mrb_const_get_noraise(mrb_state *mrb, struct RClass *mod, mrb_sym sym)
+{
+  return const_get_nohook(mrb, mod, sym, FALSE);
+}
+
 /*
  * Sets a constant in a module or class.
  *

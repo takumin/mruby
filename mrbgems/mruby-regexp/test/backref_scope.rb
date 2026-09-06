@@ -277,6 +277,29 @@ assert("$~ - stays a global name") do
   assert_equal "global-variable", defined?($~)
 end
 
+assert("$& and $1 - defined? where they read other than nil") do
+  "ab" =~ /(a)(c)?/
+  assert_equal "global-variable", defined?($&)
+  assert_equal "global-variable", defined?($`)
+  assert_equal "global-variable", defined?($')
+  assert_equal "global-variable", defined?($+)
+  assert_equal "global-variable", defined?($1)
+  assert_nil defined?($2)
+  assert_nil defined?($3)
+
+  # as a receiver, or an argument
+  assert_equal "method", defined?($1.to_s)
+  assert_nil defined?($2.to_s)
+  assert_nil defined?($1.no_such_method_at_all)
+  assert_equal "method", defined?($1.to_s($1))
+  assert_nil defined?($1.to_s($2))
+
+  # a failed match leaves nothing behind the names
+  "x" =~ /y/
+  assert_nil defined?($&)
+  assert_nil defined?($1)
+end
+
 assert("Regexp.last_match reads the calling scope") do
   "top" =~ /(t)op/
   assert_equal "top", Regexp.last_match[0]

@@ -1747,8 +1747,11 @@ module DefinedDeepOuter
   def self.from_lexical_scope_miss; defined?(Mid::Missing); end
 end
 
-class DefinedPathRaises
-  def self.boom; raise 'defined? evaluated a constant path root'; end
+class DefinedPathRoot
+  @evaluated = 0
+  def self.count; @evaluated; end
+  def self.seen; @evaluated += 1; DefinedDeepOuter; end
+  def self.boom; raise 'defined? let a constant path root raise'; end
 end
 
 assert('defined? on a constant path of any depth') do
@@ -1792,10 +1795,57 @@ assert('defined? on a constant path rooted at Object') do
   assert_nil defined?(::DefinedDeepOuter::Missing)
 end
 
-assert('defined? does not evaluate a constant path') do
-  # a root that would have to be evaluated is not a path the compiler names,
-  # and the call it is built from stays unmade
-  assert_nil defined?(DefinedPathRaises.boom::Leaf)
+module DefinedPathHooked
+  def self.const_missing(name); @asked = name; end
+  def self.asked; @asked; end
+end
+
+assert('defined? on a constant path resolves each name as reading it does') do
+  # a constant Object holds is out of reach through any other module, as it
+  # is for the read itself, and the walk past one does not raise
+  assert_equal 'constant', defined?(Object::String)
+  assert_nil defined?(String::String)
+  assert_nil defined?(String::Object)
+  assert_nil defined?(String::String::Leaf)
+  assert_nil defined?(Comparable::String)
+  assert_nil defined?(DefinedPathOuter::String)
+
+  # const_missing is not asked
+  assert_nil defined?(DefinedPathHooked::Missing)
+  assert_nil defined?(DefinedPathHooked::Missing::Leaf)
+  assert_nil DefinedPathHooked.asked
+end
+
+assert('defined? resolves a constant path from an evaluated root') do
+  # a root that is not a constant is evaluated, once, and the names are
+  # looked up from its value, the way a receiver is evaluated for its method
+  m = DefinedDeepOuter
+  assert_equal 'constant', defined?(m::Mid)
+  assert_equal 'constant', defined?(m::Mid::Leaf)
+  assert_nil defined?(m::Missing)
+  assert_nil defined?(m::Mid::Missing)
+  assert_nil defined?(m::NotAModule::Leaf)
+  before = DefinedPathRoot.count
+  assert_equal 'constant', defined?(DefinedPathRoot.seen::Mid::Leaf)
+  assert_equal before + 1, DefinedPathRoot.count
+  assert_nil defined?(DefinedPathRoot.seen::Missing)
+  assert_equal before + 2, DefinedPathRoot.count
+
+  # a root that is not a module, that is not itself defined, which leaves it
+  # unevaluated, or that raises, which answers nil rather than letting it out
+  n = 1
+  assert_nil defined?(n::Leaf)
+  assert_nil defined?(no_such_method_at_all::Leaf)
+  assert_nil defined?(DefinedPathRoot.seen(no_such_method_at_all)::Mid)
+  assert_equal before + 2, DefinedPathRoot.count
+  assert_nil defined?(DefinedPathRoot.boom::Leaf)
+
+  # the path is a receiver, or an argument, like any other
+  assert_equal 'method', defined?(m::Mid::Leaf.to_s)
+  assert_nil defined?(m::Mid::Leaf.no_such_method_at_all)
+  assert_nil defined?(m::Missing.to_s)
+  assert_equal 'method', defined?(assert(m::Mid::Leaf))
+  assert_nil defined?(assert(m::Missing))
 end
 
 class DefinedRecv
@@ -1844,6 +1894,57 @@ assert('defined? weighs how a method on a receiver may be called') do
   assert_nil defined?(o.prot)       # self here is not a DefinedRecv
   assert_equal 'method', o.from_inside(DefinedRecv.new)
   assert_equal 'method', defined?(o.ghost)   # through respond_to_missing?
+end
+
+class DefinedBareCall
+  private def priv; end
+  def respond_to_missing?(name, include_private = false)
+    @asked = include_private
+    name == :ghost
+  end
+  def asked; @asked; end
+  def bare_priv;  defined?(priv); end
+  def bare_ghost; defined?(ghost); end
+  def bare_none;  defined?(no_such_method_at_all); end
+  def bare_args;  defined?(ghost(1)); end
+end
+
+class DefinedBareCallAnswers < DefinedBareCall
+  def respond_to?(name, include_private = false)
+    @asked = include_private
+    name == :answered
+  end
+  def bare_answered; defined?(answered); end
+end
+
+class DefinedBareCallGone < TestNotImplement
+  def bare_gone; defined?(gone); end
+end
+
+assert('defined? asks respond_to? about a call on self') do
+  o = DefinedBareCall.new
+  # a private method is reachable, and so is one `respond_to_missing?`
+  # claims, which is asked with include_private true
+  assert_equal 'method', o.bare_priv
+  assert_equal 'method', o.bare_ghost
+  assert_true o.asked
+  assert_nil o.bare_none
+  assert_equal 'method', o.bare_args
+
+  # a `respond_to?` the object defines is what gets asked, on the same terms
+  o = DefinedBareCallAnswers.new
+  assert_equal 'method', o.bare_answered
+  assert_true o.asked
+  assert_nil o.bare_priv
+  assert_nil o.bare_ghost
+
+  # a call with a receiver written is answered on the terms of that call
+  assert_nil defined?(o.answered)
+  assert_nil defined?(o.priv)
+
+  # a method standing for a feature the build does not have is not there
+  assert_nil DefinedBareCallGone.new.bare_gone
+  assert_nil defined?(TestNotImplement.gone)
 end
 
 assert('defined? answers nil where evaluating a receiver raises') do
@@ -2016,6 +2117,44 @@ assert('defined? on control flow, jumps and definitions') do
   assert_false Object.const_defined?(:DefinedNeverClass)
   assert_false Object.const_defined?(:DefinedNeverModule)
   assert_equal 'expression', defined?(class << self; end)
+
+  # a rescue modifier, a named-capture match, and the statements that only a
+  # bare begin can hold in an operand
+  assert_equal 'expression', defined?(begin; no_such_method_at_all rescue 1; end)
+  assert_equal 'expression', defined?(/(?<defined_never_bound>.)/ =~ 'x')
+  assert_nil defined_never_bound
+  assert_equal 'expression', defined?(begin; alias defined_never_alias defined_never_defined; end)
+  assert_false respond_to?(:defined_never_alias, true)
+  assert_equal 'expression', defined?(begin; undef assert; end)
+  assert_equal 'expression', defined?(begin; END { }; end)
+end
+
+assert('defined? answers with a frozen string') do
+  lv = 1
+  assert_true defined?(1).frozen?
+  assert_true defined?(nil).frozen?
+  assert_true defined?(lv).frozen?
+  assert_true defined?(lv = 2).frozen?
+  assert_true defined?(Object).frozen?
+  assert_true defined?(assert).frozen?
+  assert_true defined?(1.to_s).frozen?
+  assert_true defined?(Object::String).frozen?
+  assert_raise(FrozenError) { defined?(self).upcase! }
+end
+
+assert('defined? on a back reference reads it') do
+  # `$~` holds nothing here, so every name that reads from it is nil
+  assert_nil defined?($&)
+  assert_nil defined?($`)
+  assert_nil defined?($1)
+  assert_nil defined?($1.to_s)
+  assert_nil defined?(assert($1))
+end
+
+assert('defined? names it a local variable') do
+  assert_equal ['local-variable'], [1].map { defined?(it) }
+  assert_equal ['method'], [1].map { defined?(it.to_s) }
+  assert_equal [nil], [1].map { defined?(it.no_such_method_at_all) }
 end
 
 assert('defined? sees through parentheses around one expression') do
