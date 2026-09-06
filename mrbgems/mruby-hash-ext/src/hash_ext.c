@@ -333,6 +333,30 @@ hash_key(mrb_state *mrb, mrb_value hash)
 
 /*
  *  call-seq:
+ *     hsh.__value_eq(key, value) -> true, false or :send
+ *
+ *  Internal method: whether `value` is equal to what `hsh` holds under `key`,
+ *  with `value` as the receiver of `==`, answered as `mrb_equal_in_c()`
+ *  answers it, and `false` when `hsh` has no such key. `Hash#<` and its three
+ *  siblings compare each pair through it, so a value is taken for equal to
+ *  itself before its `==` is asked, as CRuby's `rb_equal()` takes it, and a
+ *  `==` written in Ruby is sent by the caller in the VM it is already in.
+ */
+static mrb_value
+hash_value_eq(mrb_state *mrb, mrb_value hash)
+{
+  mrb_value key, val;
+
+  mrb_get_args(mrb, "oo", &key, &val);
+  mrb_value v = mrb_hash_fetch(mrb, hash, key, mrb_undef_value());
+  if (mrb_undef_p(v)) return mrb_false_value();
+  int r = mrb_equal_in_c(mrb, val, v);
+  if (r < 0) return mrb_symbol_value(MRB_SYM(send));
+  return mrb_bool_value(r);
+}
+
+/*
+ *  call-seq:
  *     hsh.__merge(*others) -> hsh
  *
  *  Merges multiple hashes into hsh. This is an internal method
@@ -376,6 +400,7 @@ static const mrb_mt_entry hash_ext_rom_entries[] = {
   MRB_MT_ENTRY(hash_except,    MRB_SYM(except), MRB_ARGS_ANY()),
   MRB_MT_ENTRY(hash_key,       MRB_SYM(key), MRB_ARGS_REQ(1)),
   MRB_MT_ENTRY(hash_merge,     MRB_SYM(__merge), MRB_ARGS_ANY()),
+  MRB_MT_ENTRY(hash_value_eq,  MRB_SYM(__value_eq), MRB_ARGS_REQ(2)),
 };
 
 void

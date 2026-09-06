@@ -555,6 +555,7 @@ assert('Float comparison redefined on Float itself reaches the redefinition') do
     ge = a >= b
     int_arg = a < 2
     int_recv = 2 < a
+    index = [a, b].index(b)    # `mrb_equal()` asks the redefinition
   ensure
     Float.class_eval do
       alias_method :==, :__eq_before_test
@@ -569,6 +570,7 @@ assert('Float comparison redefined on Float itself reaches the redefinition') do
     end
   end
   assert_equal [:eq, 7.5, 2.0], eq
+  assert_equal 0, index
   assert_equal [:eq, 7.5, 7.5], same
   assert_equal [:lt, 7.5, 2.0], lt
   assert_equal [:le, 7.5, 2.0], le

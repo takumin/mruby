@@ -378,13 +378,48 @@ assert('Enumerable#count - an argument decides over a block') do
   assert_equal 1, (1..4).count(2) {|x| true }
   assert_equal 1, ({a: 1, b: 2}).count([:a, 1]) {|x| true }
 
-  # an element is taken for equal to itself, `==` reaching it through OP_EQ
+  # an element is taken for equal to itself, as `rb_equal()` takes it
   never = Class.new { def ==(other); false; end }.new
   one = Class.new do
     include Enumerable
     define_method(:each) {|&b| b.call(never) }
   end.new
   assert_equal 1, one.count(never)
+end
+
+assert('Enumerable#count and #find_index take an element for equal to itself') do
+  # CRuby compares an element with `rb_equal()`, which answers for an object
+  # and itself before it asks `==`, so a `==` that denies its own receiver does
+  # not hide it, and a `==` that accepts anything is still asked about another
+  # object. `Array#count` walks in C and compares the same way; the walk made
+  # in Ruby compares through `Array#__svalue_eq`, which answers what
+  # `mrb_equal()` answers in C and hands a `==` written in Ruby back.
+  never = Class.new { def ==(other); false; end }.new
+  always = Class.new { def ==(other); true; end }.new
+  e = Class.new do
+    include Enumerable
+    define_method(:each) {|&b| b.call(never); b.call(always) }
+  end.new
+  assert_equal 2, e.count(never)        # itself, and `always` accepts it too
+  assert_equal 1, e.count(always)
+  assert_equal 1, e.count(Object.new)
+  assert_equal 0, e.find_index(never)
+  assert_equal 1, e.find_index(always)
+  assert_equal 1, e.find_index(Object.new)
+  assert_nil [never].find_index(Object.new)
+end
+
+assert('Enumerable#count sends a `==` written in Ruby in the VM it runs in') do
+  # `Array#__svalue_eq` answers `:send` for such a `==` instead of calling it
+  # from C, so a `Fiber.yield` inside it has no C frame to cross, as in CRuby.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); true; end }.new
+  e = Class.new do
+    include Enumerable
+    define_method(:each) {|&b| b.call(yielder) }
+  end.new
+  f = Fiber.new { e.count(Object.new) }
+  assert_equal :asked, f.resume
+  assert_equal 1, f.resume
 end
 
 assert("Array#count with a NaN") do

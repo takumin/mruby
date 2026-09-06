@@ -8,6 +8,7 @@
 #include <mruby/class.h>
 #include <mruby/numeric.h>
 #include <mruby/string.h>
+#include <mruby/proc.h>
 #include <mruby/class.h>
 #include <mruby/internal.h>
 #include <string.h>
@@ -71,43 +72,65 @@ mrb_obj_equal(mrb_state *mrb, mrb_value v1, mrb_value v2)
 }
 
 /*
- * Checks for equality between `obj1` and `obj2`.
+ * What `mrb_equal()` answers without entering the VM: TRUE or FALSE once the
+ * pair is answered here or by a `==` written in C, and -1 when the `==` of
+ * `obj1` is written in Ruby, which only the VM can run. A C method that the
+ * VM called hands such a pair back to Ruby, which sends `==` in the VM it is
+ * already in rather than nesting one, as `Array#__svalue_eq` does.
  *
- * It first uses `mrb_obj_eq` for an identity check. If that fails,
- * it handles cases like mixed integer/float comparisons.
- * If `MRB_USE_BIGINT` is defined, it also considers comparisons
- * involving BigInts against Integers, other BigInts, or Floats.
- * Finally, if none of the above apply, it attempts to call the
- * `==` operator (MRB_OPSYM(eq)) on `obj1` with `obj2` as an argument,
- * unless `obj1`'s `==` method is the default `mrb_obj_equal_m`.
+ * An object is equal to itself before `==` is asked, as `rb_equal()` takes
+ * it in CRuby. A pair of Integers or of Symbols is answered from the values
+ * while the builtin `==` of the class stands, which `mrb->bop_redefined`
+ * records as it does for `OP_EQ`; a mixed Integer and Float pair, and a
+ * BigInt against a number, are compared as numbers; and an `obj1` whose `==`
+ * is the default `mrb_obj_equal_m` is unequal to whatever it is not identical
+ * to.
+ */
+int
+mrb_equal_in_c(mrb_state *mrb, mrb_value obj1, mrb_value obj2)
+{
+  if (mrb_obj_eq(mrb, obj1, obj2)) return TRUE;
+  if (mrb_integer_p(obj1) && mrb_integer_p(obj2)) {
+    if (!(mrb->bop_redefined & MRB_BOP_INTEGER(MRB_BOP_EQ))) return FALSE;
+  }
+#ifndef MRB_NO_FLOAT
+  /* value mixing with integer and float */
+  else if (mrb_integer_p(obj1) && mrb_float_p(obj2)) {
+    return mrb_int_float_cmp(mrb_integer(obj1), mrb_float(obj2)) == 0;
+  }
+  else if (mrb_float_p(obj1) && mrb_integer_p(obj2)) {
+    return mrb_int_float_cmp(mrb_integer(obj2), mrb_float(obj1)) == 0;
+  }
+#endif
+  else if (mrb_symbol_p(obj1) && mrb_symbol_p(obj2)) {
+    if (!(mrb->bop_redefined & MRB_BOP_SYMBOL_EQ)) return FALSE;
+  }
+#ifdef MRB_USE_BIGINT
+  else if (mrb_bigint_p(obj1) &&
+      (mrb_integer_p(obj2) || mrb_bigint_p(obj2) || mrb_float_p(obj2))) {
+    return mrb_bint_cmp(mrb, obj1, obj2) == 0;
+  }
+#endif
+  struct RClass *c = mrb_class(mrb, obj1);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_OPSYM(eq));
+  if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m)) return -1;
+  if (MRB_METHOD_CFUNC(m) == mrb_obj_equal_m) return FALSE;
+  mrb_value result = mrb_funcall_argv(mrb, obj1, MRB_OPSYM(eq), 1, &obj2);
+  return mrb_test(result);
+}
+
+/*
+ * Checks for equality between `obj1` and `obj2` as `rb_equal()` does in
+ * CRuby: what `mrb_equal_in_c()` answers, and otherwise the answer of the
+ * `==` written in Ruby, called from here.
  */
 MRB_API mrb_bool
 mrb_equal(mrb_state *mrb, mrb_value obj1, mrb_value obj2)
 {
-  if (mrb_obj_eq(mrb, obj1, obj2)) return TRUE;
-#ifndef MRB_NO_FLOAT
-  /* value mixing with integer and float */
-  else if (mrb_integer_p(obj1) && mrb_float_p(obj2)) {
-    if (mrb_int_float_cmp(mrb_integer(obj1), mrb_float(obj2)) == 0)
-      return TRUE;
-  }
-  else if (mrb_float_p(obj1) && mrb_integer_p(obj2)) {
-    if (mrb_int_float_cmp(mrb_integer(obj2), mrb_float(obj1)) == 0)
-      return TRUE;
-  }
-#endif
-#ifdef MRB_USE_BIGINT
-  else if (mrb_bigint_p(obj1) &&
-      (mrb_integer_p(obj2) || mrb_bigint_p(obj2) || mrb_float_p(obj2))) {
-    if (mrb_bint_cmp(mrb, obj1, obj2) == 0)
-      return TRUE;
-  }
-#endif
-  else if (!mrb_func_basic_p(mrb, obj1, MRB_OPSYM(eq), mrb_obj_equal_m)) {
-    mrb_value result = mrb_funcall_argv(mrb, obj1, MRB_OPSYM(eq), 1, &obj2);
-    if (mrb_test(result)) return TRUE;
-  }
-  return FALSE;
+  int r = mrb_equal_in_c(mrb, obj1, obj2);
+  if (r >= 0) return (mrb_bool)r;
+  mrb_value result = mrb_funcall_argv(mrb, obj1, MRB_OPSYM(eq), 1, &obj2);
+  return mrb_test(result);
 }
 
 /*

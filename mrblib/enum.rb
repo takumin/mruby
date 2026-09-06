@@ -166,7 +166,10 @@ module Enumerable
   # ISO 15.3.2.2.10
   def include?(obj)
     self.each {|*val|
-      return true if val.__svalue == obj
+      if r = val.__svalue_eq(obj)
+        r = val.__svalue == obj if :send == r
+        return true if r
+      end
     }
     false
   end

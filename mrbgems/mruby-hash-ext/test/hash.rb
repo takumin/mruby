@@ -217,6 +217,37 @@ assert('Hash#<') do
   assert_false(h2 < h2)
 end
 
+assert('Hash#< and its siblings take a value for equal to itself') do
+  # CRuby compares the two values with `rb_equal()`, the subset's value as the
+  # receiver, which answers for an object and itself before it asks `==`. The
+  # four operators compare each pair through `Hash#__value_eq`, which answers
+  # what `mrb_equal()` answers in C and hands a `==` written in Ruby back.
+  never = Class.new { def ==(other); false; end }.new
+  always = Class.new { def ==(other); true; end }.new
+  h1 = {a: never}
+  h2 = {a: never, b: always}
+
+  assert_true(h1 < h2)
+  assert_true(h1 <= h2)
+  assert_true(h2 > h1)
+  assert_true(h2 >= h1)
+  assert_true(h1 <= h1)
+  assert_true(h1 >= h1)
+  assert_false(h1 <= {a: Object.new})
+  assert_true({a: always} <= {a: Object.new})
+  assert_false({a: Object.new} <= {a: always})
+  assert_false({a: never} <= {b: never})
+end
+
+assert('Hash#<= sends a `==` written in Ruby in the VM it runs in') do
+  # `Hash#__value_eq` answers `:send` for such a `==` instead of calling it
+  # from C, so a `Fiber.yield` inside it has no C frame to cross, as in CRuby.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); true; end }.new
+  f = Fiber.new { {a: yielder} <= {a: Object.new} }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+end
+
 assert('Hash#<=') do
   h1 = {a:1, b:2}
   h2 = {a:1, b:2, c:3}

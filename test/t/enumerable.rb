@@ -80,6 +80,25 @@ assert('Enumerable#include?', '15.3.2.2.10') do
   assert_false [1,2,3,4,5,6,7,8,9].include?(0)
 end
 
+assert('Enumerable#include? takes an element for equal to itself') do
+  # CRuby compares an element with `rb_equal()`, which answers for an object
+  # and itself before it asks `==`; the walk made in Ruby compares through
+  # `Array#__svalue_eq`, which answers what `mrb_equal()` answers in C and
+  # hands a `==` written in Ruby back to be sent here.
+  never = Class.new { def ==(other); false; end }.new
+  always = Class.new { def ==(other); true; end }.new
+  e = Class.new do
+    include Enumerable
+    define_method(:each) {|&b| b.call(never); b.call(always) }
+  end.new
+  assert_true e.include?(never)
+  assert_true e.include?(Object.new)
+  assert_false Class.new {
+    include Enumerable
+    define_method(:each) {|&b| b.call(never) }
+  }.new.include?(Object.new)
+end
+
 assert('Enumerable#inject', '15.3.2.2.11') do
   assert_equal 21, [1,2,3,4,5,6].inject() {|s, n| s + n}
   assert_equal 22, [1,2,3,4,5,6].inject(1) {|s, n| s + n}

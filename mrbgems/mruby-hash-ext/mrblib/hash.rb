@@ -233,7 +233,8 @@ class Hash
   def <(hash)
     raise TypeError, "can't convert #{hash.class} to Hash" unless Hash === hash
     size < hash.size and all? {|key, val|
-      hash.key?(key) and hash[key] == val
+      r = hash.__value_eq(key, val)
+      :send == r ? val == hash[key] : r
     }
   end
 
@@ -253,7 +254,8 @@ class Hash
   def <=(hash)
     raise TypeError, "can't convert #{hash.class} to Hash" unless Hash === hash
     size <= hash.size and all? {|key, val|
-      hash.key?(key) and hash[key] == val
+      r = hash.__value_eq(key, val)
+      :send == r ? val == hash[key] : r
     }
   end
 
@@ -273,7 +275,8 @@ class Hash
   def >(hash)
     raise TypeError, "can't convert #{hash.class} to Hash" unless Hash === hash
     size > hash.size and hash.all? {|key, val|
-      key?(key) and self[key] == val
+      r = __value_eq(key, val)
+      :send == r ? val == self[key] : r
     }
   end
 
@@ -293,7 +296,8 @@ class Hash
   def >=(hash)
     raise TypeError, "can't convert #{hash.class} to Hash" unless Hash === hash
     size >= hash.size and hash.all? {|key, val|
-      key?(key) and self[key] == val
+      r = __value_eq(key, val)
+      :send == r ? val == self[key] : r
     }
   end
 

@@ -249,7 +249,10 @@ module Enumerable
       end
     else
       self.each do |*val|
-        count += 1 if val.__svalue == v
+        if r = val.__svalue_eq(v)
+          r = val.__svalue == v if :send == r
+          count += 1 if r
+        end
       end
     end
     count
@@ -752,7 +755,10 @@ module Enumerable
       end
     else
       self.each do |*e|
-        return idx if e.__svalue == val
+        if r = e.__svalue_eq(val)
+          r = e.__svalue == val if :send == r
+          return idx if r
+        end
         idx += 1
       end
     end
