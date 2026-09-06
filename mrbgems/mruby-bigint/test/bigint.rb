@@ -546,6 +546,27 @@ assert('Bigint int64 conversion refuses what int64_t cannot hold') do
   assert_raise(RangeError) { BigintTest.int64_roundtrip(-(10 ** 25)) }
 end
 
+assert('Bigint uint64 conversion covers the whole unsigned 64-bit range') do
+  uint64_max = 18446744073709551615
+
+  assert_equal 0, BigintTest.uint64_roundtrip(0)
+  assert_equal 1, BigintTest.uint64_roundtrip(1)
+  assert_equal uint64_max - 1, BigintTest.uint64_roundtrip(uint64_max - 1)
+  assert_equal uint64_max, BigintTest.uint64_roundtrip(uint64_max)
+
+  # The bit int64_t spends on the sign, which the signed side refuses.
+  assert_equal 9223372036854775808, BigintTest.uint64_roundtrip(9223372036854775808)
+end
+
+assert('Bigint uint64 conversion refuses what uint64_t cannot hold') do
+  assert_raise(RangeError) { BigintTest.uint64_roundtrip(18446744073709551616) }
+  assert_raise(RangeError) { BigintTest.uint64_roundtrip(10 ** 25) }
+
+  # Negative at either width: one that fits mrb_int and one that does not.
+  assert_raise(RangeError) { BigintTest.uint64_roundtrip(-1) }
+  assert_raise(RangeError) { BigintTest.uint64_roundtrip(-(10 ** 25)) }
+end
+
 assert('mrb_integer_to_bytes and mrb_integer_from_bytes') do
   # Zero needs no bytes, and its sign is neither of the other two.
   assert_equal [0, []], BigintTest.to_bytes(0)
