@@ -13,6 +13,7 @@
 mrb_bool mrb_binding_p(mrb_state *mrb, mrb_value binding);
 const struct RProc * mrb_binding_extract_proc(mrb_state *mrb, mrb_value binding);
 struct REnv * mrb_binding_extract_env(mrb_state *mrb, mrb_value binding);
+mrb_value mrb_binding_new(mrb_state *mrb, const struct RProc *proc, mrb_value recv, struct REnv *env);
 
 static struct RProc*
 create_proc_from_string(mrb_state *mrb, const char *s, mrb_int len, mrb_value binding, const char *file, mrb_int line)
@@ -333,7 +334,21 @@ object_eval(mrb_state *mrb, mrb_value self, mrb_bool class_eval)
   mrb_get_args(mrb, "s|zi", &s, &len, &file, &line);
 
   struct RClass *c = class_eval ? mrb_class_ptr(self) : mrb_singleton_class_ptr(mrb, self);
-  struct RProc *proc = create_proc_from_string(mrb, s, len, mrb_nil_value(), file, line);
+  /* The string runs in its own scope with `c` as its cref, so the caller's
+     locals are reached through a binding of the caller's frame, the way
+     Kernel#eval with an explicit binding does. Sharing the caller's env
+     directly would put `c` into that env and move every later `def` in
+     the caller's frame onto `c`. */
+  struct REnv *env;
+  const struct RProc *caller = mrb_proc_get_caller(mrb, &env);
+  mrb_value binding = mrb_nil_value();
+  if (env) {
+    binding = mrb_binding_new(mrb, caller, self, env);
+    /* The binding's own env starts with no method name; keep the caller's
+       so `__method__` and `super` inside the string see the caller. */
+    mrb_binding_extract_env(mrb, binding)->mid = env->mid;
+  }
+  struct RProc *proc = create_proc_from_string(mrb, s, len, binding, file, line);
   MRB_PROC_SET_TARGET_CLASS(proc, c);
   mrb_assert(!MRB_PROC_CFUNC_P(proc));
   mrb_vm_ci_target_class_set(mrb->c->ci, c);
