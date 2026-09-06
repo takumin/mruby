@@ -606,3 +606,73 @@ assert('Integer comparison redefined on Integer itself reaches the redefinition'
   assert_false a < b
   assert_true a >= b
 end
+
+assert('Integer operators on two literals reach a redefinition') do
+  # The compiler used to compute `1 + 2`, `1 << 2` and their kin on two
+  # Integer literals while compiling, as well as `~1` and `i = 7; i += 1`, so
+  # no opcode and no send were left for a redefined operator to reach; CRuby
+  # computes them when they run. A literal keeps absorbing its sign, `-1`
+  # being a literal in CRuby as well.
+  Integer.class_eval do
+    alias_method :__add_before_test, :+
+    alias_method :__sub_before_test, :-
+    alias_method :__mul_before_test, :*
+    alias_method :__div_before_test, :/
+    alias_method :__lshift_before_test, :<<
+    alias_method :__rshift_before_test, :>>
+    alias_method :__mod_before_test, :%
+    alias_method :__and_before_test, :&
+    alias_method :__or_before_test, :|
+    alias_method :__xor_before_test, :^
+    alias_method :__inv_before_test, :~
+    def +(other) [:add, self, other] end
+    def -(other) [:sub, self, other] end
+    def *(other) [:mul, self, other] end
+    def /(other) [:div, self, other] end
+    def <<(other) [:lshift, self, other] end
+    def >>(other) [:rshift, self, other] end
+    def %(other) [:mod, self, other] end
+    def &(other) [:and, self, other] end
+    def |(other) [:or, self, other] end
+    def ^(other) [:xor, self, other] end
+    def ~() [:inv, self] end
+  end
+  begin
+    got = [1 + 2, 5 - 3, 5 * 3, 6 / 3, 1 << 2, 8 >> 1, 7 % 3, 6 & 3, 6 | 3, 6 ^ 3, ~1]
+    i = 7
+    i += 1
+    incremented = i
+    negative = -1
+  ensure
+    Integer.class_eval do
+      alias_method :+, :__add_before_test
+      alias_method :-, :__sub_before_test
+      alias_method :*, :__mul_before_test
+      alias_method :/, :__div_before_test
+      alias_method :<<, :__lshift_before_test
+      alias_method :>>, :__rshift_before_test
+      alias_method :%, :__mod_before_test
+      alias_method :&, :__and_before_test
+      alias_method :|, :__or_before_test
+      alias_method :^, :__xor_before_test
+      alias_method :~, :__inv_before_test
+      if respond_to?(:remove_method, true)
+        remove_method :__add_before_test, :__sub_before_test, :__mul_before_test,
+                      :__div_before_test, :__lshift_before_test, :__rshift_before_test,
+                      :__mod_before_test, :__and_before_test, :__or_before_test,
+                      :__xor_before_test, :__inv_before_test
+      end
+    end
+  end
+  assert_equal [[:add, 1, 2], [:sub, 5, 3], [:mul, 5, 3], [:div, 6, 3],
+                [:lshift, 1, 2], [:rshift, 8, 1], [:mod, 7, 3],
+                [:and, 6, 3], [:or, 6, 3], [:xor, 6, 3], [:inv, 1]], got
+  assert_equal [:add, 7, 1], incremented
+  assert_equal(-1, negative)
+  assert_equal 3, 1 + 2
+  assert_equal 4, 1 << 2
+  assert_equal(-2, ~1)
+  i = 7
+  i += 1
+  assert_equal 8, i
+end
