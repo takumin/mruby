@@ -3238,7 +3238,7 @@ codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target, uint32_t *f
         /* **nil or empty {}: exact match - verify hash.size == num_keys */
         int chk = cursp();
         gen_move(s, chk, hash_reg, 0);
-        push(); pop(); /* touch block slot */
+        push_n(2); pop_n(2); /* space for receiver and a block */
         genop_3(s, OP_SEND, chk, new_sym(s, MRC_SYM_1(size)), 0);
         gen_int(s, chk + 1, num_keys);
         genop_1(s, OP_EQ, chk);
