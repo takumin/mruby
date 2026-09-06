@@ -1349,6 +1349,29 @@ mrb_const_get(mrb_state *mrb, mrb_value mod, mrb_sym sym)
   return const_get(mrb, mrb_class_ptr(mod), sym, FALSE);
 }
 
+static struct RClass*
+proc_class(mrb_state *mrb, const struct RProc *proc)
+{
+  struct RClass *c = MRB_PROC_TARGET_CLASS(proc);
+  return c ? c : mrb->object_class;
+}
+
+/* Whether a proc on the `upper` chain is a lexical scope of its own for
+   the constant walk, the way a cref is in CRuby. A class or method body
+   is one. A block is not: it runs in the class scope of the proc it was
+   written in, so its class is the class around it, and it adds nothing.
+   A proc given a class of its own, an eval string under a receiver,
+   is a scope, as its cref is in CRuby. The caller leaves out the proc
+   with no `upper`, the top level: it is not a scope of its own, and
+   its class is reached through the ancestors after the lexical scopes,
+   so that a superclass wins over a top-level constant. */
+static mrb_bool
+lexical_scope_p(mrb_state *mrb, const struct RProc *proc)
+{
+  if (MRB_PROC_SCOPE_P(proc)) return TRUE;
+  return proc_class(mrb, proc) != proc_class(mrb, proc->upper);
+}
+
 mrb_value
 mrb_vm_const_get(mrb_state *mrb, mrb_sym sym)
 {
@@ -1360,9 +1383,9 @@ mrb_vm_const_get(mrb_state *mrb, mrb_sym sym)
   if (iv_get(mrb, class_iv_ptr(c), sym, &v)) {
     return v;
   }
-  for (proc = proc->upper; proc; proc = proc->upper) {
-    c2 = MRB_PROC_TARGET_CLASS(proc);
-    if (!c2) c2 = mrb->object_class;
+  for (proc = proc->upper; proc && proc->upper; proc = proc->upper) {
+    if (!lexical_scope_p(mrb, proc)) continue;
+    c2 = proc_class(mrb, proc);
     if (iv_get(mrb, class_iv_ptr(c2), sym, &v)) {
       return v;
     }
@@ -1397,9 +1420,9 @@ mrb_vm_const_get_noraise(mrb_state *mrb, const struct RProc *proc, mrb_sym sym)
 
   if (!c) c = mrb->object_class;
   if (iv_get(mrb, class_iv_ptr(c), sym, &v)) return v;
-  for (proc = proc->upper; proc; proc = proc->upper) {
-    c2 = MRB_PROC_TARGET_CLASS(proc);
-    if (!c2) c2 = mrb->object_class;
+  for (proc = proc->upper; proc && proc->upper; proc = proc->upper) {
+    if (!lexical_scope_p(mrb, proc)) continue;
+    c2 = proc_class(mrb, proc);
     if (iv_get(mrb, class_iv_ptr(c2), sym, &v)) return v;
   }
   if (c->tt == MRB_TT_SCLASS) {
