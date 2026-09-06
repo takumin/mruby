@@ -1157,3 +1157,53 @@ assert('constant lookup: ancestors before the top level') do
   # `class Object` is a lexical scope of its own; only the top level is not
   assert_equal :top, Test4ConstOrderLexical.in_body
 end
+
+assert('constant lookup: def self.name looks up from the class body') do
+  # `def self.name` runs with the singleton class as its target, but it does
+  # not push the singleton as a cref: the name is looked up from the class
+  # body around it, as CRuby does. `class << self` does push one. Both leave
+  # the same target class on the proc; what differs is which opened the run of
+  # procs sharing it, and cref_class in variable.c reads that off the topmost.
+  Test4DefSelfConst = :top
+  class Test4DefSelfConstBase
+    Test4DefSelfConst = :base
+  end
+  module Test4DefSelfConstMix
+    Test4DefSelfConst = :mixin
+  end
+  class Test4DefSelfConstSub < Test4DefSelfConstBase
+    extend Test4DefSelfConstMix
+    class << self
+      Test4DefSelfOnly = :singleton
+      def in_sclass; Test4DefSelfConst; end
+      def in_sclass_only; Test4DefSelfOnly; end
+      def self.nested; Test4DefSelfOnly; end
+    end
+    def self.plain; Test4DefSelfConst; end
+    def self.only; Test4DefSelfOnly; end
+    def self.in_block; [1].map { Test4DefSelfConst }.first; end
+    def self.defined_plain; defined?(Test4DefSelfConst); end
+    def self.defined_only; defined?(Test4DefSelfOnly); end
+    class << self
+      # `def self.name` written inside `class << self` looks up from that
+      # singleton body, where the singleton's own constant is in reach.
+      def nested_in_sclass; Test4DefSelfOnly; end
+    end
+  end
+  s = Test4DefSelfConstSub
+  # the superclass wins over the top level, and the singleton's ancestors are
+  # not on the path
+  assert_equal :base, s.plain
+  assert_equal :base, s.in_block
+  assert_equal 'constant', s.defined_plain
+  # a constant set inside `class << self` is on the singleton, which the
+  # method's cref does not reach
+  assert_raise(NameError) { s.only }
+  assert_nil s.defined_only
+  # `class << self` does open the singleton as a cref: its own constant is
+  # there, and its ancestors, the extended module first, are on the path
+  assert_equal :singleton, s.in_sclass_only
+  assert_equal :mixin, s.in_sclass
+  # `def self.name` inside `class << self` looks up from that singleton body
+  assert_equal :singleton, s.nested_in_sclass
+end
