@@ -102,6 +102,22 @@ assert("Regexp - POSIX brackets combine above ASCII") do
   assert_equal "!", "あ€!".match(/[^€[:alpha:]]/)[0]
 end
 
+assert("Regexp - nested classes each holding a bracket join their types") do
+  skip unless __ENCODING__ == "UTF-8"
+  # Two nested classes each carrying a bracket hold what either bracket
+  # holds, which is what the two brackets written flat hold, so the answer
+  # has to come out the same however it is spelled.
+  nested = Regexp.new("[[[:alpha:]][[:digit:]]]+")
+  flat = Regexp.new("[[:alpha:][:digit:]]+")
+  assert_equal "٣a1", nested.match("-٣a1!")[0]
+  assert_equal "٣a1", flat.match("-٣a1!")[0]
+  assert_equal "あ１", nested.match("あ１€")[0]
+  assert_nil nested =~ "-€!"
+  # one bracket nested beside one written flat, either way round
+  assert_equal "٣a1", Regexp.new("[[:alpha:][[:digit:]]]+").match("-٣a1!")[0]
+  assert_equal "٣a1", Regexp.new("[[[:alpha:]][:digit:]]+").match("-٣a1!")[0]
+end
+
 assert("Regexp - POSIX brackets fold above ASCII under /i") do
   skip unless __ENCODING__ == "UTF-8"
   upper = Regexp.new("[[:upper:]]", Regexp::IGNORECASE)
@@ -226,4 +242,13 @@ assert("Regexp - `&&` puts the brackets either side of it as one question") do
     "this character class intersection is not supported: /[[:alpha:][:digit:]&&[:alpha:][:digit:]]/") do
     Regexp.new("[[:alpha:][:digit:]&&[:alpha:][:digit:]]")
   end
+end
+
+assert("Regexp - `&&` between a bracket and a range through the C1 controls") do
+  skip unless __ENCODING__ == "UTF-8"
+  # A range that starts inside the C1 controls (U+0080 to U+009F) and
+  # reaches past them meets a bracket the way any range does: what is kept
+  # is the members the bracket admits, on both sides of U+009F.
+  assert_equal ["\u{85}"], "\u{85}\u{a0}\u{e9}".scan(/[\u{80}-\u{100}&&[[:cntrl:]]]/)
+  assert_equal ["\u{e9}"], "\u{85}\u{a0}\u{e9}".scan(/[\u{90}-\u{100}&&[[:alpha:]]]/)
 end

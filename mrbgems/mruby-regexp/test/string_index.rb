@@ -850,6 +850,7 @@ assert("String#start_with? with regexp") do
   assert_true "hello".start_with?(/z/, /h/)
   assert_true "hello".start_with?("z", /h/)
   assert_true "hello".start_with?(/h/, "z")
+  assert_true "hello".start_with?(/z/, "he")
   assert_false "hello".start_with?(/z/, "z")
   assert_false "hello".start_with?
 

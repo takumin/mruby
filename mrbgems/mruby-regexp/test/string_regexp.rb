@@ -96,6 +96,11 @@ assert("String#scan with a block that changes the receiver") do
   assert_raise_with_message(RuntimeError, "string modified") { s.scan("l") { s << "z" } }
   s = "ab"
   assert_raise_with_message(RuntimeError, "string modified") { s.scan(/x*/) { s.clear } }
+  # a change made on the last match is refused too, though no search follows
+  # it: the match left behind is where CRuby refuses it, and so here
+  s = "ab"
+  assert_raise_with_message(RuntimeError, "string modified") { s.scan(/$/) { s << "x" } }
+  assert_equal "abx", s
 end
 
 assert("String#gsub - regexp search position is byte-based internally") do
