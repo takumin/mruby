@@ -1,13 +1,30 @@
 STDOUT.sync = STDERR.sync = true unless Rake.application.options.always_multitask
 
-# MRB_GC_STRESS collects on every allocation, so this build's suite is the one
-# that takes real time: 33 to 47 seconds against one second for each of the
-# others, on every runner that executes its own instructions.  Under emulation
-# that ratio is what decides a job's length -- 319 seconds of an armhf job's
-# 597 -- and what it buys there is a GC the other runners already stress.  A
-# runner that says it is emulated is left the four builds whose value is the
-# ABI they compile for.
-if ENV['MRUBY_CI_EMULATED'].to_s.empty?
+# Two switches take builds off a runner, and each says what it is about rather
+# than which runner it was written for.
+#
+# MRUBY_CI_ABI_ONLY: the runner is in the matrix for the ABI it compiles, and
+# what a build covers that reads the same everywhere is covered elsewhere. It
+# drops full-debug and no-bigint. full-debug is the GC under MRB_GC_STRESS, a
+# collector every other runner stresses too; no-bigint is an Integer that ends
+# at mrb_int, which is a property of the define rather than of the machine.
+# What is left is the four builds whose value is the ABI they compile for.
+#
+# MRUBY_CI_EMULATED: the runner does not execute its own instructions, so a
+# suite's running time is what decides the job's length. It drops no-float on
+# top of the above. no-float is not in the ABI_ONLY group because it reaches
+# the integer arms of Time and sleep, and a platform with a clock of its own
+# can reach code no other runner compiles; an emulated Linux shares its clock
+# with the native Linux runners and does not.
+#
+# The two costs are different, which is why the two switches are. Under
+# emulation what costs is running the suites: MRB_GC_STRESS collects on every
+# allocation, and full-debug's suite takes 33 to 47 seconds against one second
+# for each of the others, 319 seconds of an armhf job's 597. On the Windows
+# runners what costs is compiling: the suites there finish in under a minute
+# together while the seven builds take ten, so dropping two of them is 628
+# object files of 2204.
+if ENV['MRUBY_CI_ABI_ONLY'].to_s.empty?
 MRuby::Build.new('full-debug') do |conf|
   conf.toolchain
   conf.enable_debug
@@ -94,12 +111,14 @@ MRuby::Build.new('ascii-ctype') do |conf|
   conf.enable_test
 end
 
-# The two builds below are left off an emulated runner for the accounting at
-# the top of this file, and neither is about an ABI: one takes Float out of
-# the numeric tower, the other stops Integer at mrb_int, so what they cover
-# reads the same wherever it is compiled. On a runner that executes its own
-# instructions the pair costs the second each of their suites takes, which is
-# why the native runners are the ones asked for them.
+# Neither of the two builds below is about an ABI, and each is left off a
+# runner by the switch that names its own cost, for the accounting at the top
+# of this file. This one is off an emulated runner only. Taking Float out of
+# the numeric tower reaches the integer arms of Time and sleep, so a platform
+# holding a clock of its own reaches code compiled nowhere else here, which is
+# why a native runner keeps it however slowly it builds; an emulated Linux
+# holds the same clock as the native Linux runners and keeps nothing they do
+# not already compile.
 if ENV['MRUBY_CI_EMULATED'].to_s.empty?
 MRuby::Build.new('no-float') do |conf|
   conf.toolchain
@@ -124,6 +143,12 @@ MRuby::Build.new('no-float') do |conf|
   conf.enable_test
 end
 
+end
+
+# Where Integer ends is what the define says, not what the machine does, so
+# this is one of the two the ABI_ONLY switch takes off a runner asked only for
+# the ABI it compiles.
+if ENV['MRUBY_CI_ABI_ONLY'].to_s.empty?
 MRuby::Build.new('no-bigint') do |conf|
   conf.toolchain
 

@@ -35,18 +35,24 @@ jobs:
             cxx: arm-linux-gnueabihf-g++
             altname: "armhf-gcc"
             emulated: "1"
+            abi_only: "1"
           # AArch64 LP64 with signed plain `char`.
           - {os: macos-26, cc: clang, cxx: clang++}
           - {os: macos-15, cc: clang, cxx: clang++}
           # x86-64 LLP64 with signed plain `char`.
-          - {os: windows-2025, cc: gcc, cxx: g++, altname: "mingw-gcc"}
-          - {os: windows-2022, cc: gcc, cxx: g++, altname: "mingw-gcc"}
+          # The mingw compiler is what costs here: the suites finish in under
+          # a minute together while the seven builds take ten of the job's
+          # fifteen, so this runner is asked for its ABI and not for what
+          # reads the same everywhere.  See build_config/ci/gcc-clang.rb.
+          - {os: windows-2025, cc: gcc, cxx: g++, altname: "mingw-gcc", abi_only: "1"}
+          - {os: windows-2022, cc: gcc, cxx: g++, altname: "mingw-gcc", abi_only: "1"}
     env:
       MRUBY_CONFIG: ci/gcc-clang
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
       LD: ${{ matrix.cc }}
       MRUBY_CI_EMULATED: ${{ matrix.emulated }}
+      MRUBY_CI_ABI_ONLY: ${{ matrix.abi_only }}
     steps:
       - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
