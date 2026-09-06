@@ -2279,6 +2279,20 @@ prepare_tagged_break(mrb_state *mrb, uint32_t tag, const mrb_callinfo *return_ci
 
 #endif
 
+/* Ask whether an embedder called mrb_vm_interrupt() while this was running.
+   Spelled at a send and at the four jumps rather than at every instruction:
+   a loop and a recursion both pass one of those, so what a program can spend
+   time in is covered, while straight-line code carries neither the branch nor
+   the bytes.  Putting it in NEXT would grow mrb_vm_exec enough to cost the
+   whole VM in instruction cache, which is what mruby-task's own check does. */
+#define CHECK_VM_INTERRUPT(mrb) do { \
+  if (mrb_unlikely((mrb)->vm_interrupt)) { \
+    (mrb)->vm_interrupt = FALSE; \
+    mrb_exc_set(mrb, mrb_exc_new_lit(mrb, E_RUNTIME_ERROR, "interrupted")); \
+    goto L_RAISE; \
+  } \
+} while (0)
+
 #define DECODE_OPERANDS(ops) do { const mrb_code *pc = ci->pc+1; FETCH_ ## ops (); ci->pc = pc; } while (0)
 #define CALL_CODE_HOOKS() do { insn = BYTECODE_DECODER(*ci->pc); CODE_FETCH_HOOK(mrb, irep, ci->pc, regs); } while (0)
 
@@ -3082,7 +3096,13 @@ vm_call_proc(mrb_state *mrb, const struct RProc *p, mrb_int nargs,
  *       when not using switch-based dispatch. It also manages the callinfo
  *       stack (`ci`) for tracking method/block calls.
  */
-MRB_FLATTEN MRB_API mrb_value
+MRB_FLATTEN MRB_API void
+mrb_vm_interrupt(mrb_state *mrb)
+{
+  mrb->vm_interrupt = TRUE;
+}
+
+MRB_API mrb_value
 mrb_vm_exec(mrb_state *mrb, const struct RProc *begin_proc, const mrb_code *iseq)
 {
   /* mrb_assert(MRB_PROC_CFUNC_P(begin_proc)) */
@@ -3426,11 +3446,13 @@ RETRY_TRY_BLOCK:
     }
 
     CASE(OP_JMP, S) {
+      CHECK_VM_INTERRUPT(mrb);
       ci->pc += (int16_t)a;
       JUMP;
     }
     CASE(OP_JMPIF, BS) {
       if (mrb_test(regs[a])) {
+        CHECK_VM_INTERRUPT(mrb);
         ci->pc += (int16_t)b;
         JUMP;
       }
@@ -3438,6 +3460,7 @@ RETRY_TRY_BLOCK:
     }
     CASE(OP_JMPNOT, BS) {
       if (!mrb_test(regs[a])) {
+        CHECK_VM_INTERRUPT(mrb);
         ci->pc += (int16_t)b;
         JUMP;
       }
@@ -3445,6 +3468,7 @@ RETRY_TRY_BLOCK:
     }
     CASE(OP_JMPNIL, BS) {
       if (mrb_nil_p(regs[a])) {
+        CHECK_VM_INTERRUPT(mrb);
         ci->pc += (int16_t)b;
         JUMP;
       }
@@ -3619,6 +3643,9 @@ RETRY_TRY_BLOCK:
     L_SENDB_SYM:
     {
       mrb_method_t m;
+
+      CHECK_VM_INTERRUPT(mrb);
+
       mrb_value recv, blk;
       mrb_int bidx, new_bidx;
 

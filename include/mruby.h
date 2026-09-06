@@ -389,6 +389,15 @@ struct mrb_state {
 
   mrb_bool bootstrapping;
 
+  /* Set from outside a running mrb_vm_exec() to ask it to stop: from a signal
+     handler, or from another thread.  The VM reads it where a program can
+     spend time without returning, which is a send and the four conditional
+     and unconditional jumps, so a loop or a recursion is interrupted while
+     straight-line code costs nothing.  mrb_vm_exec() raises the interrupt as
+     an exception in the running code and clears the flag; a caller sets it
+     with mrb_vm_interrupt() and reads what happened as an ordinary raise. */
+  volatile mrb_bool vm_interrupt;
+
 #ifndef MRB_NO_METHOD_CACHE
   struct mrb_cache_entry cache[MRB_METHOD_CACHE_SIZE];
 #endif
@@ -1497,6 +1506,20 @@ MRB_API mrb_value mrb_top_run(mrb_state *mrb, const struct RProc *proc, mrb_valu
 
 MRB_API mrb_value mrb_vm_run(mrb_state *mrb, const struct RProc *proc, mrb_value self, mrb_int stack_keep);
 MRB_API mrb_value mrb_vm_exec(mrb_state *mrb, const struct RProc *proc, const mrb_code *iseq);
+
+/**
+ * Ask a running mrb_vm_exec() to stop.
+ *
+ * Safe to call from a signal handler or from another thread: it writes one
+ * flag and reads nothing.  The VM notices at its next send or jump, raises
+ * RuntimeError in the code that was running, and clears the flag, so a caller
+ * handles it as it would any other exception.  A VM that is not running when
+ * this is called stops at the start of the next one.
+ *
+ * Nothing is interrupted between the flag being set and the VM reaching a
+ * send or a jump, so a C function that does not return is not stopped by this.
+ */
+MRB_API void mrb_vm_interrupt(mrb_state *mrb);
 /* compatibility macros */
 #define mrb_toplevel_run_keep(m,p,k) mrb_top_run((m),(p),mrb_top_self(m),(k))
 #define mrb_toplevel_run(m,p) mrb_toplevel_run_keep((m),(p),0)
