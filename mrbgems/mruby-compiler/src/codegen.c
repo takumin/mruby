@@ -2464,9 +2464,11 @@ mrc_mruby_numbered_parameter_upvar(mrc_codegen_scope *s, mrc_sym id, int *lv, in
    Prism bundles the RHS as the last positional argument of the call node.
    The whole expression must evaluate to that RHS, not to the setter's
    return value, so the RHS is copied into a reserved slot below the call
-   frame and used as the result while the SEND result is discarded. */
+   frame and used as the result while the SEND result is discarded.  With
+   `recv_ready` the receiver has been evaluated already and sits at
+   cursp()-1. */
 static void
-gen_call_assign(mrc_codegen_scope *s, mrc_node *tree, int val, int safe)
+gen_call_assign(mrc_codegen_scope *s, mrc_node *tree, int val, int safe, int recv_ready)
 {
   CAST(call);
   const mrc_sym sym = cast->name;
@@ -2475,18 +2477,28 @@ gen_call_assign(mrc_codegen_scope *s, mrc_node *tree, int val, int safe)
 
   if (!noop && sym == MRC_OPSYM_2(aset)) opt_op = OP_SETIDX;
 
-  top = cursp();
-  push();                    /* room for retval */
-  callsp = cursp();
-
-  /* receiver (an attribute write always has an explicit receiver; an
-     explicit `self` must be materialized so OP_SETIDX can read it) */
-  if (cast->receiver == NULL) {
-    noself = 1;
+  if (recv_ready) {
+    /* the receiver's slot becomes the room for retval, and the receiver
+       moves up above it */
+    top = cursp()-1;
+    gen_move(s, cursp(), top, 1);
     push();
+    callsp = cursp()-1;
   }
   else {
-    codegen(s, cast->receiver, VAL);
+    top = cursp();
+    push();                    /* room for retval */
+    callsp = cursp();
+
+    /* receiver (an attribute write always has an explicit receiver; an
+       explicit `self` must be materialized so OP_SETIDX can read it) */
+    if (cast->receiver == NULL) {
+      noself = 1;
+      push();
+    }
+    else {
+      codegen(s, cast->receiver, VAL);
+    }
   }
   if (safe) {
     int recv = cursp()-1;
@@ -2550,17 +2562,18 @@ attr_assign_simple_args(pm_call_node_t *cast)
 }
 
 static void
-gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe)
+gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe, int recv_ready)
 {
   CAST(call);
   const mrc_sym sym = cast->name;
 
   if (val && (cast->base.flags & PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE) &&
       attr_assign_simple_args(cast)) {
-    gen_call_assign(s, tree, val, safe);
+    gen_call_assign(s, tree, val, safe, recv_ready);
     return;
   }
-  int skip = 0, n = 0, nk = 0, noop = no_optimize(s), noself = 0, blk = 0, sp_save = cursp();
+  int skip = 0, n = 0, nk = 0, noop = no_optimize(s), noself = 0, blk = 0;
+  int sp_save = recv_ready ? cursp()-1 : cursp();
 
 #if defined(MRC_TARGET_MRUBY)
   if (cast->receiver == NULL && cast->arguments == NULL && cast->block == NULL) {
@@ -2575,7 +2588,10 @@ gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe)
   }
 #endif
 
-  if (cast->receiver == NULL) {
+  if (recv_ready) {
+    /* the receiver has been evaluated already and sits at cursp()-1 */
+  }
+  else if (cast->receiver == NULL) {
     noself = noop = 1;
     push();
   }
@@ -4107,6 +4123,443 @@ gen_pm_integer(mrc_codegen_scope *s, const pm_integer_t *iv)
   }
 }
 
+/* The answer `defined?` gives for one operand, as far as the operand's node
+   type decides it: a literal string, or a runtime helper to ask, or neither,
+   which is the nil answer. */
+struct defined_answer {
+  const char *type;                         /* literal answer, NULL for none */
+  int helper;                               /* helper symbol, 0 for none */
+  pm_constant_id_t arg;                     /* symbol operand, 0 for none */
+  pm_constant_id_t path[DEFINED_PATH_MAX];  /* a constant path, root first */
+  int path_len;                             /* names in `path`, 0 for none */
+  mrc_bool path_toplevel;                   /* the path is rooted at Object */
+  mrc_node *recv;                           /* recv.meth, NULL for none */
+};
+
+/* Parentheses around a single expression are transparent here, so
+   `defined?((x))` answers what `defined?(x)` does; parentheses holding no
+   statement or several are an expression of their own and stay.  The value
+   a pair leaves implicit, as in `{x:}`, is the `x` it stands for. */
+static mrc_node *
+defined_operand(mrc_node *value)
+{
+  for (;;) {
+    if (nint(value) == PM_IMPLICIT_NODE) {
+      value = (mrc_node *)((pm_implicit_node_t *)value)->value;
+    }
+    else if (nint(value) == PM_PARENTHESES_NODE) {
+      mrc_node *body = (mrc_node *)((pm_parentheses_node_t *)value)->body;
+      if (body == NULL || nint(body) != PM_STATEMENTS_NODE) break;
+      pm_node_list_t *stmts = &((pm_statements_node_t *)body)->body;
+      if (stmts->size != 1) break;
+      value = (mrc_node *)stmts->nodes[0];
+    }
+    else {
+      break;
+    }
+  }
+  return value;
+}
+
+static void
+defined_answer_for(mrc_node *value, struct defined_answer *a)
+{
+  memset(a, 0, sizeof(*a));
+  switch (nint(value)) {
+  case PM_INTEGER_NODE: case PM_FLOAT_NODE:
+  case PM_RATIONAL_NODE: case PM_IMAGINARY_NODE:
+  case PM_STRING_NODE: case PM_INTERPOLATED_STRING_NODE:
+  case PM_X_STRING_NODE: case PM_INTERPOLATED_X_STRING_NODE:
+  case PM_SYMBOL_NODE: case PM_INTERPOLATED_SYMBOL_NODE:
+  case PM_REGULAR_EXPRESSION_NODE: case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE:
+  case PM_ARRAY_NODE: case PM_HASH_NODE: case PM_KEYWORD_HASH_NODE:
+  case PM_NIL_NODE: case PM_TRUE_NODE: case PM_FALSE_NODE:
+  case PM_RANGE_NODE: case PM_LAMBDA_NODE: case PM_DEFINED_NODE:
+  case PM_SOURCE_FILE_NODE: case PM_SOURCE_LINE_NODE: case PM_SOURCE_ENCODING_NODE:
+  /* control flow, jumps and definitions: CRuby answers "expression" for
+     every one of these without looking inside them */
+  case PM_AND_NODE: case PM_OR_NODE:
+  case PM_IF_NODE: case PM_UNLESS_NODE:
+  case PM_CASE_NODE: case PM_CASE_MATCH_NODE:
+  case PM_WHILE_NODE: case PM_UNTIL_NODE: case PM_FOR_NODE:
+  case PM_BEGIN_NODE: case PM_PARENTHESES_NODE:
+  case PM_RETURN_NODE: case PM_BREAK_NODE: case PM_NEXT_NODE:
+  case PM_REDO_NODE: case PM_RETRY_NODE:
+  case PM_DEF_NODE: case PM_CLASS_NODE: case PM_MODULE_NODE:
+  case PM_SINGLETON_CLASS_NODE:
+  case PM_MATCH_PREDICATE_NODE: case PM_MATCH_REQUIRED_NODE:
+    a->type = "expression";
+    break;
+  case PM_SELF_NODE:
+    a->type = "self";
+    break;
+  case PM_LOCAL_VARIABLE_READ_NODE:
+    a->type = "local-variable";
+    break;
+  case PM_LOCAL_VARIABLE_WRITE_NODE: case PM_INSTANCE_VARIABLE_WRITE_NODE:
+  case PM_GLOBAL_VARIABLE_WRITE_NODE: case PM_CLASS_VARIABLE_WRITE_NODE:
+  case PM_CONSTANT_WRITE_NODE: case PM_CONSTANT_PATH_WRITE_NODE:
+  case PM_MULTI_WRITE_NODE:
+  case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE:
+  case PM_LOCAL_VARIABLE_OR_WRITE_NODE: case PM_LOCAL_VARIABLE_AND_WRITE_NODE:
+  case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE:
+  case PM_INSTANCE_VARIABLE_OR_WRITE_NODE: case PM_INSTANCE_VARIABLE_AND_WRITE_NODE:
+  case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE:
+  case PM_GLOBAL_VARIABLE_OR_WRITE_NODE: case PM_GLOBAL_VARIABLE_AND_WRITE_NODE:
+  case PM_CLASS_VARIABLE_OPERATOR_WRITE_NODE:
+  case PM_CLASS_VARIABLE_OR_WRITE_NODE: case PM_CLASS_VARIABLE_AND_WRITE_NODE:
+  case PM_CONSTANT_OPERATOR_WRITE_NODE:
+  case PM_CONSTANT_OR_WRITE_NODE: case PM_CONSTANT_AND_WRITE_NODE:
+  case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE:
+  case PM_CONSTANT_PATH_OR_WRITE_NODE: case PM_CONSTANT_PATH_AND_WRITE_NODE:
+  case PM_INDEX_OPERATOR_WRITE_NODE:
+  case PM_INDEX_OR_WRITE_NODE: case PM_INDEX_AND_WRITE_NODE:
+  case PM_CALL_OPERATOR_WRITE_NODE:
+  case PM_CALL_OR_WRITE_NODE: case PM_CALL_AND_WRITE_NODE:
+    a->type = "assignment";
+    break;
+  case PM_INSTANCE_VARIABLE_READ_NODE:
+    a->helper = MRC_SYM_2(defined_ivar_q);
+    a->arg = ((pm_instance_variable_read_node_t *)value)->name;
+    break;
+  case PM_CONSTANT_READ_NODE:
+    a->helper = MRC_SYM_2(defined_const_q);
+    a->arg = ((pm_constant_read_node_t *)value)->name;
+    break;
+  case PM_CONSTANT_PATH_NODE:
+    /* Walk the path to its root, collecting the names leaf first.  The
+       root is either a plain constant, so the first name resolves in the
+       lexical scope, or nothing at all, so `::A` starts at Object.  A
+       root that is any other expression would have to be evaluated, and
+       falls through to nil. */
+    {
+      mrc_node *seg = value;
+      pm_constant_id_t names[DEFINED_PATH_MAX];
+      int n = 0;
+      mrc_bool rooted = FALSE;
+
+      while (nint(seg) == PM_CONSTANT_PATH_NODE && n < DEFINED_PATH_MAX) {
+        names[n++] = ((pm_constant_path_node_t *)seg)->name;
+        seg = (mrc_node *)((pm_constant_path_node_t *)seg)->parent;
+        if (seg == NULL) {      /* ::A, rooted at Object */
+          a->path_toplevel = TRUE;
+          rooted = TRUE;
+          break;
+        }
+      }
+      if (!rooted && seg != NULL && nint(seg) == PM_CONSTANT_READ_NODE &&
+          n < DEFINED_PATH_MAX) {
+        names[n++] = ((pm_constant_read_node_t *)seg)->name;
+        rooted = TRUE;
+      }
+      if (rooted) {
+        a->helper = MRC_SYM_2(defined_const_path_q);
+        a->path_len = n;
+        for (int i = 0; i < n; i++) a->path[i] = names[n - 1 - i];
+      }
+    }
+    break;
+  case PM_GLOBAL_VARIABLE_READ_NODE:
+    a->helper = MRC_SYM_2(defined_gvar_q);
+    a->arg = ((pm_global_variable_read_node_t *)value)->name;
+    break;
+  case PM_CLASS_VARIABLE_READ_NODE:
+    a->helper = MRC_SYM_2(defined_cvar_q);
+    a->arg = ((pm_class_variable_read_node_t *)value)->name;
+    break;
+  case PM_YIELD_NODE:
+    a->helper = MRC_SYM_2(defined_yield_q);
+    break;
+  case PM_SUPER_NODE: case PM_FORWARDING_SUPER_NODE:
+    a->helper = MRC_SYM_2(defined_super_q);
+    break;
+  case PM_CALL_NODE:
+  {
+    pm_call_node_t *call = (pm_call_node_t *)value;
+    /* CRuby answers "expression" for a call carrying a literal block,
+       without asking whether the method is there; a block passed as
+       `&arg` keeps the call an ordinary one */
+    if (call->block != NULL && nint(call->block) == PM_BLOCK_NODE) {
+      a->type = "expression";
+    }
+    /* a bare method call on self, which has no operand to evaluate */
+    else if (call->receiver == NULL) {
+      a->helper = MRC_SYM_2(defined_method_q);
+      a->arg = call->name;
+    }
+    /* a call through a receiver: the receiver has to be defined, and then
+       evaluated, before the method can be looked for on it */
+    else {
+      a->helper = MRC_SYM_2(defined_method_on_q);
+      a->arg = call->name;
+      a->recv = (mrc_node *)call->receiver;
+    }
+    break;
+  }
+  default:
+    break;
+  }
+}
+
+static void codegen_defined(mrc_codegen_scope *s, mrc_node *value, int val);
+
+/* Emit the answer an operand's node type alone decides: a literal string, or
+   the helper call that resolves it at run time. */
+static void
+gen_defined_answer(mrc_codegen_scope *s, struct defined_answer *a)
+{
+  if (a->type) {
+    genop_2(s, OP_STRING, cursp(), new_lit_cstr(s, a->type));
+    push();
+    return;
+  }
+  genop_1(s, OP_LOADSELF, cursp());   /* receiver slot for the SSEND */
+  if (a->path_len > 0) {       /* A::B::C: where to start, then the names */
+    push();
+    if (a->path_toplevel) genop_1(s, OP_OCLASS, cursp());
+    else genop_1(s, OP_LOADNIL, cursp());
+    push();
+    for (int i = 0; i < a->path_len; i++) {
+      genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a->path[i]));
+      push();
+    }
+    pop_n(a->path_len);
+    genop_2(s, OP_ARRAY, cursp(), a->path_len);
+    push(); push();         /* reserve args + block slots (nregs) */
+    pop_n(4);
+    genop_3(s, OP_SSEND, cursp(), new_sym(s, a->helper), 2);
+  }
+  else if (a->arg == 0) {      /* yield/super: no symbol operand */
+    push(); push();         /* reserve arg + block slots (nregs) */
+    pop_n(2);
+    genop_2(s, OP_SSEND0, cursp(), new_sym(s, a->helper));
+  }
+  else {
+    push();
+    genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a->arg));
+    push(); push();         /* reserve value + block slots (nregs) */
+    pop_n(3);
+    genop_3(s, OP_SSEND, cursp(), new_sym(s, a->helper), 1);
+  }
+  push();
+}
+
+static void gen_defined_parts(mrc_codegen_scope *s, mrc_node *value, uint32_t *nil_jmps);
+static void gen_defined_part(mrc_codegen_scope *s, mrc_node *part, uint32_t *nil_jmps);
+
+/* Ask `__defined_method_on?` about the receiver evaluated at cursp()-1.
+   With `keep` the receiver stays where it is and the answer lands above it,
+   for a link of a chain whose value the next link is called on; without it
+   the answer lands in the receiver's slot. */
+static void
+gen_defined_ask_method_on(mrc_codegen_scope *s, struct defined_answer *a, int keep)
+{
+  int recv = cursp() - 1;
+
+  if (keep) {
+    genop_1(s, OP_LOADSELF, cursp());   /* receiver slot for the SSEND */
+    push();
+    gen_move(s, cursp(), recv, 1);
+  }
+  else {
+    gen_move(s, cursp(), recv, 1);
+    genop_1(s, OP_LOADSELF, recv);      /* receiver slot for the SSEND */
+  }
+  push();
+  genop_2(s, OP_LOADSYM, cursp(), new_sym(s, a->arg));
+  push(); push();                       /* reserve args + block slots (nregs) */
+  pop_n(4);
+  genop_3(s, OP_SSEND, cursp(), new_sym(s, a->helper), 2);
+  push();
+}
+
+/* Leave a receiver's value at cursp()-1, or jump to the nil answer.  A
+   receiver that is itself a call through a receiver is a chain, checked
+   link by link from the inside out, and each link is evaluated once: the
+   value its method was looked for on is the receiver it is then called on,
+   the way CRuby keeps the result of its `defined` instruction.  A link's
+   arguments are weighed before its receiver, as an operand's are. */
+static void
+gen_defined_recv(mrc_codegen_scope *s, mrc_node *value, uint32_t *nil_jmps)
+{
+  struct defined_answer a;
+  int rlev = s->rlev;
+
+  value = defined_operand(value);
+  defined_answer_for(value, &a);
+  if (a.recv == NULL) {
+    gen_defined_part(s, value, nil_jmps);
+    codegen(s, value, VAL);
+    return;
+  }
+  s->rlev++;
+  if (s->rlev > MRC_CODEGEN_LEVEL_MAX) {
+    codegen_error(s, "too complex expression");
+  }
+  gen_defined_parts(s, value, nil_jmps);
+  gen_defined_recv(s, a.recv, nil_jmps);
+  gen_defined_ask_method_on(s, &a, 1);
+  pop();
+  *nil_jmps = genjmp2(s, OP_JMPNOT, cursp(), *nil_jmps, NOVAL);
+  gen_call(s, value, VAL,
+           (((pm_call_node_t *)value)->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) ? 1 : 0,
+           1);
+  s->rlev = rlev;
+}
+
+/* `defined?(recv.meth)`.  The receiver must itself be defined, and must then
+   be evaluated before the method can be looked for on it.  That evaluation
+   is the one place `defined?` runs code the operand names, and CRuby answers
+   nil rather than letting what it raises out, so it sits under a catch
+   handler whose landing discards the exception.  Both ways of not answering
+   join the caller's nil exit. */
+static void
+gen_defined_method_on(mrc_codegen_scope *s, struct defined_answer *a,
+                      uint32_t *nil_jmps)
+{
+  int sp = cursp();
+  int catch_entry = catch_handler_new(s);
+  uint32_t begin = s->pc, end, ok;
+
+  gen_defined_recv(s, a->recv, nil_jmps);
+  gen_defined_ask_method_on(s, a, 0);
+  end = s->pc;
+  ok = genjmp_0(s, OP_JMP);
+  catch_handler_set(s, catch_entry, MRC_CATCH_RESCUE, begin, end, s->pc);
+  genop_1(s, OP_EXCEPT, sp);            /* discarded: what it raises is nil */
+  *nil_jmps = genjmp(s, OP_JMP, *nil_jmps);
+  dispatch(s, ok);
+}
+
+/* The parts of an operand whose own answers `defined?` weighs: a call's
+   arguments, and the elements of an array or a hash literal.  The ends of a
+   range are not among them, and neither are the arguments of a call that
+   already answers "expression" for carrying a block. */
+static pm_node_list_t *
+defined_parts_of(mrc_node *value)
+{
+  pm_node_list_t *list = NULL;
+
+  switch (nint(value)) {
+  case PM_ARRAY_NODE:
+    list = &((pm_array_node_t *)value)->elements;
+    break;
+  case PM_HASH_NODE:
+    list = &((pm_hash_node_t *)value)->elements;
+    break;
+  case PM_KEYWORD_HASH_NODE:
+    list = &((pm_keyword_hash_node_t *)value)->elements;
+    break;
+  case PM_CALL_NODE:
+  {
+    pm_call_node_t *call = (pm_call_node_t *)value;
+    if (call->block != NULL && nint(call->block) == PM_BLOCK_NODE) break;
+    if (call->arguments) list = &call->arguments->arguments;
+    break;
+  }
+  default:
+    break;
+  }
+  return (list != NULL && list->size > 0) ? list : NULL;
+}
+
+/* Weigh the parts of an operand, jumping to the nil answer where one of them
+   is not defined.  CRuby weighs them before the receiver, so an argument that
+   is missing answers nil with the receiver left unevaluated. */
+static void
+gen_defined_parts(mrc_codegen_scope *s, mrc_node *value, uint32_t *nil_jmps)
+{
+  pm_node_list_t *list = defined_parts_of(value);
+  int rlev = s->rlev;
+
+  if (list == NULL) return;
+  s->rlev++;
+  if (s->rlev > MRC_CODEGEN_LEVEL_MAX) {
+    codegen_error(s, "too complex expression");
+  }
+  for (size_t i = 0; i < list->size; i++) {
+    gen_defined_part(s, (mrc_node *)list->nodes[i], nil_jmps);
+  }
+  s->rlev = rlev;
+}
+
+/* One part of an operand.  A splat or a pair is weighed by what it holds,
+   and an anonymous `*` or `**` holds nothing; a block argument and forwarded
+   arguments are what CRuby does not look into.  A part whose own node type
+   settles a non-nil answer emits no check, since the branch could not be
+   taken, and its parts, if it has any, are weighed in its place. */
+static void
+gen_defined_part(mrc_codegen_scope *s, mrc_node *part, uint32_t *nil_jmps)
+{
+  struct defined_answer a;
+
+  switch (nint(part)) {
+  case PM_BLOCK_ARGUMENT_NODE: case PM_FORWARDING_ARGUMENTS_NODE:
+    return;
+  case PM_SPLAT_NODE:
+    part = (mrc_node *)((pm_splat_node_t *)part)->expression;
+    break;
+  case PM_ASSOC_SPLAT_NODE:
+    part = (mrc_node *)((pm_assoc_splat_node_t *)part)->value;
+    break;
+  case PM_ASSOC_NODE:
+    gen_defined_part(s, (mrc_node *)((pm_assoc_node_t *)part)->key, nil_jmps);
+    part = (mrc_node *)((pm_assoc_node_t *)part)->value;
+    break;
+  default:
+    break;
+  }
+  if (part == NULL) return;
+  part = defined_operand(part);
+  defined_answer_for(part, &a);
+  if (a.type != NULL) {
+    gen_defined_parts(s, part, nil_jmps);
+    return;
+  }
+  codegen_defined(s, part, VAL);
+  pop();
+  *nil_jmps = genjmp2(s, OP_JMPNOT, cursp(), *nil_jmps, NOVAL);
+}
+
+/* `defined?` must not evaluate its operand, with the one exception a receiver
+   makes above.  Cases decidable from the operand's node type alone yield a
+   literal string; ivar/const/method/yield existence is resolved at run time
+   by a private helper (the helper reads the caller's frame for const lexical
+   scope and for the block). */
+static void
+codegen_defined(mrc_codegen_scope *s, mrc_node *value, int val)
+{
+  struct defined_answer a;
+  uint32_t nil_jmps = JMPLINK_START;
+  int rlev = s->rlev;
+
+  value = defined_operand(value);
+  defined_answer_for(value, &a);
+  if (!val) return;
+  s->rlev++;
+  if (s->rlev > MRC_CODEGEN_LEVEL_MAX) {
+    codegen_error(s, "too complex expression");
+  }
+  if (a.type || a.helper) {
+    gen_defined_parts(s, value, &nil_jmps);
+    if (a.recv) gen_defined_method_on(s, &a, &nil_jmps);
+    else gen_defined_answer(s, &a);
+  }
+  else {
+    genop_1(s, OP_LOADNIL, cursp());
+    push();
+  }
+  if (nil_jmps != JMPLINK_START) {
+    uint32_t done = genjmp_0(s, OP_JMP);
+    dispatch_linked(s, nil_jmps);
+    pop();
+    genop_1(s, OP_LOADNIL, cursp());
+    push();
+    dispatch(s, done);
+  }
+  s->rlev = rlev;
+}
+
 static void
 codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
 {
@@ -4769,7 +5222,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
     case PM_CALL_NODE:
     {
       CAST(call);
-      gen_call(s, tree, val, (cast->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) ? 1 : 0);
+      gen_call(s, tree, val, (cast->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) ? 1 : 0, 0);
       break;
     }
     case PM_ARRAY_NODE:
@@ -6255,198 +6708,8 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
     }
     case PM_DEFINED_NODE:
     {
-      /* `defined?` must not evaluate its operand. Cases decidable from the
-         operand's node type alone yield a literal string; ivar/const/method/
-         yield existence is resolved at run time by a private helper (the
-         helper reads the caller's frame for const lexical scope and for the
-         block). gvar/cvar and method-with-receiver still fall through to nil. */
       CAST(defined);
-      const char *type = NULL;
-      int helper = 0;             /* runtime helper symbol, 0 = none */
-      pm_constant_id_t arg = 0;   /* symbol operand for the helper, 0 = none */
-      pm_constant_id_t path[DEFINED_PATH_MAX];  /* A::B::C, root first */
-      int path_len = 0;           /* names in `path`, 0 = not a constant path */
-      mrc_bool path_toplevel = FALSE;           /* ::A, so rooted at Object */
-      /* parentheses around a single expression are transparent here, so
-         `defined?((x))` answers what `defined?(x)` does; parentheses holding
-         no statement or several fall through to the "expression" cases */
-      mrc_node *value = cast->value;
-      while (nint(value) == PM_PARENTHESES_NODE) {
-        mrc_node *body = (mrc_node *)((pm_parentheses_node_t *)value)->body;
-        if (body == NULL || nint(body) != PM_STATEMENTS_NODE) break;
-        pm_node_list_t *stmts = &((pm_statements_node_t *)body)->body;
-        if (stmts->size != 1) break;
-        value = (mrc_node *)stmts->nodes[0];
-      }
-      switch (nint(value)) {
-      case PM_INTEGER_NODE: case PM_FLOAT_NODE:
-      case PM_RATIONAL_NODE: case PM_IMAGINARY_NODE:
-      case PM_STRING_NODE: case PM_INTERPOLATED_STRING_NODE:
-      case PM_X_STRING_NODE: case PM_INTERPOLATED_X_STRING_NODE:
-      case PM_SYMBOL_NODE: case PM_INTERPOLATED_SYMBOL_NODE:
-      case PM_REGULAR_EXPRESSION_NODE: case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE:
-      case PM_ARRAY_NODE: case PM_HASH_NODE: case PM_KEYWORD_HASH_NODE:
-      case PM_NIL_NODE: case PM_TRUE_NODE: case PM_FALSE_NODE:
-      case PM_RANGE_NODE: case PM_LAMBDA_NODE: case PM_DEFINED_NODE:
-      case PM_SOURCE_FILE_NODE: case PM_SOURCE_LINE_NODE: case PM_SOURCE_ENCODING_NODE:
-      /* control flow, jumps and definitions: CRuby answers "expression" for
-         every one of these without looking inside them */
-      case PM_AND_NODE: case PM_OR_NODE:
-      case PM_IF_NODE: case PM_UNLESS_NODE:
-      case PM_CASE_NODE: case PM_CASE_MATCH_NODE:
-      case PM_WHILE_NODE: case PM_UNTIL_NODE: case PM_FOR_NODE:
-      case PM_BEGIN_NODE: case PM_PARENTHESES_NODE:
-      case PM_RETURN_NODE: case PM_BREAK_NODE: case PM_NEXT_NODE:
-      case PM_REDO_NODE: case PM_RETRY_NODE:
-      case PM_DEF_NODE: case PM_CLASS_NODE: case PM_MODULE_NODE:
-      case PM_SINGLETON_CLASS_NODE:
-      case PM_MATCH_PREDICATE_NODE: case PM_MATCH_REQUIRED_NODE:
-        type = "expression";
-        break;
-      case PM_SELF_NODE:
-        type = "self";
-        break;
-      case PM_LOCAL_VARIABLE_READ_NODE:
-        type = "local-variable";
-        break;
-      case PM_LOCAL_VARIABLE_WRITE_NODE: case PM_INSTANCE_VARIABLE_WRITE_NODE:
-      case PM_GLOBAL_VARIABLE_WRITE_NODE: case PM_CLASS_VARIABLE_WRITE_NODE:
-      case PM_CONSTANT_WRITE_NODE: case PM_CONSTANT_PATH_WRITE_NODE:
-      case PM_MULTI_WRITE_NODE:
-      case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE:
-      case PM_LOCAL_VARIABLE_OR_WRITE_NODE: case PM_LOCAL_VARIABLE_AND_WRITE_NODE:
-      case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE:
-      case PM_INSTANCE_VARIABLE_OR_WRITE_NODE: case PM_INSTANCE_VARIABLE_AND_WRITE_NODE:
-      case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE:
-      case PM_GLOBAL_VARIABLE_OR_WRITE_NODE: case PM_GLOBAL_VARIABLE_AND_WRITE_NODE:
-      case PM_CLASS_VARIABLE_OPERATOR_WRITE_NODE:
-      case PM_CLASS_VARIABLE_OR_WRITE_NODE: case PM_CLASS_VARIABLE_AND_WRITE_NODE:
-      case PM_CONSTANT_OPERATOR_WRITE_NODE:
-      case PM_CONSTANT_OR_WRITE_NODE: case PM_CONSTANT_AND_WRITE_NODE:
-      case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE:
-      case PM_CONSTANT_PATH_OR_WRITE_NODE: case PM_CONSTANT_PATH_AND_WRITE_NODE:
-      case PM_INDEX_OPERATOR_WRITE_NODE:
-      case PM_INDEX_OR_WRITE_NODE: case PM_INDEX_AND_WRITE_NODE:
-      case PM_CALL_OPERATOR_WRITE_NODE:
-      case PM_CALL_OR_WRITE_NODE: case PM_CALL_AND_WRITE_NODE:
-        type = "assignment";
-        break;
-      case PM_INSTANCE_VARIABLE_READ_NODE:
-        helper = MRC_SYM_2(defined_ivar_q);
-        arg = ((pm_instance_variable_read_node_t *)value)->name;
-        break;
-      case PM_CONSTANT_READ_NODE:
-        helper = MRC_SYM_2(defined_const_q);
-        arg = ((pm_constant_read_node_t *)value)->name;
-        break;
-      case PM_CONSTANT_PATH_NODE:
-        /* Walk the path to its root, collecting the names leaf first.  The
-           root is either a plain constant, so the first name resolves in the
-           lexical scope, or nothing at all, so `::A` starts at Object.  A
-           root that is any other expression would have to be evaluated, and
-           falls through to nil. */
-        {
-          mrc_node *seg = value;
-          pm_constant_id_t names[DEFINED_PATH_MAX];
-          int n = 0;
-          mrc_bool rooted = FALSE;
-
-          while (nint(seg) == PM_CONSTANT_PATH_NODE && n < DEFINED_PATH_MAX) {
-            names[n++] = ((pm_constant_path_node_t *)seg)->name;
-            seg = (mrc_node *)((pm_constant_path_node_t *)seg)->parent;
-            if (seg == NULL) {      /* ::A, rooted at Object */
-              path_toplevel = TRUE;
-              rooted = TRUE;
-              break;
-            }
-          }
-          if (!rooted && seg != NULL && nint(seg) == PM_CONSTANT_READ_NODE &&
-              n < DEFINED_PATH_MAX) {
-            names[n++] = ((pm_constant_read_node_t *)seg)->name;
-            rooted = TRUE;
-          }
-          if (rooted) {
-            helper = MRC_SYM_2(defined_const_path_q);
-            path_len = n;
-            for (int i = 0; i < n; i++) path[i] = names[n - 1 - i];
-          }
-        }
-        break;
-      case PM_GLOBAL_VARIABLE_READ_NODE:
-        helper = MRC_SYM_2(defined_gvar_q);
-        arg = ((pm_global_variable_read_node_t *)value)->name;
-        break;
-      case PM_CLASS_VARIABLE_READ_NODE:
-        helper = MRC_SYM_2(defined_cvar_q);
-        arg = ((pm_class_variable_read_node_t *)value)->name;
-        break;
-      case PM_YIELD_NODE:
-        helper = MRC_SYM_2(defined_yield_q);
-        break;
-      case PM_SUPER_NODE: case PM_FORWARDING_SUPER_NODE:
-        helper = MRC_SYM_2(defined_super_q);
-        break;
-      case PM_CALL_NODE:
-      {
-        pm_call_node_t *call = (pm_call_node_t *)value;
-        /* CRuby answers "expression" for a call carrying a literal block,
-           without asking whether the method is there; a block passed as
-           `&arg` keeps the call an ordinary one */
-        if (call->block != NULL && nint(call->block) == PM_BLOCK_NODE) {
-          type = "expression";
-        }
-        /* a bare method call on self (no explicit receiver, so no operand to
-           evaluate); a call with a receiver would need to evaluate it */
-        else if (call->receiver == NULL) {
-          helper = MRC_SYM_2(defined_method_q);
-          arg = call->name;
-        }
-        break;
-      }
-      default:
-        break;
-      }
-      if (val) {
-        if (type) {
-          genop_2(s, OP_STRING, cursp(), new_lit_cstr(s, type));
-          push();
-        }
-        else if (helper) {
-          genop_1(s, OP_LOADSELF, cursp());   /* receiver slot for the SSEND */
-          if (path_len > 0) {       /* A::B::C: where to start, then the names */
-            push();
-            if (path_toplevel) genop_1(s, OP_OCLASS, cursp());
-            else genop_1(s, OP_LOADNIL, cursp());
-            push();
-            for (int i = 0; i < path_len; i++) {
-              genop_2(s, OP_LOADSYM, cursp(), new_sym(s, path[i]));
-              push();
-            }
-            pop_n(path_len);
-            genop_2(s, OP_ARRAY, cursp(), path_len);
-            push(); push();         /* reserve args + block slots (nregs) */
-            pop_n(4);
-            genop_3(s, OP_SSEND, cursp(), new_sym(s, helper), 2);
-          }
-          else if (arg == 0) {      /* yield/super: no symbol operand */
-            push(); push();         /* reserve arg + block slots (nregs) */
-            pop_n(2);
-            genop_2(s, OP_SSEND0, cursp(), new_sym(s, helper));
-          }
-          else {
-            push();
-            genop_2(s, OP_LOADSYM, cursp(), new_sym(s, arg));
-            push(); push();         /* reserve value + block slots (nregs) */
-            pop_n(3);
-            genop_3(s, OP_SSEND, cursp(), new_sym(s, helper), 1);
-          }
-          push();
-        }
-        else {
-          genop_1(s, OP_LOADNIL, cursp());
-          push();
-        }
-      }
+      codegen_defined(s, cast->value, val);
       break;
     }
     default:

@@ -1743,6 +1743,185 @@ assert('defined? does not evaluate a constant path') do
   assert_nil defined?(DefinedPathRaises.boom::Leaf)
 end
 
+class DefinedRecv
+  attr_accessor :foo
+  def pub; end
+  private def priv; end
+  protected def prot; end
+  def respond_to_missing?(name, include_private = false); name == :ghost; end
+  def from_inside(other); defined?(other.prot); end
+end
+
+class DefinedRecvRaises
+  @@evaluated = 0
+  def self.count; @@evaluated; end
+  def self.seen; @@evaluated += 1; self; end
+  def self.boom; raise 'defined? let a receiver raise'; end
+end
+
+assert('defined? on a method reached through a receiver') do
+  o = DefinedRecv.new
+  assert_equal 'method', defined?(o.pub)
+  assert_equal 'method', defined?(1 + 1)
+  assert_equal 'method', defined?(String.new)
+  assert_equal 'method', defined?([1, 2][0])
+  assert_equal 'method', defined?(!o)
+  assert_nil defined?(o.no_such_method_at_all)
+
+  # the receiver is evaluated, so a chain answers for its last name and
+  # answers nil where a link in it is missing
+  assert_equal 'method', defined?(1.to_s.size)
+  assert_nil defined?(1.no_such_method_at_all.size)
+
+  # a receiver that is not defined is never evaluated, and never reached
+  assert_nil defined?(no_such_receiver_at_all.size)
+  assert_nil defined?(@no_such_ivar_at_all.size)
+
+  # safe navigation asks about the method the same way, on the receiver as
+  # it stands: `nil` has `to_s` and nothing else the name could reach
+  assert_equal 'method', defined?(nil&.to_s)
+  assert_nil defined?(nil&.no_such_method_at_all)
+end
+
+assert('defined? weighs how a method on a receiver may be called') do
+  o = DefinedRecv.new
+  assert_nil defined?(o.priv)
+  assert_nil defined?(o.prot)       # self here is not a DefinedRecv
+  assert_equal 'method', o.from_inside(DefinedRecv.new)
+  assert_equal 'method', defined?(o.ghost)   # through respond_to_missing?
+end
+
+assert('defined? answers nil where evaluating a receiver raises') do
+  assert_nil defined?(DefinedRecvRaises.boom.anything)
+  assert_equal :caught, (defined?(DefinedRecvRaises.boom.x) ? :answered : :caught)
+  assert_equal [nil, 'method'], [defined?(DefinedRecvRaises.boom.x), defined?(1.to_s)]
+
+  # the receiver of a defined? that answers is evaluated, once
+  before = DefinedRecvRaises.count
+  assert_equal 'method', defined?(DefinedRecvRaises.seen.to_s)
+  assert_equal before + 1, DefinedRecvRaises.count
+end
+
+assert('defined? evaluates each link of a receiver chain once') do
+  before = DefinedRecvRaises.count
+  assert_equal 'method', defined?(DefinedRecvRaises.seen.seen.to_s)
+  assert_equal before + 2, DefinedRecvRaises.count
+  assert_equal 'method', defined?(DefinedRecvRaises.seen.seen.seen.to_s)
+  assert_equal before + 5, DefinedRecvRaises.count
+
+  # a chain stops at the first link that answers nil, or that raises
+  assert_nil defined?(DefinedRecvRaises.seen.no_such_method_at_all.to_s)
+  assert_equal before + 6, DefinedRecvRaises.count
+  assert_nil defined?(DefinedRecvRaises.seen.boom.to_s)
+  assert_equal before + 7, DefinedRecvRaises.count
+
+  # a link that is an attribute write is called on the same terms, and
+  # answers with the value assigned
+  o = DefinedRecv.new
+  assert_equal 'method', defined?((o.foo = 1).to_s)
+  assert_equal 1, o.foo
+  xs = [0]
+  assert_equal 'method', defined?((xs[0] = 2).to_s)
+  assert_equal [2], xs
+
+  # safe navigation leaves nil where its receiver is nil, and the next
+  # link is asked of that nil
+  assert_nil defined?(nil&.to_s.size)
+  assert_nil defined?(nil&.to_s&.no_such_method_at_all)
+end
+
+assert('defined? weighs the arguments of a call') do
+  lv = 1
+  assert_equal 'method', defined?(assert(lv))
+  assert_equal 'method', defined?(assert(1, 'two', :three))
+  assert_nil defined?(assert(no_such_thing_at_all))
+  assert_nil defined?(assert(1, no_such_thing_at_all))
+  assert_nil defined?(assert(no_such_thing_at_all, 1))
+  assert_nil defined?(assert(@no_such_ivar_at_all))
+  assert_nil defined?(assert($no_such_global_at_all))
+  assert_nil defined?(assert(NoSuchConstantAtAll))
+
+  # an argument is weighed to whatever depth it has
+  assert_nil defined?(assert(no_such_thing_at_all + 1))
+  assert_nil defined?(assert(assert(no_such_thing_at_all)))
+  assert_nil defined?(assert(no_such_thing_at_all.size))
+
+  # a call through a receiver has its arguments weighed too, safe
+  # navigation among them
+  assert_equal 'method', defined?(1.to_s(lv))
+  assert_nil defined?(1.to_s(no_such_thing_at_all))
+  assert_nil defined?(nil&.to_s(no_such_thing_at_all))
+
+  # nothing is evaluated for an argument that is not there, the receiver
+  # of the call least of all
+  before = DefinedRecvRaises.count
+  assert_nil defined?(DefinedRecvRaises.seen.to_s(no_such_thing_at_all))
+  assert_equal before, DefinedRecvRaises.count
+end
+
+def defined_anonymous_forwarding(*, **, &)
+  [defined?(assert(*)), defined?(assert(**)), defined?(assert(&))]
+end
+
+def defined_forwarding(...)
+  defined?(assert(...))
+end
+
+assert('defined? weighs the arguments of a call however they are passed') do
+  lv = 1
+  h = {k: 1}
+  assert_equal 'method', defined?(assert(*lv))
+  assert_nil defined?(assert(*no_such_thing_at_all))
+  assert_equal 'method', defined?(assert(k: lv))
+  assert_nil defined?(assert(k: no_such_thing_at_all))
+  assert_nil defined?(assert(no_such_thing_at_all => 1))
+  assert_equal 'method', defined?(assert(**h))
+  assert_nil defined?(assert(**no_such_thing_at_all))
+  assert_nil defined?(assert({a: no_such_thing_at_all}))
+  assert_nil defined?(assert([*no_such_thing_at_all]))
+
+  # what is forwarded by name alone holds nothing to weigh
+  assert_equal ['method', 'method', 'method'], defined_anonymous_forwarding(1)
+  assert_equal 'method', defined_forwarding(1)
+end
+
+assert('defined? leaves alone the parts of a call it does not weigh') do
+  assert_equal 'method', defined?(assert(&no_such_thing_at_all))
+  assert_equal 'method', defined?(assert(1..no_such_thing_at_all))
+
+  # a call carrying a block is an expression whatever its arguments are
+  assert_equal 'expression', defined?(assert(no_such_thing_at_all) { })
+  assert_equal 'expression', defined?(assert(*no_such_thing_at_all) { })
+end
+
+assert('defined? weighs the elements of an array literal') do
+  lv = 1
+  assert_equal 'expression', defined?([1, lv])
+  assert_equal 'expression', defined?([*lv])
+  assert_nil defined?([no_such_thing_at_all])
+  assert_nil defined?([1, no_such_thing_at_all])
+  assert_nil defined?([[no_such_thing_at_all]])
+  assert_nil defined?([*no_such_thing_at_all])
+  assert_nil defined?([1, {k: no_such_thing_at_all}])
+  assert_nil defined?(assert([[no_such_thing_at_all]]))
+end
+
+assert('defined? weighs the keys and values of a hash literal') do
+  lv = 1
+  h = {k: 1}
+  assert_equal 'expression', defined?({})
+  assert_equal 'expression', defined?({k: lv, lv => 1, **h, lv:})
+  assert_nil defined?({k: no_such_thing_at_all})
+  assert_nil defined?({no_such_thing_at_all => 1})
+  assert_nil defined?({**no_such_thing_at_all})
+  assert_nil defined?({no_such_thing_at_all:})
+  assert_nil defined?({k: [no_such_thing_at_all]})
+
+  # the ends of a range are not weighed, inside a literal or on their own
+  assert_equal 'expression', defined?({k: 1..no_such_thing_at_all})
+  assert_equal 'expression', defined?(1..no_such_thing_at_all)
+end
+
 assert('defined? on control flow, jumps and definitions') do
   lv = 1
 
