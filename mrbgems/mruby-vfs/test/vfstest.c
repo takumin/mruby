@@ -79,6 +79,18 @@ join(mrb_state *mrb, mrb_value dir, const char *name)
  *
  * Makes the sandbox under the temporary directory and fills it.
  */
+/* The temporary directory with no separator at its end: macOS sets TMPDIR
+   to one with a slash, and the tests compare paths built on this one with
+   what the loader recorded after folding the doubled slash away. */
+static size_t
+tmpdir_len(const char *tmp)
+{
+  size_t len = strlen(tmp);
+
+  while (len > 1 && (tmp[len - 1] == '/' || tmp[len - 1] == '\\')) len--;
+  return len;
+}
+
 static mrb_value
 vfstest_setup(mrb_state *mrb, mrb_value klass)
 {
@@ -89,7 +101,7 @@ vfstest_setup(mrb_state *mrb, mrb_value klass)
   {
     const char *tmp = getenv("TEMP");
     if (tmp == NULL || *tmp == '\0') tmp = ".";
-    snprintf(buf, sizeof(buf), "%s\\mruby-vfs-test.XXXXXX", tmp);
+    snprintf(buf, sizeof(buf), "%.*s\\mruby-vfs-test.XXXXXX", (int)tmpdir_len(tmp), tmp);
     if (_mktemp(buf) == NULL || vfstest_mkdir(buf) != 0) {
       mrb_raisef(mrb, E_RUNTIME_ERROR, "mkdir(%s) failed", buf);
     }
@@ -98,7 +110,7 @@ vfstest_setup(mrb_state *mrb, mrb_value klass)
   {
     const char *tmp = getenv("TMPDIR");
     if (tmp == NULL || *tmp == '\0') tmp = "/tmp";
-    snprintf(buf, sizeof(buf), "%s/mruby-vfs-test.XXXXXX", tmp);
+    snprintf(buf, sizeof(buf), "%.*s/mruby-vfs-test.XXXXXX", (int)tmpdir_len(tmp), tmp);
     if (mkdtemp(buf) == NULL) {
       mrb_raisef(mrb, E_RUNTIME_ERROR, "mkdtemp(%s) failed", buf);
     }

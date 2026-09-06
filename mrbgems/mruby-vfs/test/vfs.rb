@@ -187,6 +187,9 @@ assert('a mount shadows the host below its prefix') do
   skip "this port has no host filesystem" unless VFS.const_defined?(:Host)
   sandbox = VFSTest.setup
   begin
+    # a mount prefix starts at the VFS root; a Windows sandbox is under a
+    # drive letter, which no prefix reaches
+    skip "the sandbox is not under the VFS root" unless sandbox[0] == "/"
     vfs_with_mount(sandbox, VFS::Memory.new("plain.txt" => "in memory")) do
       assert_equal "in memory", VFS.read("#{sandbox}/plain.txt")
       assert_nil VFS.stat("#{sandbox}/lib")
