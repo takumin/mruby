@@ -16,7 +16,6 @@ MRuby::Build.new('host') do |conf|
 
   # Regexp is included via stdlib.gembox
 
-
   # test
   conf.enable_test
   # bintest

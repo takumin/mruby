@@ -5,7 +5,6 @@ MRuby::Build.new('clang-asan') do |conf|
   # include the GEM box
   conf.gembox 'full-core'
 
-
   # Turn on `enable_debug` for better debugging
   conf.enable_sanitizer "address,undefined"
   conf.enable_debug

@@ -11,7 +11,6 @@ MRuby::Build.new('host-m32-f32') do |conf|
   conf.cc.defines << 'MRB_USE_FLOAT32'
   conf.linker.flags << '-m32'
 
-
   # Turn on `enable_debug` for better debugging
   conf.enable_debug
   conf.enable_test

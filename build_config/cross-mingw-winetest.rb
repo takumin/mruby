@@ -56,7 +56,6 @@
 #       operations. It's unclear if this indicates more serious problems.
 #
 
-
 MRuby::CrossBuild.new("cross-mingw-winetest") do |conf|
   conf.toolchain :gcc
 

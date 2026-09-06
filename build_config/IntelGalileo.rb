@@ -15,7 +15,6 @@ MRuby::CrossBuild.new("Galileo") do |conf|
   GALILEO_SYSROOT  = "#{GALILEO_ARDUINO_PATH}/hardware/tools/x86/i586-poky-linux-uclibc"
   GALILEO_X86_PATH = "#{GALILEO_ARDUINO_PATH}/hardware/arduino/x86"
 
-
   conf.cc do |cc|
     cc.command = "#{GALILEO_BIN_PATH}/i586-poky-linux-uclibc-gcc"
     cc.include_paths << ["#{GALILEO_X86_PATH}/cores/arduino", "#{GALILEO_X86_PATH}/variants/galileo_fab_d"]
