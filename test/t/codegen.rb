@@ -386,3 +386,117 @@ assert('adding or subtracting a literal zero still sends the operator') do
   assert_equal 5, x + 0
   assert_equal 5, x - 0
 end
+
+assert('the MOVE after OP_ADDILVM and OP_SUBILVM is kept for the fallback') do
+  # `x += 1` on a local compiles to `OP_ADDILVM x, t, 1; MOVE x, t`. The
+  # opcode writes an Integer or Float result to `x` and skips the MOVE; any
+  # other receiver, or a redefined operator, is sent `+` on the working space
+  # `t`, and the callee returns into the MOVE, which copies the result to
+  # `x`. The peephole would fold that MOVE into the assignment that follows
+  # it, or drop it as the reverse of the MOVE that opens the next `x += 1`,
+  # and the skip would then land past an instruction that was meant to run.
+  cls = Class.new do
+    attr_reader :v
+    def initialize(v); @v = v; end
+    def +(o); self.class.new(@v + o); end
+    def -(o); self.class.new(@v - o); end
+  end
+  y = 9
+  x = 1
+  x += 1
+  x = y
+  assert_equal 9, x
+  x = cls.new(1)
+  x += 1
+  x = y
+  assert_equal 9, x
+  x = 1
+  x += 1
+  x += 1
+  assert_equal 3, x
+  x = cls.new(1)
+  x += 1
+  x += 1
+  assert_equal 3, x.v
+  x = cls.new(10)
+  x -= 3
+  assert_equal 7, x.v
+  t = x
+  x -= 1
+  assert_equal 7, t.v
+  assert_equal 6, x.v
+end
+
+assert('the fallback of OP_ADDILVM and OP_SUBILVM lands its result in the local') do
+  # The operator sent from the working space may be a C function, may raise,
+  # may read the local through a closure while it runs, or may `break` out of
+  # a block; the local must hold the receiver until the result is in.
+  Integer.class_eval do
+    alias_method :__add_before_test, :+
+    alias_method :+, :*                  # a C function, reached as `+`
+  end
+  begin
+    x = 7
+    x += 3
+    prod = x
+  ensure
+    Integer.class_eval do
+      alias_method :+, :__add_before_test
+      remove_method :__add_before_test if respond_to?(:remove_method, true)
+    end
+  end
+  assert_equal 21, prod
+  x = nil
+  begin
+    x += 1
+  rescue NoMethodError
+  end
+  assert_nil x
+  peek = Class.new do
+    def initialize(blk); @blk = blk; end
+    def +(o); @blk.call; end
+  end
+  seen = nil
+  x = peek.new(-> { seen = x.class; :done })
+  x += 1
+  assert_equal peek, seen
+  assert_equal :done, x
+  brk = Class.new do
+    def +(o); [1].each { break :broke }; end
+  end
+  x = brk.new
+  x += 1
+  assert_equal :broke, x
+  writer = Class.new do
+    attr_accessor :val
+    alias_method :+, :val=              # the send answers this without a frame
+  end
+  w = writer.new
+  w += 5
+  assert_equal 5, w
+end
+
+assert('the overflow OP_ADDILVM raises is rescued around the statement') do
+  # The fast path steps over the MOVE before it adds, so the RangeError a
+  # build without mruby-bigint raises for an overflow carries a pc one
+  # instruction further on than the opcode's; the rescue that closes right
+  # after `x += 1` must still cover it, and the local must keep its value.
+  big = begin; 1 << 64; true; rescue RangeError; false; end
+  skip 'mruby-bigint answers the overflow' if big
+  x = 1
+  begin
+    while true
+      x = x * 2 + 1
+    end
+  rescue RangeError
+  end
+  max = x
+  caught = false
+  begin
+    x += 1
+  rescue RangeError
+    caught = true
+  end
+  assert_true caught
+  assert_equal max, x
+end
