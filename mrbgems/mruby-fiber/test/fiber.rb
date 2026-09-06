@@ -227,3 +227,17 @@ assert('symbol GC keeps the symbols a suspended fiber holds') do
   GC.start
   assert_true f.resume
 end
+
+assert('Fiber.yield inside a redefined nil? suspends the conditional') do
+  # The send `OP_NILP` falls back to runs in the same VM loop as any other, so
+  # the frame that branches on its answer can be suspended and resumed.
+  c = Class.new do
+    def nil?
+      Fiber.yield(:paused)
+      true
+    end
+  end
+  f = Fiber.new { c.new.nil? ? :then : :else }
+  assert_equal :paused, f.resume
+  assert_equal :then, f.resume
+end

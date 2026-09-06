@@ -458,6 +458,9 @@ codedump(mrb_state *mrb, const mrb_irep *irep, FILE *out)
     CASE(OP_ALIAS, BB):
       fprintf(out, "ALIAS\t\t:%s\t%s\n", mrb_sym_dump(mrb, irep->syms[a]), mrb_sym_dump(mrb, irep->syms[b]));
       break;
+    CASE(OP_NILP, B):
+      fprintf(out, "NILP\t\tR%d\n", a);
+      break;
     CASE(OP_ADD, B):
       fprintf(out, "ADD\t\tR%d\t(R%d)\n", a, a+1);
       break;
