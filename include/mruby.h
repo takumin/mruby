@@ -175,7 +175,7 @@ typedef struct {
   uint8_t n:4;                  /* number of positional arguments; 15 means packed arguments */
   uint8_t kw:1;                 /* has keyword arguments (TRUE or FALSE) */
   uint8_t cci;                  /* called from C function */
-  uint8_t vis;                  /* 4(ZERO):1(module_function):1(separate module):2(method visibility) */
+  uint8_t vis;                  /* 2(ZERO):2(continuation):1(module_function):1(separate module):2(method visibility) */
                                 /* under 3-bit flags are copied to env, and after that, env takes precedence */
   mrb_sym mid;
   const struct RProc *proc;
@@ -1353,6 +1353,7 @@ mrb_funcall_argv2(mrb_state *mrb, mrb_value val, mrb_sym name, mrb_value a1, mrb
  * Call existing Ruby functions with a block.
  */
 MRB_API mrb_value mrb_funcall_with_block(mrb_state *mrb, mrb_value val, mrb_sym name, mrb_int argc, const mrb_value *argv, mrb_value block);
+
 /**
  * Create a symbol from C string. But usually it's better to
  * use MRB_SYM, MRB_OPSYM, MRB_CVSYM, MRB_IVSYM, MRB_GVSYM,

@@ -227,3 +227,100 @@ assert('symbol GC keeps the symbols a suspended fiber holds') do
   GC.start
   assert_true f.resume
 end
+
+# The frame a C method hands back with mrb_funcall_k() holds the C function it
+# is running, not the name that function was found under, so a send that
+# redefines the name does not reach the call already in flight.  CRuby answers
+# the same way, and so does a C method that never leaves the C stack.
+# `Fiber.define_cont_methods` puts a pair of C methods on a class of the
+# test's own: `send_k(target, mid)` hands its frame back to make the send, and
+# `other_k` is what a test redefines `send_k` to.
+assert('a C method redefined in Ruby while suspended finishes as it started') do
+  $fiber_cont_cls = Class.new
+  Fiber.define_cont_methods($fiber_cont_cls)
+  target = Class.new do
+    def redefine
+      $fiber_cont_cls.class_eval { def send_k(*args); :a_ruby_method; end }
+      :from_the_send
+    end
+  end.new
+  assert_equal :from_the_send, $fiber_cont_cls.new.send_k(target, :redefine)
+  # the next call is the method the name means now
+  assert_equal :a_ruby_method, $fiber_cont_cls.new.send_k(target, :redefine)
+ensure
+  $fiber_cont_cls = nil
+end
+
+assert('a C method redefined to another C method while suspended finishes as it started') do
+  $fiber_cont_cls = Class.new
+  Fiber.define_cont_methods($fiber_cont_cls)
+  target = Class.new do
+    def redefine
+      $fiber_cont_cls.class_eval { alias_method :send_k, :other_k }
+      :from_the_send
+    end
+  end.new
+  assert_equal :from_the_send, $fiber_cont_cls.new.send_k(target, :redefine)
+  assert_equal :the_other_c_method, $fiber_cont_cls.new.send_k(target, :redefine)
+ensure
+  $fiber_cont_cls = nil
+end
+
+# A C method that hands its frame back with mrb_funcall_k() leaves no C
+# activation record under the Ruby method it sends to, so a `Fiber.yield`
+# inside that method has no C boundary to cross.
+assert('a Ruby == called from Array#index can yield') do
+  cls = Class.new do
+    def initialize(v); @v = v; end
+    attr_reader :v
+    def ==(o); Fiber.yield(:asked); o.is_a?(self.class) && o.v == @v; end
+  end
+  ary = [cls.new(0), cls.new(1), cls.new(2)]
+  f = Fiber.new { ary.index(cls.new(2)) }
+  asked = 0
+  answer = nil
+  while f.alive?
+    v = f.resume
+    v == :asked ? asked += 1 : answer = v
+  end
+  assert_equal 3, asked
+  assert_equal 2, answer
+end
+
+assert('a Ruby == called from Range#== can yield') do
+  cls = Class.new do
+    def initialize(v); @v = v; end
+    attr_reader :v
+    def ==(o); Fiber.yield(:asked); o.is_a?(self.class) && o.v == @v; end
+    def <=>(o); v <=> o.v; end
+  end
+  f = Fiber.new { (cls.new(0)..cls.new(1)) == (cls.new(0)..cls.new(1)) }
+  asked = 0
+  answer = nil
+  while f.alive?
+    v = f.resume
+    v == :asked ? asked += 1 : answer = v
+  end
+  assert_equal 2, asked
+  assert_true answer
+end
+
+assert('a suspended C frame unwinds like any other') do
+  log = []
+  cls = Class.new do
+    def initialize(v); @v = v; end
+    def ==(o)
+      $fiber_cont_log << :entered
+      raise 'from a suspended =='
+    ensure
+      $fiber_cont_log << :ensured
+    end
+  end
+  $fiber_cont_log = log
+  assert_raise_with_message(RuntimeError, 'from a suspended ==') do
+    [cls.new(0)].index(cls.new(1))
+  end
+  assert_equal [:entered, :ensured], log
+ensure
+  $fiber_cont_log = nil
+end
