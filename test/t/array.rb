@@ -745,6 +745,16 @@ assert('Array#delete') do
   assert_equal [], a
 end
 
+assert('Array#delete on a frozen array') do
+  a = [1, 2].freeze
+  assert_raise(FrozenError) { a.delete(1) }
+  # deleting the last element writes nothing before the length changes
+  assert_raise(FrozenError) { a.delete(2) }
+  assert_equal [1, 2], a
+  assert_nil a.delete(3)
+  assert_equal :none, a.delete(3) { :none }
+end
+
 assert('Array#index, #rindex, #delete and #== compare a wide Integer by value') do
   # An Integer past the inline range is an object of its own under word
   # boxing, so two equal ones are not the same object, and `mrb_equal()` has

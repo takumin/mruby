@@ -2144,6 +2144,9 @@ mrb_ary_delete(mrb_state *mrb, mrb_value self)
     return mrb_yield(mrb, blk, obj);
   }
 
+  /* Only elements at the tail were deleted where no write above asked; the
+     length still changes, as `pop` changes it. */
+  ary_modify_check(mrb, ary);
   ARY_SET_LEN(ary, j);
   return ret;
 }
