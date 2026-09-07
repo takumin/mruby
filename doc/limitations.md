@@ -103,6 +103,67 @@ alias $a $__a__
 
 Syntax error
 
+## Redefining a method of a built-in class
+
+An operator redefined on `Integer`, `Float`, `String` or `Symbol` is honored:
+the opcodes that answer `+`, `<`, `==`, `[]` and their kin in C first ask
+whether the operator they reimplement is still the built-in one, and send the
+redefinition once it is not. Two groups of built-in methods carry no such
+test, and mruby keeps answering them in C whatever the class holds.
+
+`Array#sort`, `Array#sort!`, `Array#sort_by`, `Array#min` and `Array#max`
+compare a pair of Integers, Floats or Strings by value, without asking `<=>`.
+
+`to_s` is answered in C for a String, Symbol, Integer, Class or Module
+wherever an object is turned into a string for output: string interpolation,
+`Array#join`, `print` and `puts`.
+
+```ruby
+class Integer
+  def <=>(other); 0; end
+  def to_s; 'X'; end
+end
+
+p [3, 1, 2].sort
+puts "#{1}"
+```
+
+#### CRuby
+
+```
+[3, 1, 2]
+X
+```
+
+#### mruby
+
+```
+[1, 2, 3]
+1
+```
+
+The difference runs the other way as well. Much of what CRuby implements in C,
+mruby implements in Ruby, so a redefinition reaches methods that answer without
+consulting it in CRuby. `Integer#times` counts with `Integer#+`, and while that
+operator answers something other than an Integer, `3.times` raises where
+CRuby's does not.
+
+```ruby
+class Integer
+  def +(other); :redef; end
+end
+
+3.times {}
+```
+
+#### CRuby
+
+Nothing is raised; `Integer#times` counts in C.
+
+#### mruby
+
+`ArgumentError` is raised from inside `Integer#times`.
+
 ## `nil?` redefinition in conditional expressions
 
 Redefinition of `nil?` is ignored in conditional expressions.
