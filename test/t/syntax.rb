@@ -1323,12 +1323,17 @@ assert('pattern matching - a key that moves the subject') do
   # buffer it started with.
   assert_false h1.__pat_values(keys)
 
-  # `**rest` reaches __except, which walks the subject hash as well
+  # `**rest` reaches __except, which walks the subject hash as well. A key's
+  # `==` written in Ruby is sent from Ruby, which walks the entries the hash
+  # held when it took over, so what the `==` adds to the subject is neither
+  # walked nor refused.
   h2 = {a: 1}
   ks = Array.new(30) { |i| k = moving.new(i + 1); h2[k] = k; k }
   ks.each { |k| k.owner = h2 }
   ks[0].armed = true
-  assert_raise(RuntimeError) { h2.__except([:a]) }
+  rest = h2.__except([:a])
+  assert_equal ks, rest.keys
+  assert_equal 2031, h2.size
 end
 
 assert('pattern matching - hash patterns') do

@@ -249,3 +249,21 @@ assert('Array#index, #rindex, #delete and #== send a `==` written in Ruby in the
   assert_equal :asked, f.resume
   assert_true f.resume
 end
+
+assert('Hash#value?, #== and __except send a `==` written in Ruby in the VM they run in') do
+  # A `==` written in Ruby is not called from the C walk, which would nest a
+  # VM under the one it was called from: the walk hands the rest of the hash
+  # to Ruby, which sends `==` where a `Fiber.yield` inside it has no C frame
+  # to cross, as in CRuby.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { {a: 0, b: 1}.value?(yielder) }
+  assert_equal :asked, f.resume    # asked about 0
+  assert_equal :asked, f.resume    # and about 1
+  assert_true f.resume
+  f = Fiber.new { {a: 0, b: yielder} == {a: 0, b: 1} }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+  f = Fiber.new { {a: 0, yielder => 2}.__except([:a]) }
+  assert_equal :asked, f.resume
+  assert_equal({yielder => 2}, f.resume)
+end

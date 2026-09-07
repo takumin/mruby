@@ -2001,10 +2001,24 @@ mrb_hash_has_value(mrb_state *mrb, mrb_value hash)
 {
   mrb_value val = mrb_get_arg1(mrb);
   struct RHash *h = mrb_hash_ptr(hash);
+  mrb_int i = 0;
+
+  /* A value is compared as `mrb_equal()` compares it, with `val` as the
+     receiver of `==`, which is mruby's own convention and what the test
+     "#== receiver should be specified value" pins; CRuby's
+     `rb_hash_search_value()` asks the value instead. A `==` written in Ruby
+     is not called from here, where it would nest a VM under this one:
+     `__value_from` compares the values left, the `i`th first, in the VM
+     this method was called from. */
   H_EACH(h, entry) {
-    H_CHECK_MODIFIED(mrb, h) {
-      if (mrb_equal(mrb, val, entry->val)) return mrb_true_value();
+    int r;
+    H_CHECK_MODIFIED(mrb, h) {r = mrb_equal_in_c(mrb, val, entry->val);}
+    if (r < 0) {
+      mrb_value argv[2] = {val, mrb_int_value(mrb, i)};
+      return mrb_exec_method(mrb, hash, MRB_SYM(__value_from), 2, argv);
     }
+    if (r) return mrb_true_value();
+    i++;
   }
   return mrb_false_value();
 }
@@ -2162,16 +2176,28 @@ mrb_hash_except_keys(mrb_state *mrb, mrb_value hash)
   struct RHash *h = mrb_hash_ptr(hash);
   int ai = mrb_gc_arena_save(mrb);
 
-  /* Both calls below run Ruby: #== on a key, and #hash and #eql? on the key
-     being stored. That can replace `keys`, so its buffer and length are read
-     afresh each time, and it can rehash `hash` out from under H_EACH, which
-     is what H_CHECK_MODIFIED refuses. */
+  /* Both calls below can run Ruby: #== on a key, and #hash and #eql? on the
+     key being stored. That can replace `keys`, so its buffer and length are
+     read afresh each time, and it can rehash `hash` out from under H_EACH,
+     which is what H_CHECK_MODIFIED refuses.
+
+     A key is compared as `mrb_equal()` compares it. One whose `==` is
+     written in Ruby is not called from here, where it would nest a VM under
+     this one: `__except_from` walks the entries left, the `n`th first, in
+     the VM this method was called from, and asks that `==` from the first
+     of `keys`, which is where such a key is handed over, since the only
+     answer C gives about it is that it is the same object. */
+  mrb_int n = 0;
   H_EACH(h, entry) {
     mrb_bool found = FALSE;
     for (mrb_int i = 0; i < klen && i < RARRAY_LEN(keys); i++) {
-      mrb_bool eq = FALSE;
-      H_CHECK_MODIFIED(mrb, h) {eq = mrb_equal(mrb, entry->key, RARRAY_PTR(keys)[i]);}
-      if (eq) {
+      int r;
+      H_CHECK_MODIFIED(mrb, h) {r = mrb_equal_in_c(mrb, entry->key, RARRAY_PTR(keys)[i]);}
+      if (r < 0) {
+        mrb_value argv[3] = {keys, mrb_int_value(mrb, n), result};
+        return mrb_exec_method(mrb, hash, MRB_SYM(__except_from), 3, argv);
+      }
+      if (r) {
         found = TRUE;
         break;
       }
@@ -2180,6 +2206,7 @@ mrb_hash_except_keys(mrb_state *mrb, mrb_value hash)
       H_CHECK_MODIFIED(mrb, h) {mrb_hash_set(mrb, result, entry->key, entry->val);}
     }
     mrb_gc_arena_restore(mrb, ai);
+    n++;
   }
   return result;
 }
@@ -2312,10 +2339,17 @@ mrb_hash_equal(mrb_state *mrb, mrb_value hash)
 
   struct RHash *h1 = mrb_hash_ptr(hash);
   struct RHash *h2 = mrb_hash_ptr(hash2);
+  mrb_int i = 0;
 
+  /* A pair of values is compared as `mrb_equal()` compares it, with the
+     value of this hash as the receiver. A `==` written in Ruby is not called
+     from here, where it would nest a VM under this one: `__eq_from` compares
+     the entries left, the `i`th first, in the VM this method was called
+     from. */
   H_EACH(h1, entry) {
     mrb_value val2;
     mrb_bool found;
+    int r;
 
     H_CHECK_MODIFIED(mrb, h1) {
       found = h_get(mrb, h2, entry->key, &val2);
@@ -2324,10 +2358,16 @@ mrb_hash_equal(mrb_state *mrb, mrb_value hash)
       return mrb_false_value();
     }
     H_CHECK_MODIFIED(mrb, h1) {
-      if (!mrb_equal(mrb, entry->val, val2)) {
-        return mrb_false_value();
-      }
+      r = mrb_equal_in_c(mrb, entry->val, val2);
     }
+    if (r < 0) {
+      mrb_value argv[2] = {hash2, mrb_int_value(mrb, i)};
+      return mrb_exec_method(mrb, hash, MRB_SYM(__eq_from), 2, argv);
+    }
+    if (!r) {
+      return mrb_false_value();
+    }
+    i++;
   }
 
   return mrb_true_value();

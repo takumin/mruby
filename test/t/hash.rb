@@ -1075,6 +1075,44 @@ assert('Hash#[] with a default proc that grows the VM stack') do
   assert_equal :from_proc, h[1]
 end
 
+assert('Hash#value?, #== and __except past a value whose `==` is written in Ruby') do
+  # The rest of the walk is made in Ruby and answers what the C walk answers:
+  # a pair is equal when it is the same object, and `==` is asked only
+  # otherwise, with the receiver the C walk gives it: the argument for
+  # `value?`, as the test below on that receiver pins, the value of the
+  # receiver for `==`, and the key for __except.
+  asked = 0
+  yes = Class.new { define_method(:==) {|other| asked += 1; other == :yes } }.new
+  never = Class.new { def ==(other); false; end }.new
+
+  h = {a: 0, b: :yes, c: never, d: 1}
+  assert_true h.value?(yes)
+  assert_false({a: 0, c: never, d: 1}.value?(yes))
+  assert_true h.value?(never)      # itself, with no `==` asked
+
+  h = {a: yes, b: never, c: 1}
+  assert_true h == {a: :yes, b: never, c: 1}
+  assert_false h == {a: :no, b: never, c: 1}
+  assert_false h == {a: :yes, b: never, c: 2}
+  assert_false h == {a: :yes, b: Object.new, c: 1}
+  assert_false h == {a: :yes, b: never, d: 1}
+
+  h = {yes => 0, a: 1, never => 2}
+  assert_equal({a: 1, never => 2}, h.__except([:yes]))
+  assert_equal({yes => 0, never => 2}, h.__except([:a]))
+  assert_equal({yes => 0, a: 1}, h.__except([never]))
+  assert_true asked > 0
+end
+
+assert('Hash#== past a value whose `==` is written in Ruby keeps the recursion check') do
+  always = Class.new { def ==(other); true; end }.new
+  a = {k: always}
+  a[:s] = a
+  b = {k: always}
+  b[:s] = b
+  assert_true a == b
+end
+
 assert('Hash#== and #eql? with recursive values') do
   # see the Array case: the pair under comparison is assumed equal and the
   # rest of the entries settle it.
