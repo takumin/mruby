@@ -84,9 +84,10 @@ mrb_obj_equal(mrb_state *mrb, mrb_value v1, mrb_value v2)
  * it in CRuby. A pair of Integers or of Symbols is answered from the values
  * while the builtin `==` of the class stands, which `mrb->bop_redefined`
  * records as it does for `OP_EQ`; a mixed Integer and Float pair, and a
- * BigInt against a number, are compared as numbers; and an `obj1` whose `==`
+ * BigInt against a number, are compared as numbers; an `obj1` whose `==`
  * is the default `mrb_obj_equal_m` is unequal to whatever it is not identical
- * to.
+ * to; and one whose `==` is the builtin `String#==` is compared as that
+ * compares, without the frame a call of it would push.
  *
  * A number is equal to what is no number only if that says so: CRuby's
  * `num_equal()` asks `obj2 == obj1`, and so do `Integer#==` and `Float#==`
@@ -158,6 +159,7 @@ mrb_equal_in_c(mrb_state *mrb, mrb_value obj1, mrb_value obj2)
   mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_OPSYM(eq));
   if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m)) return -1;
   if (MRB_METHOD_CFUNC(m) == mrb_obj_equal_m) return FALSE;
+  if (MRB_METHOD_CFUNC(m) == mrb_str_equal_m) return mrb_str_equal(mrb, obj1, obj2);
   mrb_value result = mrb_funcall_argv(mrb, obj1, MRB_OPSYM(eq), 1, &obj2);
   return mrb_test(result);
 }

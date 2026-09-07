@@ -72,6 +72,7 @@ void mrb_builtin_op_update(mrb_state *mrb, mrb_sym mid);
 void mrb_idx_op_rearm(mrb_state *mrb, enum mrb_idx_op_slot slot);
 
 mrb_value mrb_obj_equal_m(mrb_state *mrb, mrb_value);
+mrb_value mrb_str_equal_m(mrb_state *mrb, mrb_value);
 
 /* debug */
 size_t mrb_packed_int_len(uint32_t num);
