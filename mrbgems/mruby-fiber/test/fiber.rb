@@ -263,6 +263,13 @@ assert('Hash#value?, #== and __except send a `==` written in Ruby in the VM they
   assert_equal :asked, f.resume    # asked back by 0
   assert_equal :asked, f.resume    # and by 1
   assert_true f.resume
+  f = Fiber.new { {1 => :a}.assoc(yielder) }
+  assert_equal :asked, f.resume
+  assert_equal [1, :a], f.resume
+  f = Fiber.new { {a: 0, b: 1}.rassoc(yielder) }
+  assert_equal :asked, f.resume
+  assert_equal :asked, f.resume
+  assert_equal [:b, 1], f.resume
   f = Fiber.new { {a: 0, b: yielder} == {a: 0, b: 1} }
   assert_equal :asked, f.resume
   assert_true f.resume

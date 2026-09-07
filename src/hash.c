@@ -2275,6 +2275,8 @@ mrb_hash_to_hash(mrb_state *mrb, mrb_value self)
  *  h = {foo: 0, bar: 1, baz: 2}
  *  h.assoc(:bar) # => [:bar, 1]
  *
+ * A key is found with `==` rather than with the `eql?` a lookup uses, as in
+ * CRuby, so `{1 => 0}.assoc(1.0)` finds a pair `{1 => 0}[1.0]` does not.
  * Returns nil if key key is not found.
  */
 static mrb_value
@@ -2282,10 +2284,22 @@ mrb_hash_assoc(mrb_state *mrb, mrb_value hash)
 {
   mrb_value key = mrb_get_arg1(mrb);
   struct RHash *h = mrb_hash_ptr(hash);
+  mrb_int i = 0;
+
+  /* A key is compared as `mrb_equal()` compares it, with `key` as the
+     receiver of `==`, as CRuby's `rb_hash_assoc()` has it. A `==` written in
+     Ruby is not called from here, where it would nest a VM under this one:
+     `__assoc_from` compares the entries left, the `i`th first, in the VM
+     this method was called from. */
   H_EACH(h, entry) {
-    if (obj_eql(mrb, entry->key, key, h)) {
-      return mrb_assoc_new(mrb, entry->key, entry->val);
+    int r;
+    H_CHECK_MODIFIED(mrb, h) {r = mrb_equal_in_c(mrb, key, entry->key);}
+    if (r < 0) {
+      mrb_value argv[2] = {key, mrb_int_value(mrb, i)};
+      return mrb_exec_method(mrb, hash, MRB_SYM(__assoc_from), 2, argv);
     }
+    if (r) return mrb_assoc_new(mrb, entry->key, entry->val);
+    i++;
   }
   return mrb_nil_value();
 }
@@ -2307,10 +2321,19 @@ mrb_hash_rassoc(mrb_state *mrb, mrb_value hash)
 {
   mrb_value value = mrb_get_arg1(mrb);
   struct RHash *h = mrb_hash_ptr(hash);
+  mrb_int i = 0;
+
+  /* As `Hash#assoc` compares a key, with `value` as the receiver of `==`, as
+     CRuby's `rb_hash_rassoc()` has it, and handing over to `__rassoc_from`. */
   H_EACH(h, entry) {
-    if (obj_eql(mrb, entry->val, value, h)) {
-      return mrb_assoc_new(mrb, entry->key, entry->val);
+    int r;
+    H_CHECK_MODIFIED(mrb, h) {r = mrb_equal_in_c(mrb, value, entry->val);}
+    if (r < 0) {
+      mrb_value argv[2] = {value, mrb_int_value(mrb, i)};
+      return mrb_exec_method(mrb, hash, MRB_SYM(__rassoc_from), 2, argv);
     }
+    if (r) return mrb_assoc_new(mrb, entry->key, entry->val);
+    i++;
   }
   return mrb_nil_value();
 }

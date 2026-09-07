@@ -51,6 +51,46 @@ class Hash
     false
   end
 
+  ##
+  # call-seq:
+  #   hsh.__assoc_from(key, i) -> [key, value] or nil
+  #
+  # Internal method: the rest of Hash#assoc, from the `i`th entry, whose key
+  # `key` is compared with by a `==` written in Ruby. The C walk hands over
+  # here instead of calling that `==` from C, which would nest a VM under
+  # the one this runs in. A key is compared as `mrb_equal()` compares it,
+  # with `key` as the receiver, as the C walk and CRuby have it: the two are
+  # equal when they are the same object, and otherwise when `==` says so.
+  #
+  def __assoc_from(key, i)
+    ks = keys
+    vs = values
+    while i < ks.size
+      k = ks[i]
+      return [k, vs[i]] if key.equal?(k) || key == k
+      i += 1
+    end
+    nil
+  end
+
+  ##
+  # call-seq:
+  #   hsh.__rassoc_from(val, i) -> [key, value] or nil
+  #
+  # Internal method: the rest of Hash#rassoc, from the `i`th entry, whose
+  # value `val` is compared with by a `==` written in Ruby, as `__assoc_from`
+  # is the rest of Hash#assoc, with `val` as the receiver.
+  #
+  def __rassoc_from(val, i)
+    ks = keys
+    vs = values
+    while i < ks.size
+      v = vs[i]
+      return [ks[i], v] if val.equal?(v) || val == v
+      i += 1
+    end
+    nil
+  end
 
   ##
   # call-seq:
