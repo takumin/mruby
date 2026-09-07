@@ -189,21 +189,52 @@ range_initialize(mrb_state *mrb, mrb_value range)
 static mrb_value
 range_eq(mrb_state *mrb, mrb_value range)
 {
-  struct RRange *rr;
-  struct RRange *ro;
   mrb_value obj = mrb_get_arg1(mrb);
-  mrb_bool v1, v2;
+  mrb_value answer, state;
+  mrb_int step = 0;             /* 0: the beginnings, 1: the ends, 2: done */
+  mrb_bool v1 = TRUE;
 
-  if (mrb_obj_equal(mrb, range, obj)) return mrb_true_value();
-  if (!mrb_obj_is_instance_of(mrb, obj, mrb_obj_class(mrb, range))) { /* same class? */
-    return mrb_false_value();
+  /* Two `==` are asked here, so the state says which of them answered.  It
+     carries the answer of the first as well: both are asked whatever the
+     first says, as they were before. */
+  if (mrb_funcall_k_resumed(mrb, &answer, &state)) {
+    mrb_int s = mrb_integer(state);
+    step = (s >> 1) + 1;
+    v1 = (s & 1) ? TRUE : FALSE;
+    if (step == 1) v1 = mrb_test(answer);
+    else if (!mrb_test(answer)) return mrb_false_value();
+  }
+  else {
+    if (mrb_obj_equal(mrb, range, obj)) return mrb_true_value();
+    if (!mrb_obj_is_instance_of(mrb, obj, mrb_obj_class(mrb, range))) { /* same class? */
+      return mrb_false_value();
+    }
   }
 
-  rr = mrb_range_ptr(mrb, range);
-  ro = mrb_range_ptr(mrb, obj);
-  v1 = mrb_equal(mrb, RANGE_BEG(rr), RANGE_BEG(ro));
-  v2 = mrb_equal(mrb, RANGE_END(rr), RANGE_END(ro));
-  if (!v1 || !v2 || RANGE_EXCL(rr) != RANGE_EXCL(ro)) {
+  /* read again rather than kept: a `==` written in Ruby may have run since */
+  struct RRange *rr = mrb_range_ptr(mrb, range);
+  struct RRange *ro = mrb_range_ptr(mrb, obj);
+
+  if (step == 0) {
+    mrb_value beg = RANGE_BEG(ro);
+    int r = mrb_equal_in_c(mrb, RANGE_BEG(rr), beg);
+    if (r < 0) {
+      return mrb_funcall_k(mrb, RANGE_BEG(rr), MRB_OPSYM(eq), 1, &beg,
+                           mrb_int_value(mrb, 0));
+    }
+    v1 = (mrb_bool)r;
+    step = 1;
+  }
+  if (step == 1) {
+    mrb_value end = RANGE_END(ro);
+    int r = mrb_equal_in_c(mrb, RANGE_END(rr), end);
+    if (r < 0) {
+      return mrb_funcall_k(mrb, RANGE_END(rr), MRB_OPSYM(eq), 1, &end,
+                           mrb_int_value(mrb, (v1 ? 1 : 0) | 2));
+    }
+    if (!r) return mrb_false_value();
+  }
+  if (!v1 || RANGE_EXCL(rr) != RANGE_EXCL(ro)) {
     return mrb_false_value();
   }
   return mrb_true_value();
