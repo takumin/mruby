@@ -422,6 +422,31 @@ assert('Enumerable#count sends a `==` written in Ruby in the VM it runs in') do
   assert_equal 1, f.resume
 end
 
+assert('Array#count sends a `==` written in Ruby in the VM it runs in') do
+  # A `==` written in Ruby is not called from the C walk, which would nest a
+  # VM under the one it was called from: the walk hands the rest of the array
+  # to Ruby, which sends `==` where a `Fiber.yield` inside it has no C frame
+  # to cross, as in CRuby and as `Enumerable#count` sends it.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { [1, yielder, 1].count(1) }
+  assert_equal :asked, f.resume
+  assert_equal 3, f.resume
+end
+
+assert('Array#count past an element whose `==` is written in Ruby') do
+  # The rest of the walk is made in Ruby, counting on from what C counted,
+  # and answers what the C walk answers: an element is equal to the object
+  # when it is the same one, and its `==` is asked only otherwise.
+  asked = 0
+  yes = Class.new { define_method(:==) {|other| asked += 1; other == :yes } }.new
+  never = Class.new { def ==(other); false; end }.new
+  a = [:yes, yes, never, :yes, yes]
+  assert_equal 4, a.count(:yes)
+  assert_equal 1, a.count(never)
+  assert_equal 0, a.count(:no)
+  assert_true asked > 0
+end
+
 assert("Array#count with a NaN") do
   # A NaN is equal to no value, its own included, so `count` cannot find one by
   # what it is equal to; it searches for the object, and every NaN made is one
