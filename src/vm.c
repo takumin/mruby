@@ -1661,6 +1661,70 @@ mrb_exec_irep(mrb_state *mrb, mrb_value self, const struct RProc *p)
   }
 }
 
+/*
+ * Ends the running C method with a call of `mid` on `self`, passing the
+ * `argc` values of `argv` and the block the method was given: what the call
+ * answers is what the method returns. Called by a method the VM dispatched,
+ * it hands the method's own frame to `mid`, so a `mid` written in Ruby runs
+ * in the VM that is already running, in place of the method, and no VM
+ * nests; called by a method that C reached through `mrb_funcall()`, which
+ * has no such frame, it calls `mid` as `mrb_funcall_with_block()` does.
+ *
+ * The call continues the method rather than replacing it: the frame keeps
+ * the method's name, which a backtrace shows and `mrb_recursive_method_p()`
+ * reads, and `self` and the first of `argv` stay in the slots that function
+ * reads a receiver and an argument from. A method calls this once nothing
+ * of its own is left to do, since its frame, the arguments `mrb_get_args()`
+ * read off it included, is gone when the call returns. `argv` may point into
+ * the VM stack.
+ */
+mrb_value
+mrb_exec_method(mrb_state *mrb, mrb_value self, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value blk = ci->stack[ci_bidx(ci)];
+
+  mrb_assert(argc < CALL_MAXARGS);
+  if (ci->cci != CINFO_NONE) {
+    return mrb_funcall_with_block(mrb, self, mid, argc, argv, blk);
+  }
+
+  struct RClass *c = mrb_class(mrb, self);
+  mrb_method_t m = mrb_vm_find_method(mrb, c, &c, mid);
+  if (MRB_METHOD_UNDEF_P(m)) {  /* `method_missing` */
+    return mrb_funcall_with_block(mrb, self, mid, argc, argv, blk);
+  }
+
+  stack_extend_adjust(mrb, argc + 2, &argv);
+  mrb_value *regs = ci->stack;
+  for (mrb_int i = 0; i < argc; i++) {
+    regs[i+1] = argv[i];
+  }
+  regs[argc+1] = blk;
+  ci->n = (uint8_t)argc;
+  ci->kw = 0;
+  ci->u.target_class = c;
+
+  if (MRB_METHOD_FUNC_P(m)) {
+    check_argument_count(mrb, ci, MRB_MT_ASPEC(m.flags));
+    return MRB_METHOD_FUNC(m)(mrb, self);
+  }
+  const struct RProc *p = MRB_METHOD_PROC(m);
+  MRB_PROC_RESOLVE_ALIAS(ci, p);
+  CI_PROC_SET(ci, p);
+  if (MRB_PROC_CFUNC_P(p)) {
+    uint32_t caspec_bits = p->flags & MRB_PROC_CASPEC_MASK;
+    if (caspec_bits != 0) {
+      check_argument_count(mrb, ci, mrb_proc_decompress_caspec(caspec_bits));
+    }
+    else if (MRB_PROC_NOARG_P(p) && (ci->n > 0 || ci->kw)) {
+      check_argument_count(mrb, ci, 0);
+    }
+    return MRB_PROC_CFUNC(p)(mrb, self);
+  }
+  return exec_irep(mrb, self, p);
+}
+
 mrb_value
 mrb_object_exec(mrb_state *mrb, mrb_value self, struct RClass *target_class)
 {

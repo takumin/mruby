@@ -205,6 +205,14 @@ in mrblib. A method that takes a block generally belongs in Ruby for the same
 reason; where speed matters, define a C fast path (conventionally named with a
 `__` prefix) and call it from a wrapping Ruby method.
 
+A C method that finds out only part way through that Ruby has to run, as a
+walk comparing elements finds an element whose `==` is written in Ruby, can
+hand the rest of its work to a Ruby method instead: `mrb_exec_method()` in
+`src/vm.c` gives the method's own frame to a `__`-prefixed continuation, which
+the VM then runs in place of the method, with no VM nested under it. `mrb_equal_in_c()`
+in `src/object.c` tells such a walk whether a `==` is one it can call from C,
+and `Array#index` with `Array#__index_from` shows the shape.
+
 The rule is about the responsibility of the function, not about the presence of
 `mrb_funcall*()`. Entering the VM is legitimate where dispatch is itself the
 specification: `convert_type()` in `src/object.c` for the `to_proc` protocol,
