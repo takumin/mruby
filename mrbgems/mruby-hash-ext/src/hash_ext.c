@@ -271,6 +271,8 @@ struct key_search {
   mrb_value target;
   mrb_value result;
   mrb_bool found;
+  mrb_bool in_ruby;     /* the `==` of the value at `i` is written in Ruby */
+  mrb_int i;            /* how many values were compared and answered */
 };
 
 /*
@@ -280,7 +282,11 @@ struct key_search {
  * over hash entries to find a key that corresponds to a specific target value.
  *
  * When a match is found, it stores the key, sets a flag, and stops the
- * iteration.
+ * iteration. A value is compared as `mrb_equal()` compares it, with the
+ * value as the receiver of `==`, as in CRuby. One whose `==` is written in
+ * Ruby stops the iteration as well, for `hash_key()` to hand the rest of
+ * the search to `__key_from`, which sends that `==` in the VM the method was
+ * called from instead of nesting one under it.
  *
  * @param mrb    The mruby state.
  * @param key    The key of the current hash entry.
@@ -294,11 +300,17 @@ static int
 hash_key_i(mrb_state *mrb, mrb_value key, mrb_value val, void *data)
 {
   struct key_search *search = (struct key_search*)data;
-  if (mrb_equal(mrb, val, search->target)) {
+  int r = mrb_equal_in_c(mrb, val, search->target);
+  if (r < 0) {
+    search->in_ruby = TRUE;
+    return 1; /* Stop iteration */
+  }
+  if (r) {
     search->result = key;
     search->found = TRUE;
     return 1; /* Stop iteration */
   }
+  search->i++;
   return 0; /* Continue iteration */
 }
 
@@ -325,9 +337,15 @@ hash_key(mrb_state *mrb, mrb_value hash)
   search.target = val;
   search.result = mrb_nil_value();
   search.found = FALSE;
+  search.in_ruby = FALSE;
+  search.i = 0;
 
   mrb_hash_foreach(mrb, mrb_hash_ptr(hash), hash_key_i, &search);
 
+  if (search.in_ruby) {
+    mrb_value argv[2] = {val, mrb_int_value(mrb, search.i)};
+    return mrb_exec_method(mrb, hash, MRB_SYM(__key_from), 2, argv);
+  }
   return search.found ? search.result : mrb_nil_value();
 }
 
