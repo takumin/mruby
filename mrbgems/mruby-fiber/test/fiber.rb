@@ -266,3 +266,43 @@ ensure
   $fiber_cont_cls = nil
 end
 
+# A C method that hands its frame back with mrb_funcall_k() leaves no C
+# activation record under the Ruby method it sends to, so a `Fiber.yield`
+# inside that method has no C boundary to cross.
+assert('a Ruby == called from Array#index can yield') do
+  cls = Class.new do
+    def initialize(v); @v = v; end
+    attr_reader :v
+    def ==(o); Fiber.yield(:asked); o.is_a?(self.class) && o.v == @v; end
+  end
+  ary = [cls.new(0), cls.new(1), cls.new(2)]
+  f = Fiber.new { ary.index(cls.new(2)) }
+  asked = 0
+  answer = nil
+  while f.alive?
+    v = f.resume
+    v == :asked ? asked += 1 : answer = v
+  end
+  assert_equal 3, asked
+  assert_equal 2, answer
+end
+
+assert('a suspended C frame unwinds like any other') do
+  log = []
+  cls = Class.new do
+    def initialize(v); @v = v; end
+    def ==(o)
+      $fiber_cont_log << :entered
+      raise 'from a suspended =='
+    ensure
+      $fiber_cont_log << :ensured
+    end
+  end
+  $fiber_cont_log = log
+  assert_raise_with_message(RuntimeError, 'from a suspended ==') do
+    [cls.new(0)].index(cls.new(1))
+  end
+  assert_equal [:entered, :ensured], log
+ensure
+  $fiber_cont_log = nil
+end
