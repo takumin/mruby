@@ -31,6 +31,19 @@ class Numeric
       self
     end
   end
+
+  ##
+  # call-seq:
+  #   num.__eq_ask(other) -> true or false
+  #
+  # Internal method: what Integer#== and Float#== answer for an `other` that
+  # is no number, which is asked `other == num`, as CRuby asks it. The C
+  # method hands over here when that `==` is written in Ruby, so that it is
+  # sent in the VM the C method runs in instead of one nested under it.
+  #
+  def __eq_ask(other)
+    other == self ? true : false
+  end
 end
 
 ##

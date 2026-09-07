@@ -268,6 +268,34 @@ assert('Hash#value?, #== and __except send a `==` written in Ruby in the VM they
   assert_equal({yielder => 2}, f.resume)
 end
 
+assert('Integer#== and Float#== send the `==` of what is no number in the VM they run in') do
+  # An operand that is no number is asked `obj == num`, as CRuby's num_equal()
+  # asks it. A `==` written in Ruby is not called from C, which would nest a
+  # VM under the one the method was dispatched from: the method hands its
+  # frame to Ruby, which sends `==` where a `Fiber.yield` inside it has no C
+  # frame to cross, as in CRuby. The walks that compare from C ask the same
+  # way, one Integer element after another.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { 1 == yielder }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+  f = Fiber.new { 2 == yielder }
+  assert_equal :asked, f.resume
+  assert_false f.resume
+  if Object.const_defined?(:Float)
+    f = Fiber.new { 1.0 == yielder }
+    assert_equal :asked, f.resume
+    assert_true f.resume
+  end
+  f = Fiber.new { [0, 1].index(yielder) }
+  assert_equal :asked, f.resume
+  assert_equal :asked, f.resume
+  assert_equal 1, f.resume
+  f = Fiber.new { [0, 1] == [0, yielder] }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+end
+
 assert('Range#== sends a `==` written in Ruby in the VM it runs in') do
   # Neither end's `==` is called from C, which would nest a VM under the one
   # `==` was called from: the comparison is handed to Ruby, which sends `==`
