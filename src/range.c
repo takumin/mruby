@@ -192,7 +192,6 @@ range_eq(mrb_state *mrb, mrb_value range)
   struct RRange *rr;
   struct RRange *ro;
   mrb_value obj = mrb_get_arg1(mrb);
-  mrb_bool v1, v2;
 
   if (mrb_obj_equal(mrb, range, obj)) return mrb_true_value();
   if (!mrb_obj_is_instance_of(mrb, obj, mrb_obj_class(mrb, range))) { /* same class? */
@@ -201,12 +200,22 @@ range_eq(mrb_state *mrb, mrb_value range)
 
   rr = mrb_range_ptr(mrb, range);
   ro = mrb_range_ptr(mrb, obj);
-  v1 = mrb_equal(mrb, RANGE_BEG(rr), RANGE_BEG(ro));
-  v2 = mrb_equal(mrb, RANGE_END(rr), RANGE_END(ro));
-  if (!v1 || !v2 || RANGE_EXCL(rr) != RANGE_EXCL(ro)) {
-    return mrb_false_value();
+  /* The two ends are compared as `mrb_equal()` compares them, the beginning
+     first and only while the answer is `true`, as CRuby's `range_eq()`
+     compares them. A `==` written in Ruby is not called from here, where it
+     would nest a VM under this one: `__eq_from` compares what is left, in
+     the VM this method was called from. */
+  for (int end = 0; end < 2; end++) {
+    mrb_value a = end ? RANGE_END(rr) : RANGE_BEG(rr);
+    mrb_value b = end ? RANGE_END(ro) : RANGE_BEG(ro);
+    int r = mrb_equal_in_c(mrb, a, b);
+    if (r < 0) {
+      mrb_value argv[2] = {obj, mrb_int_value(mrb, end)};
+      return mrb_exec_method(mrb, range, MRB_SYM(__eq_from), 2, argv);
+    }
+    if (!r) return mrb_false_value();
   }
-  return mrb_true_value();
+  return mrb_bool_value(RANGE_EXCL(rr) == RANGE_EXCL(ro));
 }
 
 /*

@@ -1,6 +1,66 @@
 class Array
   ##
   # call-seq:
+  #   array.__include_from(obj, i) -> true or false
+  #
+  # Internal method: the rest of Array#include?, from the element at `i`,
+  # whose `==` is written in Ruby, as Array#__index_from is the rest of
+  # #index: an element is equal to `obj` when it is the same object, and
+  # otherwise when its `==` says so.
+  #
+  def __include_from(obj, i)
+    while i < size
+      e = self[i]
+      return true if e.equal?(obj) || e == obj
+      i += 1
+    end
+    false
+  end
+
+  ##
+  # call-seq:
+  #   array.__assoc_from(key, i) -> new_ary or nil
+  #
+  # Internal method: the rest of Array#assoc, from the element at `i`, whose
+  # first element has a `==` written in Ruby, as Array#__index_from is the
+  # rest of #index. An element is read as an Array as the C walk reads it:
+  # as it is, or through `to_ary` where it answers one.
+  #
+  def __assoc_from(key, i)
+    while i < size
+      e = self[i]
+      e = e.respond_to?(:to_ary) ? e.to_ary : nil unless e.is_a?(Array)
+      if e && !e.empty?
+        f = e[0]
+        return e if f.equal?(key) || f == key
+      end
+      i += 1
+    end
+    nil
+  end
+
+  ##
+  # call-seq:
+  #   array.__rassoc_from(obj, i) -> new_ary or nil
+  #
+  # Internal method: the rest of Array#rassoc, from the element at `i`,
+  # whose second element has a `==` written in Ruby, as `__assoc_from` is
+  # the rest of #assoc.
+  #
+  def __rassoc_from(obj, i)
+    while i < size
+      e = self[i]
+      if e.is_a?(Array) && e.size > 1
+        f = e[1]
+        return e if f.equal?(obj) || f == obj
+      end
+      i += 1
+    end
+    nil
+  end
+
+  ##
+  # call-seq:
   #    ary.uniq!                -> ary or nil
   #    ary.uniq! { |item| ... } -> ary or nil
   #

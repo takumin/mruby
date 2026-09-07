@@ -124,6 +124,24 @@ assert('Float#==', '15.2.9.3.7') do
   assert_false 3.1 == 3.2
 end
 
+assert('Float#== asks an operand that is no number, as CRuby does') do
+  # As Integer#== does: an `obj` that is no number is asked `obj == flt`,
+  # taken for true or false.
+  asked = []
+  one = Class.new { define_method(:==) {|other| asked << other; other == 1.0 } }.new
+  assert_true 1.0 == one
+  assert_false 2.0 == one
+  assert_equal [1.0, 2.0], asked
+  assert_same true, 1.0 == Class.new { def ==(other); :yes; end }.new
+  assert_false 1.0 == nil
+  assert_false 1.0 == :one
+  assert_false 1.0 == "1.0"
+  assert_false 1.0.eql?(one)
+  assert_true 1.0 === one
+  assert_equal 1, [0.0, 1.0].index(one)
+  assert_true [0.0, 1.0] == [0.0, one]
+end
+
 assert('a NaN is equal to nothing at all, itself included') do
   # `==` answers by value, and a NaN has no value: it is equal to no Float,
   # its own operand included.
@@ -556,6 +574,7 @@ assert('Float comparison redefined on Float itself reaches the redefinition') do
     int_arg = a < 2
     int_recv = 2 < a
     index = [a, b].index(b)    # `mrb_equal()` asks the redefinition
+    sym_index = [a].index(:x)  # about what is no number too
   ensure
     Float.class_eval do
       alias_method :==, :__eq_before_test
@@ -571,6 +590,7 @@ assert('Float comparison redefined on Float itself reaches the redefinition') do
   end
   assert_equal [:eq, 7.5, 2.0], eq
   assert_equal 0, index
+  assert_equal 0, sym_index
   assert_equal [:eq, 7.5, 7.5], same
   assert_equal [:lt, 7.5, 2.0], lt
   assert_equal [:le, 7.5, 2.0], le

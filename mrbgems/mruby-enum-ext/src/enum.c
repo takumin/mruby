@@ -1,6 +1,7 @@
 #include <mruby.h>
 #include <mruby/array.h>
 #include <mruby/error.h>
+#include <mruby/internal.h>
 
 /* `Enumerable#minmax` reaches an element through a call to `each`, a block
    call and a `__svalue` send, then compares it with two `<=>` sends. An Array
@@ -48,15 +49,18 @@ ary_minmax(mrb_state *mrb, mrb_value self)
 
 /* `Enumerable#count` with an argument reaches an element the same way and
    compares it with `==`. An Array is walked in place instead, and the pair is
-   compared with `mrb_equal()`, which is what `Array#index` and `#delete`
-   search with and what `OP_EQ` tests before it dispatches `==`.
+   compared as `mrb_equal()` compares it, which is how `Array#index` and
+   `#delete` search and what `OP_EQ` tests before it dispatches `==`. An
+   element whose `==` is written in Ruby hands the rest of the walk to
+   `__count_from`, which sends that `==` in the VM this method was called
+   from instead of nesting one under it, as `Enumerable#count` sends it.
 
-   `==` can run Ruby that grows or shrinks the array under us, so the length
-   and the pointer are read afresh each turn, and whatever that Ruby built on
-   the way is dropped from the arena before the next turn adds to it. A count
-   walks every element, so without the restore an `==` answering with a fresh
-   object each time fills a fixed arena. What `mrb_equal()` returns is a C
-   value and outlives the restore. */
+   A `==` written in C can run Ruby that grows or shrinks the array under us,
+   so the length and the pointer are read afresh each turn, and whatever that
+   Ruby built on the way is dropped from the arena before the next turn adds
+   to it. A count walks every element, so without the restore an `==`
+   answering with a fresh object each time fills a fixed arena. What
+   `mrb_equal_in_c()` returns is a C value and outlives the restore. */
 static mrb_value
 ary_count(mrb_state *mrb, mrb_value self)
 {
@@ -65,7 +69,12 @@ ary_count(mrb_state *mrb, mrb_value self)
 
   int ai = mrb_gc_arena_save(mrb);
   for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-    if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) n++;
+    int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+    if (r < 0) {
+      mrb_value argv[3] = {obj, mrb_int_value(mrb, i), mrb_int_value(mrb, n)};
+      return mrb_exec_method(mrb, self, MRB_SYM(__count_from), 3, argv);
+    }
+    if (r) n++;
     mrb_gc_arena_restore(mrb, ai);
   }
   return mrb_int_value(mrb, n);

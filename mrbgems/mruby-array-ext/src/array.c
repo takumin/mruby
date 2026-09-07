@@ -90,10 +90,16 @@ ary_assoc(mrb_state *mrb, mrb_value ary)
   int ai = mrb_gc_arena_save(mrb);
   for (mrb_int i = 0; i < RARRAY_LEN(ary); i++) {
     mrb_value v = mrb_check_array_type(mrb, RARRAY_PTR(ary)[i]);
-    mrb_gc_protect(mrb, v); // v may be removed from ary by mrb_equal()
-    if (!mrb_nil_p(v) && RARRAY_LEN(v) > 0 &&
-        mrb_equal(mrb, RARRAY_PTR(v)[0], k))
-      return v;
+    mrb_gc_protect(mrb, v); // v may be removed from ary by `==`
+    if (!mrb_nil_p(v) && RARRAY_LEN(v) > 0) {
+      /* as `Array#index` compares, and hands over to `__assoc_from` */
+      int r = mrb_equal_in_c(mrb, RARRAY_PTR(v)[0], k);
+      if (r < 0) {
+        mrb_value argv[2] = {k, mrb_int_value(mrb, i)};
+        return mrb_exec_method(mrb, ary, MRB_SYM(__assoc_from), 2, argv);
+      }
+      if (r) return v;
+    }
     mrb_gc_arena_restore(mrb, ai);
   }
   return mrb_nil_value();
@@ -121,11 +127,16 @@ ary_rassoc(mrb_state *mrb, mrb_value ary)
   int ai = mrb_gc_arena_save(mrb);
   for (mrb_int i = 0; i < RARRAY_LEN(ary); i++) {
     mrb_value v = RARRAY_PTR(ary)[i];
-    mrb_gc_protect(mrb, v); // v may be removed from ary by mrb_equal()
-    if (mrb_array_p(v) &&
-        RARRAY_LEN(v) > 1 &&
-        mrb_equal(mrb, RARRAY_PTR(v)[1], value))
-      return v;
+    mrb_gc_protect(mrb, v); // v may be removed from ary by `==`
+    if (mrb_array_p(v) && RARRAY_LEN(v) > 1) {
+      /* as `Array#index` compares, and hands over to `__rassoc_from` */
+      int r = mrb_equal_in_c(mrb, RARRAY_PTR(v)[1], value);
+      if (r < 0) {
+        mrb_value argv[2] = {value, mrb_int_value(mrb, i)};
+        return mrb_exec_method(mrb, ary, MRB_SYM(__rassoc_from), 2, argv);
+      }
+      if (r) return v;
+    }
     mrb_gc_arena_restore(mrb, ai);
   }
   return mrb_nil_value();
@@ -1829,9 +1840,12 @@ ary_min(mrb_state *mrb, mrb_value self)
  *  Returns `true` if the array holds an element equal to `obj`.
  *
  *  This is an optimized version of `Enumerable#include?` for arrays: the walk
- *  is made in C, and the pair is compared with `mrb_equal()`, which is what
- *  `Array#index` and `#delete` search with and what `a == b` reaches through
- *  `OP_EQ`.
+ *  is made in C, and the pair is compared as `mrb_equal()` compares it, which
+ *  is how `Array#index` and `#delete` search and what `a == b` reaches through
+ *  `OP_EQ`. An element whose `==` is written in Ruby hands the rest of the
+ *  walk to `__include_from`, which sends that `==` in the VM this method was
+ *  called from instead of nesting one under it, as `Enumerable#include?`
+ *  sends it.
  *
  *     [1, 2, 3].include?(2)   #=> true
  *     [1, 2, 3].include?(4)   #=> false
@@ -1851,9 +1865,12 @@ ary_include(mrb_state *mrb, mrb_value self)
      leaves behind is its return value, and this walk returns at the first one
      that is true. The answers it walks past are false, which is immediate. */
   for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-    if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-      return mrb_true_value();
+    int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+    if (r < 0) {
+      mrb_value argv[2] = {obj, mrb_int_value(mrb, i)};
+      return mrb_exec_method(mrb, self, MRB_SYM(__include_from), 2, argv);
     }
+    if (r) return mrb_true_value();
   }
   return mrb_false_value();
 }

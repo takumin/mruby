@@ -446,8 +446,22 @@ mrb_data_equal(mrb_state *mrb, mrb_value s)
   mrb_value *ptr2 = RDATA_PTR(s2);
   mrb_int len = RDATA_LEN(s);
   int ai = mrb_gc_arena_save(mrb);
+  /* A pair of members is compared as `mrb_equal()` compares it. A `==`
+     written in Ruby is not called from here, where it would nest a VM under
+     this one: `__eq_from` compares the members left, the `i`th first, in
+     the VM this method was called from. It reads them off two Arrays made
+     here, since the members are reached from Ruby only through methods a
+     class may replace. */
   for (mrb_int i=0; i<len; i++) {
-    if (!mrb_equal(mrb, ptr[i], ptr2[i])) {
+    int r = mrb_equal_in_c(mrb, ptr[i], ptr2[i]);
+    if (r < 0) {
+      mrb_value argv[3];
+      argv[0] = mrb_ary_new_from_values(mrb, len, ptr);
+      argv[1] = mrb_ary_new_from_values(mrb, len, ptr2);
+      argv[2] = mrb_int_value(mrb, i);
+      return mrb_exec_method(mrb, s, MRB_SYM(__eq_from), 3, argv);
+    }
+    if (!r) {
       return mrb_false_value();
     }
     mrb_gc_arena_restore(mrb, ai);

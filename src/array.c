@@ -1601,10 +1601,17 @@ mrb_ary_index_m(mrb_state *mrb, mrb_value self)
   }
 
   if (mrb_nil_p(blk)) {
+    /* An element is compared as `mrb_equal()` compares it, and one whose
+       `==` is written in Ruby hands the rest of the walk to `__index_from`,
+       which sends that `==` in the VM this method was called from instead
+       of nesting one under it. */
     for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-      if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-        return mrb_int_value(mrb, i);
+      int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+      if (r < 0) {
+        mrb_value argv[2] = {obj, mrb_int_value(mrb, i)};
+        return mrb_exec_method(mrb, self, MRB_SYM(__index_from), 2, argv);
       }
+      if (r) return mrb_int_value(mrb, i);
     }
   }
   else {
@@ -1644,9 +1651,13 @@ mrb_ary_rindex_m(mrb_state *mrb, mrb_value self)
 
   for (mrb_int i = RARRAY_LEN(self) - 1; i >= 0; i--) {
     if (mrb_nil_p(blk)) {
-      if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-      return mrb_int_value(mrb, i);
+      /* as `Array#index` compares, and hands over to `__rindex_from` */
+      int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+      if (r < 0) {
+        mrb_value argv[2] = {obj, mrb_int_value(mrb, i)};
+        return mrb_exec_method(mrb, self, MRB_SYM(__rindex_from), 2, argv);
       }
+      if (r) return mrb_int_value(mrb, i);
     }
     else {
       mrb_value eq = mrb_yield(mrb, blk, RARRAY_PTR(self)[i]);
@@ -1978,17 +1989,18 @@ mrb_ary_eq(mrb_state *mrb, mrb_value ary1)
 
   int ai = mrb_gc_arena_save(mrb);
   for (mrb_int i=0; i<RARRAY_LEN(ary1); i++) {
-    /* `OP_EQ` takes two values for equal where they are the same object and
-       dispatches `==` only after, and so does the search `#index` and
-       `#delete` make. The same pair of steps is written out here rather than
-       reached through `mrb_equal()`, whose answer is the same one: the checks
-       it makes between them are all reached again by the dispatch below, and
-       the method lookup it adds is paid at every element. */
+    /* A pair is compared as `mrb_equal()` compares it, which is how `#index`
+       and `#delete` search: the same object first, and `==` only after. A
+       `==` written in Ruby is not called from here, where it would nest a
+       VM under this one; `__eq_from` compares the pairs left, that one
+       first, in the VM this method was called from. */
     mrb_value a = mrb_ary_entry(ary1, i), b = mrb_ary_entry(ary2, i);
-    if (!mrb_obj_eq(mrb, a, b)) {
-      mrb_value eq = mrb_funcall_argv1(mrb, a, MRB_OPSYM(eq), b);
-      if (!mrb_test(eq)) return mrb_false_value();
+    int r = mrb_equal_in_c(mrb, a, b);
+    if (r < 0) {
+      mrb_value argv[2] = {ary2, mrb_int_value(mrb, i)};
+      return mrb_exec_method(mrb, ary1, MRB_SYM(__eq_from), 2, argv);
     }
+    if (!r) return mrb_false_value();
     mrb_gc_arena_restore(mrb, ai);
   }
   return mrb_true_value();
@@ -2118,8 +2130,28 @@ mrb_ary_delete(mrb_state *mrb, mrb_value self)
   mrb_int j = 0;
   for (; i < ARY_LEN(ary); i++) {
     mrb_value elem = ARY_PTR(ary)[i];
+    int r = mrb_equal_in_c(mrb, elem, obj);
 
-    if (mrb_equal(mrb, elem, obj)) {
+    if (r < 0) {
+      /* The `==` of `elem` is written in Ruby, so `__delete_from` walks the
+         rest, this element first, in the VM this method was called from.
+         The elements before it are decided: the kept ones sit at [0, j),
+         and the ones from `elem` on are moved down behind them, so the
+         array holds nothing undecided past what Ruby walks. */
+      if (i != j) {
+        mrb_int len = ARY_LEN(ary);
+        if (len < i) {
+          mrb_raise(mrb, E_RUNTIME_ERROR, "array modified during delete");
+        }
+        ary_modify(mrb, ary);
+        value_move(ARY_PTR(ary)+j, ARY_PTR(ary)+i, (size_t)(len-i));
+        ARY_SET_LEN(ary, len-(i-j));
+      }
+      mrb_value argv[4] = {obj, mrb_int_value(mrb, j),
+                           (i != j) ? ret : mrb_nil_value(), mrb_bool_value(i != j)};
+      return mrb_exec_method(mrb, self, MRB_SYM(__delete_from), 4, argv);
+    }
+    if (r) {
       mrb_gc_arena_restore(mrb, ai);
       mrb_gc_protect(mrb, elem);
       ret = elem;
@@ -2144,6 +2176,9 @@ mrb_ary_delete(mrb_state *mrb, mrb_value self)
     return mrb_yield(mrb, blk, obj);
   }
 
+  /* Only elements at the tail were deleted where no write above asked; the
+     length still changes, as `pop` changes it. */
+  ary_modify_check(mrb, ary);
   ARY_SET_LEN(ary, j);
   return ret;
 }

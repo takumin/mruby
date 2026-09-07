@@ -72,6 +72,7 @@ void mrb_builtin_op_update(mrb_state *mrb, mrb_sym mid);
 void mrb_idx_op_rearm(mrb_state *mrb, enum mrb_idx_op_slot slot);
 
 mrb_value mrb_obj_equal_m(mrb_state *mrb, mrb_value);
+mrb_value mrb_str_equal_m(mrb_state *mrb, mrb_value);
 
 /* debug */
 size_t mrb_packed_int_len(uint32_t num);
@@ -766,6 +767,7 @@ mrb_shape_lookup(mrb_state *mrb, mrb_iv_shape *shape, mrb_sym sym)
 mrb_int mrb_ci_bidx(mrb_callinfo *ci);
 mrb_int mrb_ci_nregs(mrb_callinfo *ci);
 mrb_value mrb_exec_irep(mrb_state *mrb, mrb_value self, const struct RProc *p);
+mrb_value mrb_exec_method(mrb_state *mrb, mrb_value self, mrb_sym mid, mrb_int argc, const mrb_value *argv);
 mrb_value mrb_obj_instance_eval(mrb_state*, mrb_value);
 mrb_value mrb_object_exec(mrb_state *mrb, mrb_value self, struct RClass *target_class);
 mrb_value mrb_mod_module_eval(mrb_state*, mrb_value);

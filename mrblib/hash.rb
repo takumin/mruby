@@ -32,6 +32,119 @@ class Hash
 
   ##
   # call-seq:
+  #   hsh.__value_from(val, i) -> true or false
+  #
+  # Internal method: the rest of Hash#value?, from the `i`th value, whose
+  # `==` is written in Ruby. The C walk hands over here instead of calling
+  # that `==` from C, which would nest a VM under the one this runs in. A
+  # value is compared as `mrb_equal()` compares it, with the value the hash
+  # holds as the receiver, as the C walk and CRuby have it: the two are equal
+  # when they are the same object, and otherwise when `==` says so.
+  #
+  def __value_from(val, i)
+    vals = values
+    while i < vals.size
+      v = vals[i]
+      return true if v.equal?(val) || v == val
+      i += 1
+    end
+    false
+  end
+
+  ##
+  # call-seq:
+  #   hsh.__assoc_from(key, i) -> [key, value] or nil
+  #
+  # Internal method: the rest of Hash#assoc, from the `i`th entry, whose key
+  # `key` is compared with by a `==` written in Ruby. The C walk hands over
+  # here instead of calling that `==` from C, which would nest a VM under
+  # the one this runs in. A key is compared as `mrb_equal()` compares it,
+  # with `key` as the receiver, as the C walk and CRuby have it: the two are
+  # equal when they are the same object, and otherwise when `==` says so.
+  #
+  def __assoc_from(key, i)
+    ks = keys
+    vs = values
+    while i < ks.size
+      k = ks[i]
+      return [k, vs[i]] if key.equal?(k) || key == k
+      i += 1
+    end
+    nil
+  end
+
+  ##
+  # call-seq:
+  #   hsh.__rassoc_from(val, i) -> [key, value] or nil
+  #
+  # Internal method: the rest of Hash#rassoc, from the `i`th entry, whose
+  # value `val` is compared with by a `==` written in Ruby, as `__assoc_from`
+  # is the rest of Hash#assoc, with `val` as the receiver.
+  #
+  def __rassoc_from(val, i)
+    ks = keys
+    vs = values
+    while i < ks.size
+      v = vs[i]
+      return [ks[i], v] if val.equal?(v) || val == v
+      i += 1
+    end
+    nil
+  end
+
+  ##
+  # call-seq:
+  #   hsh.__eq_from(other, i) -> true or false
+  #
+  # Internal method: the rest of Hash#==, from the `i`th entry, whose value
+  # has a `==` written in Ruby, as `__value_from` is the rest of #value?.
+  # `other` is a Hash of the same size, and stays the first argument for the
+  # recursion check Hash#== makes.
+  #
+  def __eq_from(other, i)
+    ks = keys
+    vs = values
+    while i < ks.size
+      k = ks[i]
+      return false unless other.has_key?(k)
+      v = vs[i]
+      w = other[k]
+      return false unless v.equal?(w) || v == w
+      i += 1
+    end
+    true
+  end
+
+  ##
+  # call-seq:
+  #   hsh.__except_from(keys, i, result) -> result
+  #
+  # Internal method: the rest of Hash#__except, from the `i`th entry, whose
+  # key has a `==` written in Ruby, as `__value_from` is the rest of #value?.
+  # `result` holds the entries before it whose key is in none of `keys`.
+  #
+  def __except_from(keys, i, result)
+    ks = self.keys
+    vs = values
+    while i < ks.size
+      k = ks[i]
+      j = 0
+      found = false
+      while j < keys.size
+        if k.equal?(keys[j]) || k == keys[j]
+          found = true
+          break
+        end
+        j += 1
+      end
+      result[k] = vs[i] unless found
+      i += 1
+    end
+    result
+  end
+
+  ##
+  # call-seq:
   #   hsh.each      {| key, value | block } -> hsh
   #   hsh.each_pair {| key, value | block } -> hsh
   #   hsh.each                              -> an_enumerator

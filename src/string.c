@@ -1808,7 +1808,7 @@ mrb_str_equal(mrb_state *mrb, mrb_value str1, mrb_value str2)
  *
  *   caution:if `str` `<=>` `obj` returns zero.
  */
-static mrb_value
+mrb_value
 mrb_str_equal_m(mrb_state *mrb, mrb_value str1)
 {
   mrb_value str2 = mrb_get_arg1(mrb);

@@ -24,6 +24,25 @@ assert('Range#==', '15.2.14.4.1') do
 
 end
 
+assert('Range#== compares the ends as `rb_equal()` does') do
+  # the beginning first, the end only when that is equal, and the exclusion
+  # flag last; an end is equal to itself before its `==` is asked. The two
+  # ends answer `<=>` so that a Range takes them.
+  asked = []
+  yes = Class.new { define_method(:==) {|other| asked << other; other == 1 }; def <=>(other); 0; end }.new
+  never = Class.new { def ==(other); false; end; def <=>(other); 0; end }.new
+  assert_true Range.new(yes, yes) == Range.new(1, 1)
+  assert_false Range.new(yes, yes) == Range.new(1, 1, true)
+  assert_false Range.new(yes, yes) == Range.new(1, 2)
+  assert_equal [1, 1, 1, 1, 1, 2], asked
+  asked.clear
+  assert_false Range.new(yes, yes) == Range.new(2, 1)
+  assert_equal [2], asked
+  assert_true Range.new(never, never) == Range.new(never, never)
+  assert_true Range.new(never, yes) == Range.new(never, 1)
+  assert_false Range.new(yes, never) == Range.new(yes, Object.new)
+end
+
 assert('Range#===', '15.2.14.4.2') do
   a = (1..10)
   b = (1..)

@@ -46,6 +46,30 @@ class Struct
   end
 
   ##
+  # call-seq:
+  #   struct.__eq_from(other, i) -> true or false
+  #
+  # Internal method: the rest of Struct#==, from the `i`th member, whose
+  # `==` is written in Ruby. The C walk hands over here instead of calling
+  # that `==` from C, which would nest a VM under the one this runs in. A
+  # pair of members is compared as `mrb_equal()` compares it: equal when
+  # they are the same object, and otherwise when `==` says so. `other` is a
+  # struct of the same class, and stays the first argument for the recursion
+  # check Struct#== makes.
+  #
+  def __eq_from(other, i)
+    len = size
+    while i < len
+      return false unless size == len && other.size == len
+      a = self[i]
+      b = other[i]
+      return false unless a.equal?(b) || a == b
+      i += 1
+    end
+    true
+  end
+
+  ##
   # 15.2.18.4.11(x)
   #
   alias to_s inspect
