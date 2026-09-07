@@ -796,7 +796,6 @@ num_eql(mrb_state *mrb, mrb_value x)
   return mrb_bool_value(mrb_equal(mrb, x, y));
 }
 
-#ifndef MRB_NO_FLOAT
 /* `Integer#==` and `Float#==` with an `other` that is no number: CRuby's
    `num_equal()` asks `other == self` and answers what that answers, taken for
    true or false. A `==` written in C is asked from here; one written in Ruby
@@ -813,6 +812,7 @@ num_equal_ask(mrb_state *mrb, mrb_value self, mrb_value other)
   return mrb_exec_method(mrb, self, MRB_SYM(__eq_ask), 1, &other);
 }
 
+#ifndef MRB_NO_FLOAT
 /* 15.2.9.3.7 */
 /*
  *  call-seq:

@@ -993,13 +993,15 @@ assert('Hash#assoc and Hash#rassoc compare with `==`, as CRuby does') do
   # `rassoc` compare with `==` instead, with the argument as the receiver,
   # as CRuby's rb_hash_assoc() and rb_hash_rassoc() do.
   h = {1 => :a, "k" => :b, nil => :c}
-  assert_equal [1, :a], h.assoc(1.0)
+  assert_equal [1, :a], h.assoc(1.0) if Object.const_defined?(:Float)
+  assert_equal [1, :a], h.assoc(1)
   assert_equal ["k", :b], h.assoc("k")
   assert_equal [nil, :c], h.assoc(nil)
   assert_nil h.assoc(2)
   assert_nil h.assoc(:k)
   h = {a: 1, b: "v", c: nil}
-  assert_equal [:a, 1], h.rassoc(1.0)
+  assert_equal [:a, 1], h.rassoc(1.0) if Object.const_defined?(:Float)
+  assert_equal [:a, 1], h.rassoc(1)
   assert_equal [:b, "v"], h.rassoc("v")
   assert_equal [:c, nil], h.rassoc(nil)
   assert_nil h.rassoc(2)
