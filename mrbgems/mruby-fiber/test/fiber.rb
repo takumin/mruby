@@ -288,6 +288,24 @@ assert('a Ruby == called from Array#index can yield') do
   assert_equal 2, answer
 end
 
+assert('a Ruby == called from Range#== can yield') do
+  cls = Class.new do
+    def initialize(v); @v = v; end
+    attr_reader :v
+    def ==(o); Fiber.yield(:asked); o.is_a?(self.class) && o.v == @v; end
+    def <=>(o); v <=> o.v; end
+  end
+  f = Fiber.new { (cls.new(0)..cls.new(1)) == (cls.new(0)..cls.new(1)) }
+  asked = 0
+  answer = nil
+  while f.alive?
+    v = f.resume
+    v == :asked ? asked += 1 : answer = v
+  end
+  assert_equal 2, asked
+  assert_true answer
+end
+
 assert('a suspended C frame unwinds like any other') do
   log = []
   cls = Class.new do
