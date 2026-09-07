@@ -703,14 +703,24 @@ mrb_struct_equal(mrb_state *mrb, mrb_value s)
 
   mrb_int len = RSTRUCT_LEN(s);
   int ai = mrb_gc_arena_save(mrb);
-  /* A member's #== runs Ruby, where initialize_copy() replaces a struct's
+  /* A member's #== can run Ruby, where initialize_copy() replaces a struct's
      member storage, so neither buffer survives the call. Read both afresh,
-     and take a struct that changed shape as no longer equal. */
+     and take a struct that changed shape as no longer equal.
+
+     A pair of members is compared as `mrb_equal()` compares it. A `==`
+     written in Ruby is not called from here, where it would nest a VM under
+     this one: `__eq_from` compares the members left, the `i`th first, in
+     the VM this method was called from. */
   for (mrb_int i=0; i<len; i++) {
     if (RSTRUCT_LEN(s) != len || RSTRUCT_LEN(s2) != len) {
       return mrb_false_value();
     }
-    if (!mrb_equal(mrb, RSTRUCT_PTR(s)[i], RSTRUCT_PTR(s2)[i])) {
+    int r = mrb_equal_in_c(mrb, RSTRUCT_PTR(s)[i], RSTRUCT_PTR(s2)[i]);
+    if (r < 0) {
+      mrb_value argv[2] = {s2, mrb_int_value(mrb, i)};
+      return mrb_exec_method(mrb, s, MRB_SYM(__eq_from), 2, argv);
+    }
+    if (!r) {
       return mrb_false_value();
     }
     mrb_gc_arena_restore(mrb, ai);
