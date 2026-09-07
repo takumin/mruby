@@ -227,3 +227,42 @@ assert('symbol GC keeps the symbols a suspended fiber holds') do
   GC.start
   assert_true f.resume
 end
+
+# The frame a C method hands back with mrb_funcall_k() holds the C function it
+# is running, not the name that function was found under, so a send that
+# redefines the name does not reach the call already in flight.  CRuby answers
+# the same way, and so does a C method that never leaves the C stack.
+# `Fiber.define_cont_methods` puts a pair of C methods on a class of the
+# test's own: `send_k(target, mid)` hands its frame back to make the send, and
+# `other_k` is what a test redefines `send_k` to.
+assert('a C method redefined in Ruby while suspended finishes as it started') do
+  $fiber_cont_cls = Class.new
+  Fiber.define_cont_methods($fiber_cont_cls)
+  target = Class.new do
+    def redefine
+      $fiber_cont_cls.class_eval { def send_k(*args); :a_ruby_method; end }
+      :from_the_send
+    end
+  end.new
+  assert_equal :from_the_send, $fiber_cont_cls.new.send_k(target, :redefine)
+  # the next call is the method the name means now
+  assert_equal :a_ruby_method, $fiber_cont_cls.new.send_k(target, :redefine)
+ensure
+  $fiber_cont_cls = nil
+end
+
+assert('a C method redefined to another C method while suspended finishes as it started') do
+  $fiber_cont_cls = Class.new
+  Fiber.define_cont_methods($fiber_cont_cls)
+  target = Class.new do
+    def redefine
+      $fiber_cont_cls.class_eval { alias_method :send_k, :other_k }
+      :from_the_send
+    end
+  end.new
+  assert_equal :from_the_send, $fiber_cont_cls.new.send_k(target, :redefine)
+  assert_equal :the_other_c_method, $fiber_cont_cls.new.send_k(target, :redefine)
+ensure
+  $fiber_cont_cls = nil
+end
+

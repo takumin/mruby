@@ -1,4 +1,6 @@
 #include <mruby.h>
+#include <mruby/class.h>
+#include <mruby/internal.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
 #include <stdio.h>
@@ -50,6 +52,45 @@ fiber_transfer_by_c(mrb_state *mrb, mrb_value self)
   return mrb_funcall_argv(mrb, self, mrb_intern_lit(mrb, "transfer"), 0, NULL);
 }
 
+/*
+ * `recv.send_k(target, mid)` sends `mid` to `target` by handing this frame
+ * back with mrb_funcall_k(), and answers what the send answered.  It gives a
+ * test a C method of its own to redefine while the send is running, which the
+ * core methods that hand their frame back cannot be without losing them for
+ * the rest of the run.
+ */
+static mrb_value
+cont_send_k(mrb_state *mrb, mrb_value self)
+{
+  mrb_value result;
+  if (mrb_funcall_k_resumed(mrb, &result, NULL)) return result;
+
+  mrb_value target;
+  mrb_sym mid;
+  mrb_get_args(mrb, "on", &target, &mid);
+  return mrb_funcall_k(mrb, target, mid, 0, NULL, mrb_nil_value());
+}
+
+/* The other C method, for a test to redefine `send_k` to. */
+static mrb_value
+cont_other_k(mrb_state *mrb, mrb_value self)
+{
+  return mrb_symbol_value(mrb_intern_lit(mrb, "the_other_c_method"));
+}
+
+/*
+ * Puts both of the above on `mod`, so a test that redefines one of them has a
+ * class of its own to do it in and leaves the others alone.
+ */
+static mrb_value
+fiber_s_define_cont_methods(mrb_state *mrb, mrb_value self)
+{
+  struct RClass *c = mrb_class_ptr(mrb_get_arg1(mrb));
+  mrb_define_method(mrb, c, "send_k", cont_send_k, MRB_ARGS_ANY());
+  mrb_define_method(mrb, c, "other_k", cont_other_k, MRB_ARGS_ANY());
+  return mrb_nil_value();
+}
+
 static mrb_value
 proc_s_c_tunnel(mrb_state *mrb, mrb_value self)
 {
@@ -79,6 +120,7 @@ mrb_mruby_fiber_gem_test(mrb_state *mrb)
   mrb_define_method(mrb, fiber_class, "resume_by_c_func", fiber_resume_by_c_func, MRB_ARGS_NONE());
   mrb_define_method(mrb, fiber_class, "resume_by_c_method", fiber_resume_by_c_method, MRB_ARGS_NONE());
   mrb_define_method(mrb, fiber_class, "transfer_by_c", fiber_transfer_by_c, MRB_ARGS_NONE());
+  mrb_define_class_method(mrb, fiber_class, "define_cont_methods", fiber_s_define_cont_methods, MRB_ARGS_REQ(1));
 
   mrb_define_class_method(mrb, mrb->proc_class, "c_tunnel", proc_s_c_tunnel, MRB_ARGS_NONE() | MRB_ARGS_BLOCK());
 
