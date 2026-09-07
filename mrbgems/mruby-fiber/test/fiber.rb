@@ -306,6 +306,23 @@ assert('Integer#== and Float#== send the `==` of what is no number in the VM the
   assert_true f.resume
 end
 
+assert('Kernel#=== and Kernel#<=> send a `==` written in Ruby in the VM they run in') do
+  # Neither calls a `==` written in Ruby from C, which would nest a VM under
+  # the one the method was dispatched from: the method hands its frame to
+  # Ruby, which sends `==` where a `Fiber.yield` inside it has no C frame to
+  # cross, as in CRuby. `case` reaches `===` the same way.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { yielder === 1 }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+  f = Fiber.new { yielder <=> 2 }
+  assert_equal :asked, f.resume
+  assert_nil f.resume
+  f = Fiber.new { case 1 when yielder then :matched else :missed end }
+  assert_equal :asked, f.resume
+  assert_equal :matched, f.resume
+end
+
 assert('Range#== sends a `==` written in Ruby in the VM it runs in') do
   # Neither end's `==` is called from C, which would nest a VM under the one
   # `==` was called from: the comparison is handed to Ruby, which sends `==`
