@@ -1353,6 +1353,46 @@ mrb_funcall_argv2(mrb_state *mrb, mrb_value val, mrb_sym name, mrb_value a1, mrb
  * Call existing Ruby functions with a block.
  */
 MRB_API mrb_value mrb_funcall_with_block(mrb_state *mrb, mrb_value val, mrb_sym name, mrb_int argc, const mrb_value *argv, mrb_value block);
+
+/**
+ * @brief Sends a message and has this C function called again with the answer.
+ *
+ * Where `mrb_funcall_argv()` runs the method under the C function that asks
+ * for it, this hands the frame back to the VM instead: the C function
+ * returns, the method runs with no C activation record of the caller left on
+ * the C stack, and the same C function is entered a second time with the
+ * result. A `Fiber.yield` inside the method therefore has nothing to cross.
+ *
+ * Call it as `return mrb_funcall_k(...)`. Whatever the C function was holding
+ * in its own locals is gone by the time it is entered again, so put what the
+ * rest of the work needs into `state`, which comes back untouched. Anything
+ * read out of an object before the call (`DATA_PTR()`, `RARRAY_PTR()`) has to
+ * be read again.
+ *
+ * On re-entry `mrb_funcall_k_resumed()` answers TRUE and hands back the
+ * result and the state. Arguments are where they were, so `mrb_get_args()`
+ * reads them again as it did on the first call.
+ *
+ * @param mrb The mruby state.
+ * @param recv The receiver of the message.
+ * @param mid The symbol ID of the method to call.
+ * @param argc The number of arguments in `argv`.
+ * @param argv A pointer to an array of `mrb_value` arguments.
+ * @param state A value handed back on re-entry. It lives in the frame's
+ *              registers, so the collector keeps it and nothing else has to.
+ * @return The value to return from the C function.
+ */
+MRB_API mrb_value mrb_funcall_k(mrb_state *mrb, mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv, mrb_value state);
+
+/**
+ * @brief Tells a C function whether it is being entered again.
+ *
+ * @param mrb The mruby state.
+ * @param result Where the answer of the `mrb_funcall_k()` call goes; may be NULL.
+ * @param state Where the state handed to `mrb_funcall_k()` goes; may be NULL.
+ * @return TRUE when this is a re-entry, FALSE on a first call.
+ */
+MRB_API mrb_bool mrb_funcall_k_resumed(mrb_state *mrb, mrb_value *result, mrb_value *state);
 /**
  * Create a symbol from C string. But usually it's better to
  * use MRB_SYM, MRB_OPSYM, MRB_CVSYM, MRB_IVSYM, MRB_GVSYM,

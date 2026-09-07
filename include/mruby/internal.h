@@ -763,6 +763,22 @@ mrb_shape_lookup(mrb_state *mrb, mrb_iv_shape *shape, mrb_sym sym)
 #define MRB_CI_MODFUNC_P(ci) MRB_FLAG_CHECK((ci)->vis, 3)
 #define MRB_CI_SET_MODFUNC(ci) MRB_FLAG_ON((ci)->vis, 3)
 #define MRB_CI_CLEAR_MODFUNC(ci) MRB_FLAG_OFF((ci)->vis, 3)
+
+/* Continuation frames, as mrb_funcall_k() makes them.  Bits 4 and up of
+   `vis` are the ones an env does not take a copy of
+   (MRB_ENV_COPY_FLAGS_FROM_CI copies 0..3), so a frame carries these for
+   as long as it lives and nothing else reads them.
+
+   CONT says the frame reserves MRB_CI_CONT_NREGS registers above its
+   arguments, which mrb_ci_nregs() counts so the collector marks them.
+   PENDING says the C function has handed the frame back with a call to
+   make; whoever called that C function makes it and calls it again. */
+#define MRB_CI_CONT_NREGS 2     /* state, result */
+#define MRB_CI_CONT_P(ci) MRB_FLAG_CHECK((ci)->vis, 4)
+#define MRB_CI_SET_CONT(ci) MRB_FLAG_ON((ci)->vis, 4)
+#define MRB_CI_CONT_PENDING_P(ci) MRB_FLAG_CHECK((ci)->vis, 5)
+#define MRB_CI_SET_CONT_PENDING(ci) MRB_FLAG_ON((ci)->vis, 5)
+#define MRB_CI_CLEAR_CONT_PENDING(ci) MRB_FLAG_OFF((ci)->vis, 5)
 mrb_int mrb_ci_bidx(mrb_callinfo *ci);
 mrb_int mrb_ci_nregs(mrb_callinfo *ci);
 mrb_value mrb_exec_irep(mrb_state *mrb, mrb_value self, const struct RProc *p);
