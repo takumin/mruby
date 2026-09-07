@@ -763,6 +763,47 @@ mrb_shape_lookup(mrb_state *mrb, mrb_iv_shape *shape, mrb_sym sym)
 #define MRB_CI_MODFUNC_P(ci) MRB_FLAG_CHECK((ci)->vis, 3)
 #define MRB_CI_SET_MODFUNC(ci) MRB_FLAG_ON((ci)->vis, 3)
 #define MRB_CI_CLEAR_MODFUNC(ci) MRB_FLAG_OFF((ci)->vis, 3)
+
+/* Continuation frames, as mrb_funcall_k() makes them.  Bits 4 and up of
+   `vis` are the ones an env does not take a copy of
+   (MRB_ENV_COPY_FLAGS_FROM_CI copies 0..3), so a frame carries these for
+   as long as it lives and nothing else reads them.
+
+   CONT says the frame reserves MRB_CI_CONT_NREGS registers above its
+   arguments, which mrb_ci_nregs() counts so the collector marks them.
+   PENDING says the C function has handed the frame back with a call to
+   make; whoever called that C function makes it and calls it again. */
+#define MRB_CI_CONT_NREGS 2     /* state, result */
+#define MRB_CI_CONT_P(ci) MRB_FLAG_CHECK((ci)->vis, 4)
+#define MRB_CI_SET_CONT(ci) MRB_FLAG_ON((ci)->vis, 4)
+#define MRB_CI_CONT_PENDING_P(ci) MRB_FLAG_CHECK((ci)->vis, 5)
+#define MRB_CI_SET_CONT_PENDING(ci) MRB_FLAG_ON((ci)->vis, 5)
+#define MRB_CI_CLEAR_CONT_PENDING(ci) MRB_FLAG_OFF((ci)->vis, 5)
+
+/* Sends a message and has this C function called again with the answer.
+ *
+ * Where mrb_funcall_argv() runs the method under the C function that asks for
+ * it, this hands the frame back to the VM instead: the C function returns,
+ * the method runs with no C activation record of the caller left on the C
+ * stack, and the same C function is entered a second time with the result.
+ * A `Fiber.yield` inside the method therefore has nothing to cross.
+ *
+ * Call it as `return mrb_funcall_k(...)`.  Whatever the C function was
+ * holding in its own locals is gone by the time it is entered again, so put
+ * what the rest of the work needs into `state`, which comes back untouched.
+ * It lives in the frame's registers, so the collector keeps it and nothing
+ * else has to.  Anything read out of an object before the call (DATA_PTR(),
+ * RARRAY_PTR()) has to be read again.
+ *
+ * On re-entry mrb_funcall_k_resumed() answers TRUE and hands back the result
+ * and the state, either of which may be NULL to say it is not wanted.  The
+ * arguments are where they were, so mrb_get_args() reads them again as it did
+ * on the first call; but a function that hands its frame back once per element
+ * is entered that many times, and reading the format again is the most of what
+ * an entry costs.  Where the shape of the arguments on re-entry is known, read
+ * them directly instead, as mrb_get_arg1() does. */
+mrb_value mrb_funcall_k(mrb_state *mrb, mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv, mrb_value state);
+mrb_bool mrb_funcall_k_resumed(mrb_state *mrb, mrb_value *result, mrb_value *state);
 mrb_int mrb_ci_bidx(mrb_callinfo *ci);
 mrb_int mrb_ci_nregs(mrb_callinfo *ci);
 mrb_value mrb_exec_irep(mrb_state *mrb, mrb_value self, const struct RProc *p);

@@ -1362,12 +1362,18 @@ mrb_ci_nregs(mrb_callinfo *ci)
 {
   if (!ci) return 4;
   mrb_int nregs = ci_bidx(ci) + 1; /* self + args + kargs + blk */
+  /* a frame suspended by mrb_funcall_k() keeps its state above the arguments */
+  if (MRB_CI_CONT_P(ci)) nregs += MRB_CI_CONT_NREGS;
   const struct RProc *p = ci->proc;
   if (p && !MRB_PROC_CFUNC_P(p) && p->body.irep && p->body.irep->nregs > nregs) {
     return p->body.irep->nregs;
   }
   return nregs;
 }
+
+/* see below: enters a C function again for as long as mrb_funcall_k() keeps
+   handing the frame back */
+static mrb_value cont_trampoline(mrb_state *mrb, mrb_value self, mrb_value v);
 
 mrb_value mrb_obj_missing(mrb_state *mrb, mrb_value mod);
 
@@ -1536,6 +1542,7 @@ mrb_funcall_with_block(mrb_state *mrb, mrb_value self, mrb_sym mid, mrb_int argc
       mrb->exc = NULL;
       ci->stack[0] = self;
       val = MRB_METHOD_CFUNC(m)(mrb, self);
+      val = cont_trampoline(mrb, self, val);
       cipop(mrb);
       if (mrb->exc != NULL) {
         mrb_exc_raise(mrb, mrb_obj_value(mrb->exc));
@@ -1647,6 +1654,7 @@ mrb_exec_irep(mrb_state *mrb, mrb_value self, const struct RProc *p)
       ci = cipush(mrb, 0, CINFO_DIRECT, CI_TARGET_CLASS(ci), p, NULL, ci->mid, ci->n|(ci->kw?15<<4:0));
       mrb->exc = NULL;
       ret = MRB_PROC_CFUNC(p)(mrb, self);
+      ret = cont_trampoline(mrb, self, ret);
       cipop(mrb);
     }
     else {
@@ -1676,6 +1684,148 @@ mrb_object_exec(mrb_state *mrb, mrb_value self, struct RClass *target_class)
   ci->stack[bidx] = mrb_nil_value();
   mrb_vm_ci_target_class_set(ci, target_class);
   return mrb_exec_irep(mrb, self, mrb_proc_ptr(blk));
+}
+
+/*
+ * The C function to enter again for a frame that mrb_funcall_k() suspended.
+ *
+ * Looked up rather than remembered.  mrb_define_method() stores a bare
+ * mrb_func_t with no RProc behind it, so a suspended frame usually has
+ * `proc == NULL` and there is nothing in it to call; and a function pointer
+ * written into the frame would be an address of this process, which is the
+ * one thing a suspended state must not contain.  What the frame does carry is
+ * the receiver's class and the method name, and those name the method the way
+ * the program does.
+ */
+static mrb_func_t
+cont_func(mrb_state *mrb, mrb_callinfo *ci)
+{
+  if (ci->proc) {
+    mrb_assert(MRB_PROC_CFUNC_P(ci->proc));
+    return MRB_PROC_CFUNC(ci->proc);
+  }
+
+  struct RClass *c = CI_TARGET_CLASS(ci);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, ci->mid);
+  if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m)) {
+    /* the method was redefined while the send was running */
+    mrb_raisef(mrb, E_RUNTIME_ERROR, "'%n' was redefined while suspended", ci->mid);
+  }
+  return MRB_METHOD_CFUNC(m);
+}
+
+/*
+ * Pushes the callee of an mrb_funcall_k() above the suspended frame and marks
+ * the VM to run it, the way exec_irep() does for a tail delegation.  The
+ * difference is that the suspended frame stays where it is instead of being
+ * replaced, so returning into it means entering its C function again.
+ *
+ * Answers undef when the send cannot be made this way, which leaves the caller
+ * to make it synchronously.
+ */
+static mrb_value
+funcall_k_push(mrb_state *mrb, mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  if (argc < 0 || argc >= CALL_MAXARGS) return mrb_undef_value();
+
+  struct RClass *c = mrb_class(mrb, recv);
+  mrb_method_t m = mrb_vm_find_method(mrb, c, &c, mid);
+  if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_PROC_P(m)) return mrb_undef_value();
+  const struct RProc *p = MRB_METHOD_PROC(m);
+  if (MRB_PROC_ALIAS_P(p)) {    /* not MRB_PROC_RESOLVE_ALIAS: `ci` is the
+                                   suspended frame, whose mid must not move */
+    mid = p->body.mid;
+    p = p->upper;
+  }
+  if (MRB_PROC_CFUNC_P(p) || !p->body.irep) return mrb_undef_value();
+
+  mrb_int off = ci_bidx(ci) + 1 + MRB_CI_CONT_NREGS;
+  stack_extend_adjust(mrb, off + argc + 2, &argv);
+  ci = mrb->c->ci;
+  mrb_value *dst = ci->stack + off;
+  dst[0] = recv;
+  stack_copy(dst+1, argv, argc);
+  SET_NIL_VALUE(dst[argc+1]);   /* block */
+
+  ci = cipush(mrb, off, CINFO_NONE, c, p, NULL, mid, (uint16_t)argc);
+  const mrb_irep *irep = p->body.irep;
+  mrb_int keep = argc + 2;      /* self + args + block */
+  if (irep->nregs < keep) {
+    stack_extend(mrb, keep);
+  }
+  else {
+    stack_extend(mrb, irep->nregs);
+    stack_clear(ci->stack+keep, irep->nregs-keep);
+  }
+  /* the marker exec_irep() uses: a frame with no target class tells the cfunc
+     epilogue that the VM has an irep to go to */
+  cipush(mrb, 0, 0, NULL, NULL, NULL, 0, 0);
+  return recv;
+}
+
+mrb_value
+mrb_funcall_k(mrb_state *mrb, mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv, mrb_value state)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  if (ci->proc && !MRB_PROC_CFUNC_P(ci->proc)) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "mrb_funcall_k() outside a C function");
+  }
+
+  mrb_int bidx = ci_bidx(ci);
+  stack_extend_adjust(mrb, bidx+1+MRB_CI_CONT_NREGS, &argv);
+  ci = mrb->c->ci;
+  ci->stack[bidx+1] = state;
+  SET_NIL_VALUE(ci->stack[bidx+2]);
+  MRB_CI_SET_CONT(ci);
+  MRB_CI_SET_CONT_PENDING(ci);
+
+  if (ci->cci == CINFO_NONE) {
+    mrb_value ret = funcall_k_push(mrb, recv, mid, argc, argv);
+    if (!mrb_undef_p(ret)) return ret;
+  }
+
+  /* Either the C function was reached from C and has no VM loop to return
+     into, or the callee is itself a C function and has no frame to push.
+     Send it here and let the trampoline at the call site enter the C function
+     again; the C stack is back where it was by then. */
+  mrb_value result = mrb_funcall_argv(mrb, recv, mid, argc, argv);
+  ci = mrb->c->ci;
+  ci->stack[ci_bidx(ci)+2] = result;
+  return mrb_nil_value();
+}
+
+mrb_bool
+mrb_funcall_k_resumed(mrb_state *mrb, mrb_value *result, mrb_value *state)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  if (!MRB_CI_CONT_P(ci)) return FALSE;
+  mrb_int bidx = ci_bidx(ci);
+  if (state) *state = ci->stack[bidx+1];
+  if (result) *result = ci->stack[bidx+2];
+  return TRUE;
+}
+
+/*
+ * Enters a C function again for as long as it keeps handing the frame back.
+ * For call sites that have no VM loop under them: the send is already made
+ * and its answer is in the frame, so this only has to call the function, and
+ * the C stack stays where it was however many times it goes round.
+ */
+static mrb_value
+cont_trampoline(mrb_state *mrb, mrb_value self, mrb_value v)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  while (mrb_unlikely(MRB_CI_CONT_PENDING_P(ci))) {
+    MRB_CI_CLEAR_CONT_PENDING(ci);
+    v = cont_func(mrb, ci)(mrb, self);
+    ci = mrb->c->ci;
+  }
+  return v;
 }
 
 static mrb_noreturn void
@@ -3771,10 +3921,27 @@ RETRY_TRY_BLOCK:
         recv = MRB_METHOD_FUNC(m)(mrb, recv);
       }
 
+      if (FALSE) {
+        /* a C function that mrb_funcall_k() suspended, entered again with the
+           answer of its send already in its frame */
+      L_CFUNC_RESUME:
+        ci = mrb->c->ci;
+        MRB_CI_CLEAR_CONT_PENDING(ci);
+        /* running the send moved the loop's irep to the callee's; the frame
+           this one returns into is the frame below, as it was before */
+        if (ci[-1].proc && !MRB_PROC_CFUNC_P(ci[-1].proc)) {
+          irep = ci[-1].proc->body.irep;
+        }
+        recv = cont_func(mrb, ci)(mrb, ci->stack[0]);
+      }
+
       /* cfunc epilogue */
       mrb_gc_arena_shrink(mrb, ai);
       if (mrb_unlikely(mrb->exc)) goto L_RAISE;
       ci = mrb->c->ci;
+      /* the send could not be handed to this loop (the callee is a C function,
+         or the frame was reached from C): its answer is already in the frame */
+      if (mrb_unlikely(MRB_CI_CONT_PENDING_P(ci))) goto L_CFUNC_RESUME;
       if (!ci->u.keep_context) { /* return from context modifying method (resume/yield) */
         if (ci->cci == CINFO_RESUMED) {
           mrb->jmp = prev_jmp;
@@ -4040,6 +4207,12 @@ RETRY_TRY_BLOCK:
         mrb_gc_arena_restore(mrb, ai);
         mrb->jmp = prev_jmp;
         return v;
+      }
+      if (mrb_unlikely(MRB_CI_CONT_PENDING_P(ci))) {
+        /* returning into a C function that mrb_funcall_k() suspended */
+        ci->stack[mrb_ci_bidx(ci)+2] = v;
+        mrb_gc_arena_restore(mrb, ai);
+        goto L_CFUNC_RESUME;
       }
       DEBUG(fprintf(stderr, "from :%s\n", mrb_sym_name(mrb, ci->mid)));
       irep = ci->proc->body.irep;

@@ -227,3 +227,43 @@ assert('symbol GC keeps the symbols a suspended fiber holds') do
   GC.start
   assert_true f.resume
 end
+
+# The frame a C method hands back with mrb_funcall_k() names the method to
+# enter again by the receiver's class and the method's name rather than by an
+# address, so the send it made is free to change what that name means.
+# `Fiber.define_cont_methods` puts a pair of C methods on a class of the
+# test's own: `send_k(target, mid)` hands its frame back to make the send, and
+# `resume_k` is what a test redefines `send_k` to.
+assert('a C method redefined in Ruby while suspended is not entered again') do
+  $fiber_cont_cls = Class.new
+  Fiber.define_cont_methods($fiber_cont_cls)
+  target = Class.new do
+    def redefine
+      $fiber_cont_cls.class_eval { def send_k(*args); :a_ruby_method; end }
+      :redefined
+    end
+  end.new
+  assert_raise_with_message(RuntimeError, "'send_k' was redefined while suspended") do
+    $fiber_cont_cls.new.send_k(target, :redefine)
+  end
+ensure
+  $fiber_cont_cls = nil
+end
+
+assert('a C method redefined to another C method while suspended takes over') do
+  $fiber_cont_cls = Class.new
+  Fiber.define_cont_methods($fiber_cont_cls)
+  assert_equal :fresh, $fiber_cont_cls.new.resume_k
+  target = Class.new do
+    def redefine
+      $fiber_cont_cls.class_eval { alias_method :send_k, :resume_k }
+      :from_the_send
+    end
+  end.new
+  # the frame is the one `send_k` handed back, so the method that takes its
+  # name over is entered with the answer of the send in it
+  assert_equal [:taken_over, :from_the_send], $fiber_cont_cls.new.send_k(target, :redefine)
+ensure
+  $fiber_cont_cls = nil
+end
+
