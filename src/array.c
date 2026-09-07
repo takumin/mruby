@@ -1594,17 +1594,32 @@ mrb_ary_last(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_ary_index_m(mrb_state *mrb, mrb_value self)
 {
-  mrb_value obj, blk;
+  mrb_value obj, blk, eq, state;
+  mrb_int i = 0;
+  mrb_bool resumed = mrb_funcall_k_resumed(mrb, &eq, &state);
 
   if (mrb_get_args(mrb, "|o&", &obj, &blk) == 0 && mrb_nil_p(blk)) {
     return mrb_funcall_argv1(mrb, self, MRB_SYM(to_enum), mrb_symbol_value(MRB_SYM(index)));
   }
 
+  if (resumed) {
+    /* the `==` of the element at `state` was written in Ruby and has just
+       answered; the walk carries on from where it stopped */
+    i = mrb_integer(state);
+    if (mrb_test(eq)) return mrb_int_value(mrb, i);
+    i++;
+  }
+
   if (mrb_nil_p(blk)) {
-    for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-      if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-        return mrb_int_value(mrb, i);
-      }
+    for (; i < RARRAY_LEN(self); i++) {
+      int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+      if (r > 0) return mrb_int_value(mrb, i);
+      if (r == 0) continue;
+      /* C cannot answer this one. Hand the frame back with the walk's
+         position, so the `==` runs with nothing of this function left on the
+         C stack and a `Fiber.yield` inside it has nothing to cross. */
+      return mrb_funcall_k(mrb, RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj,
+                           mrb_int_value(mrb, i));
     }
   }
   else {
