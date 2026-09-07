@@ -227,3 +227,25 @@ assert('symbol GC keeps the symbols a suspended fiber holds') do
   GC.start
   assert_true f.resume
 end
+
+assert('Array#index, #rindex, #delete and #== send a `==` written in Ruby in the VM they run in') do
+  # A `==` written in Ruby is not called from the C walk, which would nest a
+  # VM under the one it was called from: the walk hands the rest of the array
+  # to Ruby, which sends `==` where a `Fiber.yield` inside it has no C frame
+  # to cross, as in CRuby.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { [0, yielder, 1].index(1) }
+  assert_equal :asked, f.resume
+  assert_equal 1, f.resume
+  f = Fiber.new { [1, yielder, 0].rindex(1) }
+  assert_equal :asked, f.resume
+  assert_equal 1, f.resume
+  a = [0, yielder, 1]
+  f = Fiber.new { a.delete(1) }
+  assert_equal :asked, f.resume
+  assert_equal 1, f.resume
+  assert_equal [0], a
+  f = Fiber.new { [0, yielder, 2] == [0, 1, 2] }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+end

@@ -76,7 +76,9 @@ mrb_obj_equal(mrb_state *mrb, mrb_value v1, mrb_value v2)
  * pair is answered here or by a `==` written in C, and -1 when the `==` of
  * `obj1` is written in Ruby, which only the VM can run. A C method that the
  * VM called hands such a pair back to Ruby, which sends `==` in the VM it is
- * already in rather than nesting one, as `Array#__svalue_eq` does.
+ * already in rather than nesting one: through its answer, as
+ * `Array#__svalue_eq` does, or by handing the rest of its walk to a method
+ * written in Ruby with `mrb_exec_method()`, as `Array#index` does.
  *
  * An object is equal to itself before `==` is asked, as `rb_equal()` takes
  * it in CRuby. A pair of Integers or of Symbols is answered from the values
