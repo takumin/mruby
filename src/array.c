@@ -1594,17 +1594,35 @@ mrb_ary_last(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_ary_index_m(mrb_state *mrb, mrb_value self)
 {
-  mrb_value obj, blk;
+  mrb_value obj, blk = mrb_nil_value(), eq, state;
+  mrb_int i = 0;
 
-  if (mrb_get_args(mrb, "|o&", &obj, &blk) == 0 && mrb_nil_p(blk)) {
+  if (mrb_funcall_k_resumed(mrb, &eq, &state)) {
+    /* Only the walk below suspends, and it runs with one argument and no
+       block, so the argument is read straight out of the frame rather than
+       through the format again: `mrb_get_args()` is the most of what an entry
+       costs, and this function has one entry per element it hands back. */
+    obj = mrb_get_arg1(mrb);
+    /* the `==` of the element at `state` has just answered; the walk carries
+       on from where it stopped */
+    i = mrb_integer(state);
+    if (mrb_test(eq)) return mrb_int_value(mrb, i);
+    i++;
+  }
+  else if (mrb_get_args(mrb, "|o&", &obj, &blk) == 0 && mrb_nil_p(blk)) {
     return mrb_funcall_argv1(mrb, self, MRB_SYM(to_enum), mrb_symbol_value(MRB_SYM(index)));
   }
 
   if (mrb_nil_p(blk)) {
-    for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-      if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-        return mrb_int_value(mrb, i);
-      }
+    for (; i < RARRAY_LEN(self); i++) {
+      int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+      if (r > 0) return mrb_int_value(mrb, i);
+      if (r == 0) continue;
+      /* C cannot answer this one. Hand the frame back with the walk's
+         position, so the `==` runs with nothing of this function left on the
+         C stack and a `Fiber.yield` inside it has nothing to cross. */
+      return mrb_funcall_k(mrb, RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj,
+                           mrb_int_value(mrb, i));
     }
   }
   else {
