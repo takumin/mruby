@@ -18,6 +18,37 @@ assert('Data#==') do
   assert_true cc1 == cc2
 end
 
+assert('Data#== sends a `==` written in Ruby in the VM it runs in') do
+  # A `==` written in Ruby is not called from the C walk, which would nest a
+  # VM under the one it was called from: the walk hands the rest of the
+  # members to Ruby, which sends `==` where a `Fiber.yield` inside it has no
+  # C frame to cross, as in CRuby.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  c = Data.define(:m1, :m2, :m3)
+  f = Fiber.new { c.new(0, yielder, 2) == c.new(0, 1, 2) }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+end
+
+assert('Data#== past a member whose `==` is written in Ruby') do
+  # The rest of the walk is made in Ruby over the members as they are held,
+  # not as the accessors a class may replace read them, and answers what the
+  # C walk answers: a pair of members is equal when it is the same object,
+  # and `==` is asked only otherwise, as `rb_equal()` asks it.
+  asked = 0
+  yes = Class.new { define_method(:==) {|other| asked += 1; other == :yes } }.new
+  never = Class.new { def ==(other); false; end }.new
+  c = Data.define(:m1, :m2, :m3) do
+    def m3; :replaced; end
+    def to_h; {}; end
+  end
+  assert_true c.new(yes, never, 1) == c.new(:yes, never, 1)
+  assert_false c.new(yes, never, 1) == c.new(:no, never, 1)
+  assert_false c.new(yes, never, 1) == c.new(:yes, Object.new, 1)
+  assert_false c.new(yes, never, 1) == c.new(:yes, never, 2)
+  assert_true asked > 0
+end
+
 assert('Data#members') do
   c = Data.define(:m1, :m2)
   assert_equal [:m1, :m2], c.new(1,2).members
