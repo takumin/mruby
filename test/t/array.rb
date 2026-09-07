@@ -745,6 +745,29 @@ assert('Array#delete') do
   assert_equal [], a
 end
 
+assert('Array#index, #rindex, #delete and #== compare a wide Integer by value') do
+  # An Integer past the inline range is an object of its own under word
+  # boxing, so two equal ones are not the same object, and `mrb_equal()` has
+  # to read them as numbers, as `OP_EQ` does. The two bases are the ones the
+  # sort test above takes.
+  bases = [1 << 30]
+  begin
+    k = 62
+    bases << (1 << k)
+  rescue RangeError
+  end
+
+  bases.each do |base|
+    a = [base + 1, base, base + 1]
+    assert_equal 1, a.index(base + 0)
+    assert_equal 2, a.rindex(base + 1)
+    assert_true a == [base + 1, base + 0, base + 1]
+    assert_false a == [base + 1, base + 2, base + 1]
+    assert_equal base + 1, a.delete(base + 1)
+    assert_equal [base], a
+  end
+end
+
 assert('Array#hash with self-referencing arrays') do
   a = []
   a << a

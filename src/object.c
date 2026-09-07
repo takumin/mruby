@@ -91,7 +91,9 @@ mrb_equal_in_c(mrb_state *mrb, mrb_value obj1, mrb_value obj2)
 {
   if (mrb_obj_eq(mrb, obj1, obj2)) return TRUE;
   if (mrb_integer_p(obj1) && mrb_integer_p(obj2)) {
-    if (!(mrb->bop_redefined & MRB_BOP_INTEGER(MRB_BOP_EQ))) return FALSE;
+    if (!(mrb->bop_redefined & MRB_BOP_INTEGER(MRB_BOP_EQ))) {
+      return mrb_integer(obj1) == mrb_integer(obj2);
+    }
   }
 #ifndef MRB_NO_FLOAT
   /* value mixing with integer and float */
