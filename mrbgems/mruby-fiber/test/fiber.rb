@@ -256,9 +256,12 @@ assert('Hash#value?, #== and __except send a `==` written in Ruby in the VM they
   # to Ruby, which sends `==` where a `Fiber.yield` inside it has no C frame
   # to cross, as in CRuby.
   yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { {a: 0, b: yielder}.value?(1) }
+  assert_equal :asked, f.resume
+  assert_true f.resume
   f = Fiber.new { {a: 0, b: 1}.value?(yielder) }
-  assert_equal :asked, f.resume    # asked about 0
-  assert_equal :asked, f.resume    # and about 1
+  assert_equal :asked, f.resume    # asked back by 0
+  assert_equal :asked, f.resume    # and by 1
   assert_true f.resume
   f = Fiber.new { {a: 0, b: yielder} == {a: 0, b: 1} }
   assert_equal :asked, f.resume

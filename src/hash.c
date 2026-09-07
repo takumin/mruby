@@ -2003,16 +2003,14 @@ mrb_hash_has_value(mrb_state *mrb, mrb_value hash)
   struct RHash *h = mrb_hash_ptr(hash);
   mrb_int i = 0;
 
-  /* A value is compared as `mrb_equal()` compares it, with `val` as the
-     receiver of `==`, which is mruby's own convention and what the test
-     "#== receiver should be specified value" pins; CRuby's
-     `rb_hash_search_value()` asks the value instead. A `==` written in Ruby
-     is not called from here, where it would nest a VM under this one:
-     `__value_from` compares the values left, the `i`th first, in the VM
-     this method was called from. */
+  /* A value is compared as `mrb_equal()` compares it, with the value the
+     hash holds as the receiver of `==`, as CRuby's `rb_hash_search_value()`
+     has it. A `==` written in Ruby is not called from here, where it would
+     nest a VM under this one: `__value_from` compares the values left, the
+     `i`th first, in the VM this method was called from. */
   H_EACH(h, entry) {
     int r;
-    H_CHECK_MODIFIED(mrb, h) {r = mrb_equal_in_c(mrb, val, entry->val);}
+    H_CHECK_MODIFIED(mrb, h) {r = mrb_equal_in_c(mrb, entry->val, val);}
     if (r < 0) {
       mrb_value argv[2] = {val, mrb_int_value(mrb, i)};
       return mrb_exec_method(mrb, hash, MRB_SYM(__value_from), 2, argv);

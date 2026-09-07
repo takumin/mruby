@@ -34,22 +34,23 @@ class Hash
   # call-seq:
   #   hsh.__value_from(val, i) -> true or false
   #
-  # Internal method: the rest of Hash#value?, from the `i`th value, which
-  # `val` is compared with by a `==` written in Ruby. The C walk hands over
-  # here instead of calling that `==` from C, which would nest a VM under
-  # the one this runs in. A value is compared as `mrb_equal()` compares it,
-  # with `val` as the receiver, as the C walk has it: the two are equal when
-  # they are the same object, and otherwise when `==` says so.
+  # Internal method: the rest of Hash#value?, from the `i`th value, whose
+  # `==` is written in Ruby. The C walk hands over here instead of calling
+  # that `==` from C, which would nest a VM under the one this runs in. A
+  # value is compared as `mrb_equal()` compares it, with the value the hash
+  # holds as the receiver, as the C walk and CRuby have it: the two are equal
+  # when they are the same object, and otherwise when `==` says so.
   #
   def __value_from(val, i)
     vals = values
     while i < vals.size
       v = vals[i]
-      return true if val.equal?(v) || val == v
+      return true if v.equal?(val) || v == val
       i += 1
     end
     false
   end
+
 
   ##
   # call-seq:

@@ -988,17 +988,26 @@ assert('Hash#assoc, Hash#rassoc') do
   assert_nil(h.rassoc(4))
 end
 
-assert('#== receiver should be specified value') do
+assert('Hash#value? asks the value it holds, as CRuby does') do
+  # CRuby's rb_hash_search_value() compares with rb_equal(value, arg): the
+  # value the hash holds is the receiver of `==`, and the argument is asked
+  # only by a value whose `==` asks it back, as an Integer's does.
   [ar_entries, ht_entries].each do |entries|
+    log = []
+    cb = ->(m, s, o) { log << [s, o] if m == :== }
     h = entries.hash_for
-    v0 = HashKey[-99]
+    v0 = HashKey[-99, callback: cb]
     h[-99] = v0
+    v1 = HashKey[-3, callback: cb]
 
-    v1 = HashKey[-3, error: :==]
-    %i[has_value? value?].each{|m| assert_raise{h.__send__(m, v1)}}
-    v0.error = :==
-    v1.error = false
-    %i[has_value? value?].each{|m| assert_nothing_raised{h.__send__(m, v1)}}
+    %i[has_value? value?].each do |m|
+      log.clear
+      assert_false h.__send__(m, v1)
+      assert_true log.any? {|s, o| s.equal?(v0) && o.equal?(v1)}
+      assert_false log.any? {|s, o| s.equal?(v1) && o.equal?(v0)}
+      assert_true log.any? {|s, o| s.equal?(v1) && o.equal?(1)}
+      assert_true h.__send__(m, v0)     # itself, with no `==` asked
+    end
   end
 end
 
@@ -1078,17 +1087,18 @@ end
 assert('Hash#value?, #== and __except past a value whose `==` is written in Ruby') do
   # The rest of the walk is made in Ruby and answers what the C walk answers:
   # a pair is equal when it is the same object, and `==` is asked only
-  # otherwise, with the receiver the C walk gives it: the argument for
-  # `value?`, as the test below on that receiver pins, the value of the
-  # receiver for `==`, and the key for __except.
+  # otherwise, with the receiver the C walk gives it: the value the hash
+  # holds for `value?` and `==`, and the key for __except.
   asked = 0
   yes = Class.new { define_method(:==) {|other| asked += 1; other == :yes } }.new
   never = Class.new { def ==(other); false; end }.new
 
-  h = {a: 0, b: :yes, c: never, d: 1}
-  assert_true h.value?(yes)
-  assert_false({a: 0, c: never, d: 1}.value?(yes))
+  h = {a: 0, b: yes, c: never, d: 1}
+  assert_true h.value?(:yes)
+  assert_false h.value?(:no)
+  assert_false({a: 0, c: never, d: 1}.value?(:yes))
   assert_true h.value?(never)      # itself, with no `==` asked
+  assert_false({a: 0, b: :yes}.value?(yes))   # a Symbol is equal to itself alone
 
   h = {a: yes, b: never, c: 1}
   assert_true h == {a: :yes, b: never, c: 1}
