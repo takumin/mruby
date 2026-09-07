@@ -103,13 +103,56 @@ alias $a $__a__
 
 Syntax error
 
+## A redefined operator cannot yield in `x += 1`
+
+An operator redefined on `Integer` or `Float` is honored, but not every form
+reaches it the same way. The compiler fuses `x += 1` into a single opcode that
+writes its result back into the local variable slot, and `x = x + 1` and
+`x = x.+(1)` fuse to the same one. That opcode cannot lay a callee frame over
+the locals it is writing into, so it calls the redefined operator from C, and a
+`Fiber.yield` inside the operator then has a C function to cross.
+
+The fusion takes `+` and `-` only, a local variable only, and an integer
+literal from 0 to 255 only. Every other form, `x *= 2` and `x += 300` and
+`y = x + 1` and `@x += 1` among them, is sent from the VM and yields as in
+CRuby.
+
+```ruby
+class Integer
+  def +(other)
+    Fiber.yield(:yielded)
+    99
+  end
+end
+
+f = Fiber.new do
+  x = 5
+  x += 1
+  x
+end
+p f.resume
+```
+
+#### CRuby
+
+```
+:yielded
+```
+
+#### mruby
+
+`FiberError` is raised: `can't cross C function boundary`.
+
+The same limit is what "Fiber execution can't cross C function boundary" above
+describes; a redefined operator is one of the few places where whether a call
+crosses C depends on how the expression is written.
+
 ## Redefining a method of a built-in class
 
-An operator redefined on `Integer`, `Float`, `String` or `Symbol` is honored:
-the opcodes that answer `+`, `<`, `==`, `[]` and their kin in C first ask
-whether the operator they reimplement is still the built-in one, and send the
-redefinition once it is not. Two groups of built-in methods carry no such
-test, and mruby keeps answering them in C whatever the class holds.
+The opcodes that answer `+`, `<`, `==`, `[]` and their kin in C ask whether the
+operator they reimplement is still the built-in one, and send the redefinition
+once it is not. Two other groups of built-in methods carry no such test, and
+mruby keeps answering them in C whatever the class holds.
 
 `Array#sort`, `Array#sort!`, `Array#sort_by`, `Array#min` and `Array#max`
 compare a pair of Integers, Floats or Strings by value, without asking `<=>`.
