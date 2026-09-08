@@ -83,6 +83,10 @@ the rest. It is not in `default`, so a build asks for it.
   and the other gems branch on; a build configuration still spelling the old
   name is stopped with an `#error` rather than quietly built with strings
   indexed by byte ([#427](https://github.com/takumin/mruby/pull/427))
+- UTF-8 itself moved into that gem: the primitives, the character indexing,
+  the Unicode case tables and the case walk over them are its sources now, and
+  core keeps the byte-indexed answers a build without the gem gives instead
+  ([#427](https://github.com/takumin/mruby/pull/427))
 - **_NOTE_**: what a string's bytes read as is held as a two-bit coderange
   beside a one-bit encoding index, rather than as three separate flags
   ([#7158](https://github.com/mruby/mruby/pull/7158), [#7169](https://github.com/mruby/mruby/pull/7169), [#7170](https://github.com/mruby/mruby/pull/7170), [#7173](https://github.com/mruby/mruby/pull/7173))

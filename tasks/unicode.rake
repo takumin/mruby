@@ -12,7 +12,8 @@ UNICODE_DATA_DIR = Unicode::UCD.dir
 UNICODE_FILES = Unicode::UCD::FILES.map { |f| "#{UNICODE_DATA_DIR}/#{f}" }
 
 UNICODE_GENERATORS = {
-  'core' => ['tools/gen_unicase.rb', 'src'],
+  'gem:encoding:case' => ['mrbgems/mruby-encoding/tools/gen_unicase.rb',
+                          'mrbgems/mruby-encoding/src'],
   'gem:regexp:cased' => ['mrbgems/mruby-regexp/tools/gen_cased.rb', 'mrbgems/mruby-regexp/src'],
   'gem:regexp:ctype' => ['mrbgems/mruby-regexp/tools/gen_ctype.rb', 'mrbgems/mruby-regexp/src'],
   # Not a table the engine reads: the characters the differential test asks it

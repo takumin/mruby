@@ -194,8 +194,8 @@ mrb_str_new_capa(mrb_state *mrb, mrb_int capa)
   return mrb_obj_value(s);
 }
 
-static void
-resize_capa(mrb_state *mrb, struct RString *s, mrb_int capacity)
+void
+mrb_str_resize_capa(mrb_state *mrb, struct RString *s, mrb_int capacity)
 {
   if (RSTR_EMBED_P(s)) {
     if (!RSTR_EMBEDDABLE_P(capacity)) {
@@ -328,14 +328,6 @@ mrb_gc_free_str(mrb_state *mrb, struct RString *str)
 # define ALIGNED_WORD_ACCESS 1
 #endif
 
-#ifdef MRB_64BIT
-#define bitint uint64_t
-#define MASK01 0x0101010101010101ull
-#else
-#define bitint uint32_t
-#define MASK01 0x01010101ul
-#endif
-
 /* Encode a Unicode codepoint to UTF-8 bytes, into a buffer of at least four.
    Returns the number of bytes written (1-4), or 0 for a value outside
    U+0000..U+10FFFF, which spells no character. The value arrives as an
@@ -382,456 +374,10 @@ mrb_utf8_to_buf(char *buf, mrb_int cp)
 
 /* UTF-8: what a run of bytes spells, and what a string holds character by
    character. Only a build that indexes strings by character has to answer
-   either, so a build without the mruby-encoding gem carries none of it. */
-#ifdef HAVE_MRUBY_ENCODING_GEM
-
-#define utf8_islead(c) ((unsigned char)((c)&0xc0) != 0x80)
-
-/* the byte length a lead byte claims, read only through mrb_utf8len() */
-static const char mrb_utf8len_table[] = {
-  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-  0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 3, 3, 4, 0
-};
-
-mrb_int
-mrb_utf8len(const char* p, const char* e)
-{
-  mrb_int len = mrb_utf8len_table[(unsigned char)p[0] >> 3];
-  if (len > e - p) return 1;
-  switch (len) {
-  case 0:
-    return 1;
-  case 4:
-    if (utf8_islead(p[3])) return 1;
-  case 3:
-    if (utf8_islead(p[2])) return 1;
-  case 2:
-    if (utf8_islead(p[1])) return 1;
-  }
-  /* Reject overlong sequences, UTF-16 surrogates, and code points above
-     U+10FFFF (RFC 3629, Unicode D93b). */
-  switch ((unsigned char)p[0]) {
-  case 0xC0: case 0xC1:                       /* overlong (< U+0080) */
-    return 1;
-  case 0xE0:                                  /* overlong (< U+0800) */
-    if ((unsigned char)p[1] < 0xA0) return 1;
-    break;
-  case 0xED:                                  /* surrogate (U+D800..U+DFFF) */
-    if ((unsigned char)p[1] > 0x9F) return 1;
-    break;
-  case 0xF0:                                  /* overlong (< U+10000) */
-    if ((unsigned char)p[1] < 0x90) return 1;
-    break;
-  case 0xF4:                                  /* above U+10FFFF */
-    if ((unsigned char)p[1] > 0x8F) return 1;
-    break;
-  case 0xF5: case 0xF6: case 0xF7:            /* above U+10FFFF */
-    return 1;
-  }
-  return len;
-}
-
-/* The byte the character covering `p` starts at, or `p` itself when `p` is
-   already a character boundary. A continuation byte belongs to the character
-   that reaches it; one that no lead byte reaches belongs to none and stands as
-   a character of its own. Whether a lead byte reaches is mrb_utf8len()'s
-   answer, so the boundaries found here are the ones the character count is
-   taken over. Reading back three bytes covers it, since nothing longer than
-   four bytes spells a character. */
-const char*
-mrb_utf8_char_head(const char *beg, const char *p, const char *end)
-{
-  if (p >= end || utf8_islead(p[0])) return p;
-  for (mrb_int back = 1; back <= 3 && back <= p - beg; back++) {
-    const char *lead = p - back;
-    if (!utf8_islead(lead[0])) continue;  /* another continuation byte */
-    return mrb_utf8len(lead, end) > back ? lead : p;
-  }
-  return p;
-}
-
-/* Decode a UTF-8 character and return its codepoint.
-   *lenp is set to the byte length consumed. mrb_utf8len() answers 1 for every
-   sequence it rejects, so those consume a single byte and come back as the
-   lead byte itself. */
-uint32_t
-mrb_utf8_decode(const char *p, const char *e, mrb_int *lenp)
-{
-  uint8_t c = (uint8_t)p[0];
-  uint32_t cp;
-  mrb_int n = mrb_utf8len(p, e);
-
-  *lenp = n;
-  switch (n) {
-  case 2:
-    cp = (c & 0x1f) << 6;
-    cp |= ((uint8_t)p[1] & 0x3f);
-    return cp;
-  case 3:
-    cp = (c & 0x0f) << 12;
-    cp |= ((uint8_t)p[1] & 0x3f) << 6;
-    cp |= ((uint8_t)p[2] & 0x3f);
-    return cp;
-  case 4:
-    cp = (c & 0x07) << 18;
-    cp |= ((uint8_t)p[1] & 0x3f) << 12;
-    cp |= ((uint8_t)p[2] & 0x3f) << 6;
-    cp |= ((uint8_t)p[3] & 0x3f);
-    return cp;
-  default:
-    return c;  /* ASCII, or invalid/truncated byte returned as-is */
-  }
-}
-
-#define NOASCII(c) ((c) & 0x80)
-
-#ifdef SIMPLE_SEARCH_NONASCII
-/* the naive implementation. define SIMPLE_SEARCH_NONASCII, */
-/* if you need it for any constraint (e.g. code size).      */
-static const char*
-search_nonascii(const char* p, const char *e)
-{
-  for (; p < e; ++p) {
-    if (NOASCII(*p)) return p;
-  }
-  return e;
-}
-
-#elif defined(__SSE2__)
-# include <emmintrin.h>
-
-static inline const char *
-search_nonascii(const char *p, const char *e)
-{
-  if (sizeof(__m128i) < (size_t)(e - p)) {
-    if (!_mm_movemask_epi8(_mm_loadu_si128((__m128i const*)p))) {
-      const intptr_t lowbits = sizeof(__m128i) - 1;
-      const __m128i *s, *t;
-      s = (const __m128i*)(~lowbits & ((intptr_t)p + lowbits));
-      t = (const __m128i*)(~lowbits & (intptr_t)e);
-      for (; s < t; ++s) {
-        if (_mm_movemask_epi8(_mm_load_si128(s))) break;
-      }
-      p = (const char *)s;
-    }
-  }
-  /* One test per byte the range holds: entering at `case N` runs N of them,
-     and `default` is only reached where the range holds at least 16, which is
-     the first `_mm_loadu_si128()` having found a byte among those 16. A test
-     more than the label promises reads the position the range ends at, which
-     every mruby string happens to carry as its NUL sentinel and a bare buffer
-     does not. */
-  switch (e - p) {
-  default:
-  case 16: if (NOASCII(*p)) return p; ++p;
-  case 15: if (NOASCII(*p)) return p; ++p;
-  case 14: if (NOASCII(*p)) return p; ++p;
-  case 13: if (NOASCII(*p)) return p; ++p;
-  case 12: if (NOASCII(*p)) return p; ++p;
-  case 11: if (NOASCII(*p)) return p; ++p;
-  case 10: if (NOASCII(*p)) return p; ++p;
-  case 9:  if (NOASCII(*p)) return p; ++p;
-  case 8:  if (NOASCII(*p)) return p; ++p;
-  case 7:  if (NOASCII(*p)) return p; ++p;
-  case 6:  if (NOASCII(*p)) return p; ++p;
-  case 5:  if (NOASCII(*p)) return p; ++p;
-  case 4:  if (NOASCII(*p)) return p; ++p;
-  case 3:  if (NOASCII(*p)) return p; ++p;
-  case 2:  if (NOASCII(*p)) return p; ++p;
-  case 1:  if (NOASCII(*p)) return p; ++p;
-  case 0:  break;
-  }
-  return e;
-}
-
-#else
-
-static const char*
-search_nonascii(const char *p, const char *e)
-{
-  ptrdiff_t byte_len = e - p;
-
-  const char *be = p + sizeof(bitint) * (byte_len / sizeof(bitint));
-  for (; p < be; p+=sizeof(bitint)) {
-    bitint t0;
-
-    memcpy(&t0, p, sizeof(bitint));
-    const bitint t1 = t0 & (MASK01*0x80);
-    if (t1) {
-      e = p + sizeof(bitint)-1;
-      byte_len = sizeof(bitint)-1;
-      break;
-    }
-  }
-
-  switch (byte_len % sizeof(bitint)) {
-#ifdef MRB_64BIT
-  case 7: if (e[-7]&0x80) return e-7;
-  case 6: if (e[-6]&0x80) return e-6;
-  case 5: if (e[-5]&0x80) return e-5;
-  case 4: if (e[-4]&0x80) return e-4;
-#endif
-  case 3: if (e[-3]&0x80) return e-3;
-  case 2: if (e[-2]&0x80) return e-2;
-  case 1: if (e[-1]&0x80) return e-1;
-  }
-  return e;
-}
-
-#endif  /* SIMPLE_SEARCH_NONASCII */
-
-#if defined(__GNUC__) || __has_builtin(__builtin_popcount)
-# ifdef MRB_64BIT
-# define popcount(x) __builtin_popcountll(x)
-# else
-# define popcount(x) __builtin_popcountl(x)
-# endif
-#else
-#define POPC_SHIFT (8 * sizeof(bitint) - 8)
-static inline uint32_t popcount(bitint x)
-{
-  x = (x & (MASK01*0x55)) + ((x >>  1) & (MASK01*0x55));
-  x = (x & (MASK01*0x33)) + ((x >>  2) & (MASK01*0x33));
-  x = (x & (MASK01*0x0F)) + ((x >>  4) & (MASK01*0x0F));
-  return (uint32_t)((x * MASK01) >> POPC_SHIFT);
-}
-#endif
-
-/* Counts characters, and when `validp` is given also reports whether every
-   sequence decoded as one character. The walk stops at the first broken
-   sequence, so the returned count is a character count only while `*validp`
-   stays TRUE. */
-static mrb_int
-utf8_strlen_check(const char *str, mrb_int byte_len, mrb_bool *validp)
-{
-  const char *p = str;
-  const char *e = str + byte_len;
-  mrb_int len = 0;
-
-  while (p < e) {
-    const char *np = search_nonascii(p, e);
-
-    len += np - p;
-    if (np == e) break;
-    p = np;
-    while (p < e && NOASCII(*p)) {
-      mrb_int clen = mrb_utf8len(p, e);
-
-      /* mrb_utf8len() answers 1 for a byte that leads no valid sequence. The
-         byte here is known to be non-ASCII, so a length of 1 means the string
-         carries a byte that stands for no character. */
-      if (validp && clen == 1) {
-        *validp = FALSE;
-        return len;
-      }
-      p += clen;
-      len++;
-    }
-  }
-  return len;
-}
-
-mrb_int
-mrb_utf8_strlen(const char *str, mrb_int byte_len)
-{
-  return utf8_strlen_check(str, byte_len, NULL);
-}
-
-/* count the characters of a string */
-mrb_int
-mrb_str_char_len(mrb_state *mrb, mrb_value str)
-{
-  (void)mrb;
-  struct RString *s = mrb_str_ptr(str);
-  mrb_int byte_len = RSTR_LEN(s);
-
-  /* A single-byte string has one position per byte, which is what
-     mrb_str_char_to_byte() and mrb_str_byte_to_char() already answer for it.
-     Asked here only where the string stands, the same string was measured as
-     UTF-8 and reported a length its own indexing did not agree with.
-
-     Nothing is recorded on the way out. A string of nothing but ASCII carries
-     that already, and a byte-read one returns here because of how it is read
-     rather than because of what its bytes are: 7BIT would be a claim about
-     bytes nothing has looked at, and force_encoding() can take the byte
-     reading away again and leave the claim standing. */
-  if (RSTR_SINGLE_BYTE_P(s)) {
-    return byte_len;
-  }
-  else {
-    const char *p = RSTR_PTR(s);
-    const char *e = p + byte_len;
-    const char *np = search_nonascii(p, e);
-
-    /* Every character a non-ASCII byte begins spells two bytes or more, and a
-       non-ASCII byte that begins none spells no character at all, so a string
-       holds one character per byte exactly when every byte of it is ASCII.
-       Counts that come out equal do not say that: a byte spelling no character
-       is counted as one too, so a string of them set the flag as well, and the
-       readers of it went on to hand those bytes back as characters. */
-    if (np == e) {
-      RSTR_CODERANGE_SET(s, MRB_STR_CODERANGE_7BIT);
-      return byte_len;
-    }
-    mrb_int utf8_len = (mrb_int)(np - p) + mrb_utf8_strlen(np, (mrb_int)(e - np));
-    mrb_assert(utf8_len <= byte_len);
-    return utf8_len;
-  }
-}
-
-/* whether a string's bytes read as the encoding it is taken to have */
-mrb_bool
-mrb_str_valid_encoding_p(mrb_state *mrb, mrb_value str)
-{
-  (void)mrb;
-  struct RString *s = mrb_str_ptr(str);
-  /* A byte-indexed string makes no such claim, so it is valid whatever its
-     bytes are. */
-  if (RSTR_BINARY_P(s)) return TRUE;
-  /* The walk below reads the whole string to answer either way, so a string
-     that has been walked already is answered off where it stands instead. A
-     string of one character per byte is one of those: it holds nothing but
-     ASCII, and ASCII reads as UTF-8 as it stands. This is what a string
-     counted before it is asked about comes in carrying. */
-  mrb_int cr = RSTR_CODERANGE(s);
-  if (cr == MRB_STR_CODERANGE_7BIT || cr == MRB_STR_CODERANGE_VALID) return TRUE;
-  if (cr == MRB_STR_CODERANGE_BROKEN) return FALSE;
-
-  mrb_int byte_len = RSTR_LEN(s);
-  mrb_bool valid = TRUE;
-  mrb_int utf8_len = utf8_strlen_check(RSTR_PTR(s), byte_len, &valid);
-
-  if (!valid) {
-    RSTR_CODERANGE_SET(s, MRB_STR_CODERANGE_BROKEN);
-    return FALSE;
-  }
-  RSTR_CODERANGE_SET(s, byte_len == utf8_len ? MRB_STR_CODERANGE_7BIT
-                                             : MRB_STR_CODERANGE_VALID);
-  return TRUE;
-}
-
-/* whether every byte of the string is ASCII. A walk that finds nothing else
-   has made the statement 7BIT makes, so the answer is left on the string for
-   the next asker to read off. */
-static mrb_bool
-str_ascii_p(struct RString *s)
-{
-  if (RSTR_CODERANGE(s) == MRB_STR_CODERANGE_7BIT) return TRUE;
-
-  const char *p = RSTR_PTR(s);
-  const char *e = p + RSTR_LEN(s);
-  if (search_nonascii(p, e) != e) return FALSE;
-  RSTR_CODERANGE_SET(s, MRB_STR_CODERANGE_7BIT);
-  return TRUE;
-}
-
-/* Whether a character index into this string is already a byte index, asking
-   the bytes where the string does not say. RSTR_SINGLE_BYTE_P() reads what is
-   recorded and answers no for a string nothing has read yet, which sends every
-   later caller down the walking path however plain the bytes are. A string is
-   walked whole at most once here: the walk records what it finds, and it is
-   the same walk the character indexing would go on to do anyway. */
-mrb_bool
-mrb_str_single_byte_p(mrb_state *mrb, mrb_value str)
-{
-  struct RString *s = mrb_str_ptr(str);
-  if (RSTR_CODERANGE(s) == MRB_STR_CODERANGE_UNKNOWN) {
-    mrb_str_valid_encoding_p(mrb, str);
-  }
-  return RSTR_SINGLE_BYTE_P(s);
-}
-
-/* map character index to byte offset index */
-mrb_int
-mrb_str_char_to_byte(mrb_state *mrb, mrb_value str, mrb_int off, mrb_int idx)
-{
-  (void)mrb;
-  struct RString *s = mrb_str_ptr(str);
-  if (RSTR_SINGLE_BYTE_P(s)) {
-    return idx;
-  }
-
-  const char *o = RSTR_PTR(s);
-  const char *p0 = o + off;
-  const char *p = p0;
-  const char *e = o + RSTR_LEN(s);
-  mrb_int i = 0;
-
-  while (p<e && i<idx) {
-    if ((*p & 0x80) == 0) {
-      /* Every ASCII byte stands for a character of its own, so the run only
-         has to be followed as far as the index asks for. Reading to the end of
-         the string instead makes finding the character just past the head cost
-         what finding the last one does. */
-      const char *lim = (e - p) > (idx - i) ? p + (idx - i) : e;
-      const char *np = search_nonascii(p, lim);
-      i += np - p;
-      p = np;
-    }
-    else {
-      p += mrb_utf8len(p, e);
-      i++;
-    }
-  }
-
-  mrb_int len = (mrb_int)(p-p0);
-  if (i<idx) len++;
-  return len;
-}
-
-/* map byte offset to character index */
-mrb_int
-mrb_str_byte_to_char(mrb_state *mrb, mrb_value str, mrb_int bi)
-{
-  (void)mrb;
-  struct RString *s = mrb_str_ptr(str);
-  if (bi < 0 || RSTR_LEN(s) < bi) return -1;
-  if (RSTR_SINGLE_BYTE_P(s)) {
-    return bi;
-  }
-
-  const char *p = RSTR_PTR(s);
-  const char *e = p + RSTR_LEN(s);
-  const char *pivot = p + bi;
-  mrb_int i = 0;
-
-  while (p < pivot) {
-    if ((*p & 0x80) == 0) {
-      const char *np = search_nonascii(p, pivot);
-      i += np - p;
-      p = np;
-    }
-    else {
-      p += mrb_utf8len(p, e);
-      i++;
-    }
-  }
-  if (p != pivot) return -1;
-  return i;
-}
-
-static mrb_int
-str_index_str_by_char(mrb_state *mrb, mrb_value str, mrb_value sub, mrb_int pos)
-{
-  /* see str_index_str() */
-  if (!mrb_str_valid_encoding_p(mrb, sub)) return -1;
-
-  const char *ptr = RSTRING_PTR(sub);
-  mrb_int len = RSTRING_LEN(sub);
-
-  if (pos > 0) {
-    pos = mrb_str_char_to_byte(mrb, str, 0, pos);
-  }
-
-  pos = mrb_str_index(mrb, str, ptr, len, pos);
-
-  if (pos > 0) {
-    pos = mrb_str_byte_to_char(mrb, str, pos);
-  }
-  return pos;
-}
-
-#else
+   either, and that is the build carrying mruby-encoding, which is where the
+   answers live (its utf8.c). What is here is what the other build answers
+   instead. */
+#ifndef HAVE_MRUBY_ENCODING_GEM
 /* a byte is a character here, so the count is the byte length and both
    conversions are identity */
 mrb_int
@@ -868,6 +414,13 @@ mrb_str_valid_encoding_p(mrb_state *mrb, mrb_value str)
   return TRUE;
 }
 #define str_ascii_p(s) TRUE
+#else
+/* The gem's answers reach the callers below under the names they already had.
+   str_ascii_p() is a macro on both sides so that a byte-indexed build spells
+   no call at all, the answer there being a constant. */
+#define str_ascii_p(s) mrb_str_ascii_p(s)
+#define str_index_str_by_char(mrb, str, sub, pos) \
+  mrb_str_index_str_by_char((mrb), (str), (sub), (pos))
 #endif
 
 /* memsearch_swar (SWAR stands for SIMD within a register)                 */
@@ -1149,8 +702,8 @@ str_index_str(mrb_state *mrb, mrb_value str, mrb_value str2, mrb_int offset)
   return mrb_str_index(mrb, str, ptr, len, offset);
 }
 
-static mrb_value
-str_replace(mrb_state *mrb, struct RString *s1, struct RString *s2)
+mrb_value
+mrb_str_replace_ptr(mrb_state *mrb, struct RString *s1, struct RString *s2)
 {
   mrb_check_frozen(mrb, s1);
   if (s1 == s2) return mrb_obj_value(s1);
@@ -1499,7 +1052,7 @@ mrb_str_resize(mrb_state *mrb, mrb_value str, mrb_int len)
   mrb_int slen = RSTR_LEN(s);
   if (len != slen) {
     if (slen < len || slen - len > 256) {
-      resize_capa(mrb, s, len);
+      mrb_str_resize_capa(mrb, s, len);
     }
     RSTR_SET_LEN(s, len);
     RSTR_PTR(s)[len] = '\0';   /* sentinel */
@@ -1831,7 +1384,7 @@ mrb_str_dup(mrb_state *mrb, mrb_value str)
   struct RString *s = mrb_str_ptr(str);
   struct RString *dup = str_new(mrb, 0, 0);
 
-  return str_replace(mrb, dup, s);
+  return mrb_str_replace_ptr(mrb, dup, s);
 }
 
 MRB_API mrb_value
@@ -2036,7 +1589,7 @@ str_replace_partial(mrb_state *mrb, mrb_value src, mrb_int pos, mrb_int end, mrb
   mrb_str_modify(mrb, str);
 
   if (len < newlen) {
-    resize_capa(mrb, str, newlen);
+    mrb_str_resize_capa(mrb, str, newlen);
   }
 
   strp = RSTR_PTR(str);
@@ -2050,7 +1603,7 @@ str_replace_partial(mrb_state *mrb, mrb_value src, mrb_int pos, mrb_int end, mrb
   strp[newlen] = '\0';
 
   if (len - newlen >= shrink_threshold) {
-    resize_capa(mrb, str, newlen);
+    mrb_str_resize_capa(mrb, str, newlen);
   }
 
   return src;
@@ -2221,187 +1774,6 @@ mrb_str_aset_m(mrb_state *mrb, mrb_value str)
   return replace;
 }
 
-#if defined(HAVE_MRUBY_ENCODING_GEM) && !defined(MRB_USE_ASCII_CTYPE)
-
-/* What the walk below makes of an ASCII character. Each method keeps its own
-   loop over a string that holds nothing but ASCII, so this is reached only for
-   the ASCII characters of a string that holds others beside them. */
-static int
-ascii_case_conv(int c, enum mrb_case_mode mode, mrb_bool first)
-{
-  switch (mode) {
-  case MRB_CASE_UP:
-    return TOUPPER(c);
-  case MRB_CASE_CAPITALIZE:
-    return first ? TOUPPER(c) : TOLOWER(c);
-  case MRB_CASE_SWAP:
-    return ISUPPER(c) ? TOLOWER(c) : TOUPPER(c);
-  default:
-    return TOLOWER(c);
-  }
-}
-
-static enum mrb_case_kind
-case_kind_of(enum mrb_case_mode mode, mrb_bool first)
-{
-  switch (mode) {
-  case MRB_CASE_UP:
-    return MRB_CASE_KIND_UPPER;
-  case MRB_CASE_CAPITALIZE:
-    return first ? MRB_CASE_KIND_TITLE : MRB_CASE_KIND_LOWER;
-  case MRB_CASE_SWAP:
-    return MRB_CASE_KIND_SWAP;
-  case MRB_CASE_FOLD:
-    return MRB_CASE_KIND_FOLD;
-  default:
-    return MRB_CASE_KIND_LOWER;
-  }
-}
-
-/* Room in `o` for `need` more bytes past the `len` already written. The answer
-   is built with its length held apart from the string, so this grows the
-   buffer the way an append does without the questions an append from anywhere
-   has to ask: what is written here is this walk's own bytes, and where they
-   go is not somewhere the string can already be. */
-static char*
-case_out_room(mrb_state *mrb, struct RString *o, mrb_int len, mrb_int need)
-{
-  mrb_int capa = RSTR_CAPA(o);
-
-  if (capa - len < need) {
-    mrb_int want;
-    if (mrb_int_add_overflow(len, need, &want)) {
-      mrb_raise(mrb, E_ARGUMENT_ERROR, "string size too big");
-    }
-    while (capa < want) {
-      if (mrb_int_mul_overflow(capa, 2, &capa)) {
-        capa = want;
-        break;
-      }
-    }
-    /* Leaving the buffer takes the string's length with it, and what an
-       embedded string carries over is that many bytes: told nothing, it would
-       carry over none of what has been written so far. */
-    RSTR_SET_LEN(o, len);
-    resize_capa(mrb, o, capa);
-  }
-  return RSTR_PTR(o) + len;
-}
-
-/* Convert a string that holds characters the tables can speak about. A mapping
-   changes how many bytes a character takes ("K" U+212A lower cases to the one
-   byte of "k"), so the answer is built beside the string rather than over it,
-   and the string takes the buffer's bytes at the end. */
-static mrb_bool
-str_case_convert_utf8(mrb_state *mrb, mrb_value str, enum mrb_case_mode mode)
-{
-  struct RString *s = mrb_str_ptr(str);
-  const char *p = RSTR_PTR(s);
-  const char *pend = p + RSTR_LEN(s);
-  mrb_value out = mrb_str_new_capa(mrb, RSTR_LEN(s));
-  struct RString *o = mrb_str_ptr(out);
-  mrb_int dlen = 0;
-  mrb_bool modify = FALSE;
-  mrb_bool ascii_only = TRUE;
-  mrb_bool first = TRUE;
-
-  while (p < pend) {
-    /* Room for whatever one character can map to, so neither branch below has
-       to ask again for the character it is about to write. */
-    char *d = case_out_room(mrb, o, dlen, MRB_UNI_CASE_MAX_BYTES);
-
-    if ((unsigned char)*p < 0x80) {
-      /* ASCII has no mapping to look up and takes one byte of the answer per
-         byte of the source, so a run of it is converted where it stands.
-         Reaching the tables for it, or the buffer through an append, is what
-         made a string of ASCII with one character among it cost as much per
-         byte as one made of characters. The run stops where the buffer does,
-         and the turn of the loop after it is what grows the buffer. */
-      const char *dend = RSTR_PTR(o) + RSTR_CAPA(o);
-      do {
-        int c = (unsigned char)*p++;
-        int r = ascii_case_conv(c, mode, first);
-        first = FALSE;
-        if (r != c) modify = TRUE;
-        *d++ = (char)r;
-      } while (p < pend && (unsigned char)*p < 0x80 && d < dend);
-      dlen = (mrb_int)(d - RSTR_PTR(o));
-      continue;
-    }
-
-    const char *src = p;
-    mrb_int clen;
-    uint32_t cp = mrb_utf8_decode(p, pend, &clen);
-    mrb_int n;
-
-    /* A run of bytes that spells no character has no case to convert, and
-       answering as though it were the byte it starts with would hand back a
-       string neither its own reading nor the caller asked for. */
-    if (clen == 1) {
-      mrb_raise(mrb, E_ARGUMENT_ERROR, "input string invalid");
-    }
-    n = mrb_uni_case_map(case_kind_of(mode, first), cp, d);
-    /* A character with no mapping stands as it is. */
-    if (n == 0) {
-      memcpy(d, src, (size_t)clen);
-      n = clen;
-    }
-    p += clen;
-    first = FALSE;
-
-    if (n != clen || memcmp(d, src, (size_t)n) != 0) modify = TRUE;
-    /* Only what a mapping wrote can be asked about here: a character maps to
-       characters, and ASCII maps to ASCII, so the run above answers itself. */
-    for (mrb_int i = 0; i < n; i++) {
-      if ((unsigned char)d[i] & 0x80) ascii_only = FALSE;
-    }
-    dlen += n;
-  }
-
-  if (!modify) return FALSE;
-
-  RSTR_SET_LEN(o, dlen);
-  RSTR_PTR(o)[dlen] = '\0';
-
-  /* Every byte of the source spelled a character, since the walk refuses one
-     that does not, and every mapping spells characters, so what was written
-     is sound. Nothing but ASCII is the stronger answer where it holds. */
-  RSTR_CODERANGE_SET(o, ascii_only ? MRB_STR_CODERANGE_7BIT
-                                   : MRB_STR_CODERANGE_VALID);
-  str_replace(mrb, s, o);
-  return TRUE;
-}
-
-int
-mrb_str_case_convert_unicode(mrb_state *mrb, mrb_value str, enum mrb_case_mode mode)
-{
-  struct RString *s = mrb_str_ptr(str);
-
-  /* A string of nothing but ASCII holds no character the tables speak about,
-     and one read as bytes holds no characters at all. Neither is this walk's
-     to make, so both go back to the caller's own loop, which converts the
-     bytes where they stand. A string that has not been walked yet is walked
-     for it: reading it through is what the loop below does anyway, and this
-     way an ASCII one is spared the second string the walk builds beside it.
-     The byte reading is asked about first, since a string read as bytes must
-     not be recorded as holding one character per byte. */
-  if (RSTR_BINARY_P(s) || str_ascii_p(s)) return -1;
-
-  /* The walk only reads the string and builds its answer beside it, so a
-     buffer the string shares is read where it is rather than copied first:
-     the copy would go unwritten, and str_replace() lets go of a shared buffer
-     by dropping the reference where it would free a private one. A string
-     the walk leaves as it was keeps what it carried, coderange included, and
-     one it changes takes the answer's along with the bytes, so nothing here
-     is prepared for a write. What is still owed is the frozen check: a
-     frozen receiver is turned away before anything is read, whether or not
-     the walk would have changed it, which is what CRuby's bang forms do. */
-  mrb_check_frozen(mrb, s);
-
-  return str_case_convert_utf8(mrb, str, mode) ? 1 : 0;
-}
-
-#endif  /* HAVE_MRUBY_ENCODING_GEM && !MRB_USE_ASCII_CTYPE */
 
 /* 15.2.10.5.8  */
 /*
@@ -2544,7 +1916,7 @@ mrb_str_chomp_bang(mrb_state *mrb, mrb_value str)
        mrb_str_modify_keep_cr() kept is still the answer. Cutting a non-ASCII
        byte can have taken the last of them, and a string of nothing but ASCII
        stands at 7BIT rather than VALID: what it is has to be asked again. */
-    if (search_nonascii(pp, pp + rslen) != pp + rslen) {
+    if (mrb_str_search_nonascii(pp, pp + rslen) != pp + rslen) {
       RSTR_CODERANGE_SET(s, MRB_STR_CODERANGE_UNKNOWN);
     }
 #endif
@@ -2957,7 +2329,7 @@ mrb_str_replace(mrb_state *mrb, mrb_value str)
   mrb_value str2;
 
   mrb_get_args(mrb, "S", &str2);
-  return str_replace(mrb, mrb_str_ptr(str), mrb_str_ptr(str2));
+  return mrb_str_replace_ptr(mrb, mrb_str_ptr(str), mrb_str_ptr(str2));
 }
 
 /* 15.2.10.5.23 */
@@ -2975,7 +2347,7 @@ mrb_str_init(mrb_state *mrb, mrb_value self)
   if (mrb_get_args(mrb, "|S", &str2) == 0) {
     str2 = mrb_str_new(mrb, 0, 0);
   }
-  str_replace(mrb, mrb_str_ptr(self), mrb_str_ptr(str2));
+  mrb_str_replace_ptr(mrb, mrb_str_ptr(self), mrb_str_ptr(str2));
   return self;
 }
 
@@ -4024,7 +3396,7 @@ mrb_str_cat(mrb_state *mrb, mrb_value str, const char *ptr, size_t len)
     while (capa <= total) {
       if (mrb_int_mul_overflow(capa, 2, &capa)) goto size_error;
     }
-    resize_capa(mrb, s, capa);
+    mrb_str_resize_capa(mrb, s, capa);
   }
   if (off != -1) {
       ptr = RSTR_PTR(s) + off;
@@ -4043,7 +3415,7 @@ mrb_str_cat(mrb_state *mrb, mrb_value str, const char *ptr, size_t len)
      Only this pair is carried. VALID would need the appended bytes read as
      characters rather than scanned for the high bit, and the boundary between
      the two parts read as well, which is the walk this is avoiding. */
-  if (cr == MRB_STR_CODERANGE_7BIT && search_nonascii(ptr, ptr + len) == ptr + len) {
+  if (cr == MRB_STR_CODERANGE_7BIT && mrb_str_search_nonascii(ptr, ptr + len) == ptr + len) {
     RSTR_CODERANGE_SET(s, MRB_STR_CODERANGE_7BIT);
   }
 #else
