@@ -42,6 +42,8 @@ MRuby::Build.new do |conf|
   #   linker.library_paths = []
   #   linker.option_library = '-l%s'
   #   linker.option_library_path = '-L%s'
+  #   linker.option_use_linker = '-fuse-ld=%s'
+  #   linker.preferred_linkers = %w(mold lld)
   #   linker.link_options = %Q[%{flags} -o "%{outfile}" %{objs} %{libs}]
   # end
 
