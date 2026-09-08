@@ -518,6 +518,14 @@ codedump(mrc_ccontext *c, const mrc_irep *irep, FILE *out)
       fprintf(out, "ADDILV\tR%d\tR%d\t%d", a, b, cc);
       print_lv_a(c, irep, a, out);
       break;
+    CASE(OP_ADDILVM, BBB):
+      fprintf(out, "ADDILVM\tR%d\tR%d\t%d", a, b, cc);
+      print_lv_a(c, irep, a, out);
+      break;
+    CASE(OP_SUBILVM, BBB):
+      fprintf(out, "SUBILVM\tR%d\tR%d\t%d", a, b, cc);
+      print_lv_a(c, irep, a, out);
+      break;
     CASE(OP_SUBILV, BBB):
       fprintf(out, "SUBILV\tR%d\tR%d\t%d", a, b, cc);
       print_lv_a(c, irep, a, out);

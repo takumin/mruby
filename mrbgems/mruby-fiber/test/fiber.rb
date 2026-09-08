@@ -227,3 +227,34 @@ assert('symbol GC keeps the symbols a suspended fiber holds') do
   GC.start
   assert_true f.resume
 end
+
+assert('Fiber.yield inside an operator that OP_ADDILV sends') do
+  # `x += 1` on a local sends `+` from the VM loop when the receiver is not a
+  # builtin Integer or Float, so a fiber switch inside the operator crosses no
+  # C function boundary. The results are read before `Integer#+` is put back
+  # because the assertions count with it.
+  cls = Class.new do
+    def +(o); Fiber.yield(:mid) + o; end
+  end
+  f = Fiber.new { x = cls.new; x += 41; x }
+  first = f.resume
+  second = f.resume(1)
+  Integer.class_eval do
+    alias_method :__add_before_fiber_test, :+
+    def +(o); Fiber.yield(:in_plus).__add_before_fiber_test(o); end
+  end
+  begin
+    f = Fiber.new { i = 1; i += 2; i }
+    third = f.resume
+    fourth = f.resume(10)
+  ensure
+    Integer.class_eval do
+      alias_method :+, :__add_before_fiber_test
+      remove_method :__add_before_fiber_test if respond_to?(:remove_method, true)
+    end
+  end
+  assert_equal :mid, first
+  assert_equal 42, second
+  assert_equal :in_plus, third
+  assert_equal 12, fourth
+end
