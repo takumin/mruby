@@ -291,17 +291,18 @@ module MRuby
     end
 
     # The name a compile is given for +path+: the one it has from the tree,
-    # where it sits under the tree and the build compiles by such names, and
-    # the path as it is anywhere else.
+    # where it sits under the tree, and a name written against the tree where
+    # it sits outside it, so that a build directory or a gem beside the tree
+    # is named by where it sits rather than by where the machine keeps it.
     #
-    # A path this leaves alone is one no build of this tree can name the same
-    # way twice, an external gem or a build directory somewhere else, and it
+    # A path this leaves alone is one no name from the tree reaches, and it
     # reaches the compiler as the machine spells it.
     def compile_path(path)
       return path unless compile_relative?
       return "." if path == MRUBY_ROOT
       prefix = "#{MRUBY_ROOT}/"
-      path.start_with?(prefix) ? path[prefix.length..-1] : path
+      return path[prefix.length..-1] if path.start_with?(prefix)
+      compile_path_outside(path) || path
     end
 
     # Set target port names for this build.
@@ -874,6 +875,25 @@ EOS
     # itself, either way.
     def apply_default_file_prefix_map
       enable_file_prefix_map if @file_prefix_map.nil?
+    end
+
+    # The name +path+ has from the tree where it sits outside it, `../build`
+    # for a build directory beside the tree, or nil where no such name
+    # reaches it.
+    #
+    # A name that climbs out of the tree is read from the directory the
+    # compile runs in, which is the tree, and a compiler reads `..` from the
+    # directory a name walked to rather than the one it is spelled under. The
+    # two are the same directory unless the tree is reached through a symbolic
+    # link, so a tree that is not the directory it names is left with the
+    # paths of the machine, which every step reads the same way. Windows has
+    # its own such path, one on another drive, which `Pathname` reports by
+    # raising rather than by returning a name.
+    def compile_path_outside(path)
+      return nil unless MRUBY_ROOT == (@root_realpath ||= File.realpath(MRUBY_ROOT))
+      path.relative_path_from(MRUBY_ROOT)
+    rescue ArgumentError, SystemCallError
+      nil
     end
 
     def create_mrbc_build

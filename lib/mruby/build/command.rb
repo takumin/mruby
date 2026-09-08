@@ -502,11 +502,12 @@ module MRuby
       end.flatten.uniq
       # The names a +.d+ file carries are the ones the compile was given, so a
       # compile that names its sources against the tree leaves relative names
-      # here. They are read against the directory the compile ran in, since
-      # everything below compares them with the names of the tasks, and those
-      # are absolute.
+      # here, among them the `../` of a directory beside the tree. They are
+      # read against the directory the compile ran in and written out in full,
+      # since everything below compares them with the names of the tasks, and
+      # those are absolute and carry no `..`.
       header_deps.map! do |dep|
-        Pathname.new(dep).absolute? ? dep : File.join(MRUBY_ROOT, dep)
+        Pathname.new(dep).absolute? ? dep : File.expand_path(dep, MRUBY_ROOT)
       end
       unless object_ext?(file)
         presym_dir = "#{build.presym.header_dir}/"
