@@ -1,4 +1,24 @@
 class Hash
+  ##
+  # call-seq:
+  #   hsh.__key_from(val, i) -> key or nil
+  #
+  # Internal method: the rest of Hash#key, from the `i`th value, whose `==`
+  # is written in Ruby, as Hash#__value_from is the rest of #value?: a value
+  # is equal to `val` when it is the same object, and otherwise when its
+  # `==` says so.
+  #
+  def __key_from(val, i)
+    ks = keys
+    vs = values
+    while i < ks.size
+      v = vs[i]
+      return ks[i] if v.equal?(val) || v == val
+      i += 1
+    end
+    nil
+  end
+
 
   # ISO does not define Hash#each_pair, so each_pair is defined in gem.
   alias each_pair each

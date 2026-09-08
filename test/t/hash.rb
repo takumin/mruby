@@ -988,17 +988,80 @@ assert('Hash#assoc, Hash#rassoc') do
   assert_nil(h.rassoc(4))
 end
 
-assert('#== receiver should be specified value') do
-  [ar_entries, ht_entries].each do |entries|
-    h = entries.hash_for
-    v0 = HashKey[-99]
-    h[-99] = v0
+assert('Hash#assoc and Hash#rassoc compare with `==`, as CRuby does') do
+  # A lookup finds a key with `eql?`, so `{1 => 0}[1.0]` is nil; `assoc` and
+  # `rassoc` compare with `==` instead, with the argument as the receiver,
+  # as CRuby's rb_hash_assoc() and rb_hash_rassoc() do.
+  h = {1 => :a, "k" => :b, nil => :c}
+  assert_equal [1, :a], h.assoc(1.0) if Object.const_defined?(:Float)
+  assert_equal [1, :a], h.assoc(1)
+  assert_equal ["k", :b], h.assoc("k")
+  assert_equal [nil, :c], h.assoc(nil)
+  assert_nil h.assoc(2)
+  assert_nil h.assoc(:k)
+  h = {a: 1, b: "v", c: nil}
+  assert_equal [:a, 1], h.rassoc(1.0) if Object.const_defined?(:Float)
+  assert_equal [:a, 1], h.rassoc(1)
+  assert_equal [:b, "v"], h.rassoc("v")
+  assert_equal [:c, nil], h.rassoc(nil)
+  assert_nil h.rassoc(2)
+  assert_nil h.rassoc(:v)
+  assert_nil({}.assoc(1))
+  assert_nil({}.rassoc(1))
+end
 
-    v1 = HashKey[-3, error: :==]
-    %i[has_value? value?].each{|m| assert_raise{h.__send__(m, v1)}}
-    v0.error = :==
-    v1.error = false
-    %i[has_value? value?].each{|m| assert_nothing_raised{h.__send__(m, v1)}}
+assert('Hash#assoc and Hash#rassoc past a key or value whose `==` is written in Ruby') do
+  # The rest of the walk is made in Ruby and answers what the C walk answers:
+  # a pair is equal when it is the same object, and `==` is asked only
+  # otherwise, with the argument as the receiver, as the C walk has it. An
+  # Integer entry asks a Ruby `==` back, so the C walk gets past the entries
+  # before it.
+  asked = []
+  k = Class.new { define_method(:==) {|other| asked << other; other == :k } }.new
+  one = Class.new { define_method(:==) {|other| asked << other; other == 1 } }.new
+  never = Class.new { def ==(other); false; end }.new
+
+  h = {a: 0, never => 1, k: 2, j: 3}
+  assert_equal [:k, 2], h.assoc(k)
+  assert_true asked.size == 3 && asked[0] == :a && asked[1].equal?(never) && asked[2] == :k
+  assert_equal [never, 1], h.assoc(never)      # itself, with no `==` asked
+  assert_nil({a: 0, never => 1}.assoc(k))
+  asked.clear
+  assert_equal [one, 2], {a: 0, b: 1, one => 2, c: 3}.assoc(1)
+  assert_equal [1], asked                      # asked back by `1 == one` alone
+  assert_nil({a: 0, b: 1, one => 2}.assoc(2))
+
+  asked.clear
+  h = {a: 0, b: never, c: :k, d: 3}
+  assert_equal [:c, :k], h.rassoc(k)
+  assert_true asked.size == 3 && asked[0] == 0 && asked[1].equal?(never) && asked[2] == :k
+  assert_equal [:b, never], h.rassoc(never)
+  assert_nil({a: 0, b: never}.rassoc(k))
+  asked.clear
+  assert_equal [:c, one], {a: 0, b: 2, c: one, d: 3}.rassoc(1)
+  assert_equal [1], asked
+end
+
+assert('Hash#value? asks the value it holds, as CRuby does') do
+  # CRuby's rb_hash_search_value() compares with rb_equal(value, arg): the
+  # value the hash holds is the receiver of `==`, and the argument is asked
+  # only by a value whose `==` asks it back, as an Integer's does.
+  [ar_entries, ht_entries].each do |entries|
+    log = []
+    cb = ->(m, s, o) { log << [s, o] if m == :== }
+    h = entries.hash_for
+    v0 = HashKey[-99, callback: cb]
+    h[-99] = v0
+    v1 = HashKey[-3, callback: cb]
+
+    %i[has_value? value?].each do |m|
+      log.clear
+      assert_false h.__send__(m, v1)
+      assert_true log.any? {|s, o| s.equal?(v0) && o.equal?(v1)}
+      assert_false log.any? {|s, o| s.equal?(v1) && o.equal?(v0)}
+      assert_true log.any? {|s, o| s.equal?(v1) && o.equal?(1)}
+      assert_true h.__send__(m, v0)     # itself, with no `==` asked
+    end
   end
 end
 
@@ -1073,6 +1136,45 @@ assert('Hash#[] with a default proc that grows the VM stack') do
   h = Hash.new { |_, _| deep(50); :from_proc }
   assert_equal :from_proc, h[0]
   assert_equal :from_proc, h[1]
+end
+
+assert('Hash#value?, #== and __except past a value whose `==` is written in Ruby') do
+  # The rest of the walk is made in Ruby and answers what the C walk answers:
+  # a pair is equal when it is the same object, and `==` is asked only
+  # otherwise, with the receiver the C walk gives it: the value the hash
+  # holds for `value?` and `==`, and the key for __except.
+  asked = 0
+  yes = Class.new { define_method(:==) {|other| asked += 1; other == :yes } }.new
+  never = Class.new { def ==(other); false; end }.new
+
+  h = {a: 0, b: yes, c: never, d: 1}
+  assert_true h.value?(:yes)
+  assert_false h.value?(:no)
+  assert_false({a: 0, c: never, d: 1}.value?(:yes))
+  assert_true h.value?(never)      # itself, with no `==` asked
+  assert_false({a: 0, b: :yes}.value?(yes))   # a Symbol is equal to itself alone
+
+  h = {a: yes, b: never, c: 1}
+  assert_true h == {a: :yes, b: never, c: 1}
+  assert_false h == {a: :no, b: never, c: 1}
+  assert_false h == {a: :yes, b: never, c: 2}
+  assert_false h == {a: :yes, b: Object.new, c: 1}
+  assert_false h == {a: :yes, b: never, d: 1}
+
+  h = {yes => 0, a: 1, never => 2}
+  assert_equal({a: 1, never => 2}, h.__except([:yes]))
+  assert_equal({yes => 0, never => 2}, h.__except([:a]))
+  assert_equal({yes => 0, a: 1}, h.__except([never]))
+  assert_true asked > 0
+end
+
+assert('Hash#== past a value whose `==` is written in Ruby keeps the recursion check') do
+  always = Class.new { def ==(other); true; end }.new
+  a = {k: always}
+  a[:s] = a
+  b = {k: always}
+  b[:s] = b
+  assert_true a == b
 end
 
 assert('Hash#== and #eql? with recursive values') do

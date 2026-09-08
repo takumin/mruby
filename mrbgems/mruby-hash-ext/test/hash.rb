@@ -193,6 +193,32 @@ assert("Hash#key") do
   assert_equal 'nil', h.key(nil)
 end
 
+assert('Hash#key sends a `==` written in Ruby in the VM it runs in') do
+  # A `==` written in Ruby is not called from the C walk, which would nest a
+  # VM under the one it was called from: the walk hands the rest of the hash
+  # to Ruby, which sends `==` where a `Fiber.yield` inside it has no C frame
+  # to cross, as in CRuby.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { {a: 0, b: yielder, c: 1}.key(1) }
+  assert_equal :asked, f.resume
+  assert_equal :b, f.resume
+end
+
+assert('Hash#key past a value whose `==` is written in Ruby') do
+  # The rest of the walk is made in Ruby and answers what the C walk answers:
+  # a value is equal to the object when it is the same one, and its `==` is
+  # asked only otherwise, as `rb_equal()` asks it.
+  asked = 0
+  yes = Class.new { define_method(:==) {|other| asked += 1; other == :yes } }.new
+  never = Class.new { def ==(other); false; end }.new
+  h = {a: 0, b: yes, c: never, d: 1}
+  assert_equal :b, h.key(:yes)
+  assert_equal :c, h.key(never)
+  assert_equal :d, h.key(1)
+  assert_nil h.key(:no)
+  assert_true asked > 0
+end
+
 assert("Hash#to_h") do
   h = { "a" => 100, "b" => 200 }
   assert_equal Hash, h.to_h.class

@@ -30,6 +30,40 @@ assert('Struct#==', '15.2.18.4.1') do
   assert_raise(NoMethodError) { Struct.new(:m1).new.foo }
 end
 
+assert('Struct#== sends a `==` written in Ruby in the VM it runs in') do
+  # A `==` written in Ruby is not called from the C walk, which would nest a
+  # VM under the one it was called from: the walk hands the rest of the
+  # members to Ruby, which sends `==` where a `Fiber.yield` inside it has no
+  # C frame to cross, as in CRuby.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  c = Struct.new(:m1, :m2, :m3)
+  f = Fiber.new { c.new(0, yielder, 2) == c.new(0, 1, 2) }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+end
+
+assert('Struct#== past a member whose `==` is written in Ruby') do
+  # The rest of the walk is made in Ruby and answers what the C walk answers:
+  # a pair of members is equal when it is the same object, and `==` is asked
+  # only otherwise, as `rb_equal()` asks it; a pair already being compared is
+  # still taken as equal.
+  asked = 0
+  yes = Class.new { define_method(:==) {|other| asked += 1; other == :yes } }.new
+  never = Class.new { def ==(other); false; end }.new
+  c = Struct.new(:m1, :m2, :m3)
+  assert_true c.new(yes, never, 1) == c.new(:yes, never, 1)
+  assert_false c.new(yes, never, 1) == c.new(:no, never, 1)
+  assert_false c.new(yes, never, 1) == c.new(:yes, Object.new, 1)
+  assert_false c.new(yes, never, 1) == c.new(:yes, never, 2)
+  assert_true asked > 0
+
+  s1 = c.new(yes)
+  s1.m2 = s1
+  s2 = c.new(yes)
+  s2.m2 = s2
+  assert_true s1 == s2
+end
+
 assert('Struct#== and #eql? with a member that replaces the storage') do
   # A member's #== runs while both structs are being compared, and
   # initialize_copy() there moves the member storage out from under the walk.

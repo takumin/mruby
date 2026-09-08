@@ -1099,6 +1099,51 @@ assert('Array#include? - a comparison that runs Ruby') do
   assert_equal 0, a.size
 end
 
+assert('Array#include?, #assoc and #rassoc send a `==` written in Ruby in the VM they run in') do
+  # A `==` written in Ruby is not called from the C walk, which would nest a
+  # VM under the one it was called from: the walk hands the rest of the array
+  # to Ruby, which sends `==` where a `Fiber.yield` inside it has no C frame
+  # to cross, as in CRuby and as `Enumerable#include?` sends it.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { [0, yielder, 1].include?(1) }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+  f = Fiber.new { [[0, :a], [yielder, :b], [1, :c]].assoc(1) }
+  assert_equal :asked, f.resume
+  assert_equal [yielder, :b], f.resume
+  f = Fiber.new { [[:a, 0], [:b, yielder], [:c, 1]].rassoc(1) }
+  assert_equal :asked, f.resume
+  assert_equal [:b, yielder], f.resume
+end
+
+assert('Array#include?, #assoc and #rassoc past an element whose `==` is written in Ruby') do
+  # The rest of the walk is made in Ruby and answers what the C walk answers:
+  # an element is equal to the object when it is the same one, and its `==`
+  # is asked only otherwise, as `rb_equal()` asks it.
+  asked = 0
+  yes = Class.new { define_method(:==) {|other| asked += 1; other == :yes } }.new
+  never = Class.new { def ==(other); false; end }.new
+  to_ary = Class.new { def initialize(a); @a = a; end; def to_ary; @a; end }
+
+  a = [0, yes, never, 1]
+  assert_true a.include?(:yes)
+  assert_true a.include?(1)
+  assert_true a.include?(never)     # itself, with no `==` asked
+  assert_false a.include?(:no)
+
+  a = [[0, :a], [yes, :b], [never, :c], to_ary.new([1, :d]), 2, []]
+  assert_equal [yes, :b], a.assoc(:yes)
+  assert_equal [never, :c], a.assoc(never)
+  assert_equal [1, :d], a.assoc(1)
+  assert_nil a.assoc(:no)
+  a = [[:a, 0], [:b, yes], [:c, never], [:d, 1], 2, [:e]]
+  assert_equal [:b, yes], a.rassoc(:yes)
+  assert_equal [:c, never], a.rassoc(never)
+  assert_equal [:d, 1], a.rassoc(1)
+  assert_nil a.rassoc(:no)
+  assert_true asked > 0
+end
+
 assert('Array#intersection narrows by every argument, not by their union') do
   # The hash path used to pour every argument into one set and then keep the
   # elements of `self` found in it, which answers `self & (a | b | ...)`: an

@@ -72,6 +72,29 @@ class Range
     self
   end
 
+  ##
+  # call-seq:
+  #   rng.__eq_from(other, i) -> true or false
+  #
+  # Internal method: the rest of Range#==, from the beginning for an `i` of
+  # 0 and from the end for 1, the one whose `==` is written in Ruby. The C
+  # comparison hands over here instead of calling that `==` from C, which
+  # would nest a VM under the one this runs in. A pair of ends is compared
+  # as `mrb_equal()` compares it: equal when they are the same object, and
+  # otherwise when `==` says so.
+  #
+  def __eq_from(other, i)
+    if i == 0
+      a = self.begin
+      b = other.begin
+      return false unless a.equal?(b) || a == b
+    end
+    a = self.end
+    b = other.end
+    return false unless a.equal?(b) || a == b
+    exclude_end? == other.exclude_end?
+  end
+
   # redefine #hash 15.3.1.3.15
   def hash
     # Use self.begin/self.end instead of first/last to handle endless/beginless ranges

@@ -135,7 +135,13 @@ mrb_eqq_m(mrb_state *mrb, mrb_value self)
      searching for the object it was handed wants, and the wrong one here. */
   if (mrb_float_p(self) && isnan(mrb_float(self))) return mrb_false_value();
 #endif
-  return mrb_bool_value(mrb_equal(mrb, self, arg));
+  /* A `==` written in C is asked from here; one written in Ruby is sent by
+     `__eqq_from`, which this method hands its frame to, so that it runs in
+     the VM this method was dispatched from rather than in one nested under
+     it. */
+  int r = mrb_equal_in_c(mrb, self, arg);
+  if (r >= 0) return mrb_bool_value(r);
+  return mrb_exec_method(mrb, self, MRB_SYM(__eqq_from), 1, &arg);
 }
 
 /* 11.4.4 Step c) */
@@ -180,9 +186,14 @@ mrb_cmp_m(mrb_state *mrb, mrb_value self)
     }
   }
 
-  if (mrb_equal(mrb, self, arg))
-    return mrb_fixnum_value(0);
-  return mrb_nil_value();
+  /* As `Kernel#===` asks `==`: from here when it is written in C, and by
+     `__cmp_from` in the frame of this method when it is written in Ruby.
+     The frame keeps this method's name, receiver and argument, so the
+     recursion check above still finds it from a `==` that asks `<=>`. */
+  int r = mrb_equal_in_c(mrb, self, arg);
+  if (r > 0) return mrb_fixnum_value(0);
+  if (r == 0) return mrb_nil_value();
+  return mrb_exec_method(mrb, self, MRB_SYM(__cmp_from), 1, &arg);
 }
 
 MRB_API mrb_bool

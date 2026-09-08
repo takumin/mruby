@@ -34,6 +34,39 @@ assert('Kernel.raise', '15.3.1.2.12') do
   end
 end
 
+assert('Kernel#=== and Kernel#<=> past a `==` written in Ruby') do
+  # Kernel#=== is `==` taken for true or false, and Kernel#<=> is 0 when
+  # `==` says the two are equal and nil otherwise, as in CRuby. The rest of
+  # either is made in Ruby when `==` is written in Ruby, and answers what
+  # the C method answers: the same object first, `==` only after.
+  asked = []
+  yes = Class.new { define_method(:==) {|other| asked << other; other == :yes } }.new
+  assert_same true, yes === :yes
+  assert_same false, yes === :no
+  assert_equal [:yes, :no], asked
+  assert_true yes === yes           # itself, with no `==` asked
+  assert_equal 0, yes <=> :yes
+  assert_nil yes <=> :no
+  assert_equal 0, yes <=> yes
+  assert_equal [:yes, :no, :yes, :no], asked
+  assert_equal :matched, (case :yes when yes then :matched else :missed end)
+  assert_equal :missed, (case :no when yes then :matched else :missed end)
+
+  truthy = Class.new { def ==(other); :truthy; end }.new
+  assert_same true, truthy === 1
+  assert_equal 0, truthy <=> 1
+  falsy = Class.new { def ==(other); nil; end }.new
+  assert_same false, falsy === 1
+  assert_nil falsy <=> 1
+
+  # Comparable#== asks `<=>`, which asks `==` again: the recursion is
+  # answered nil, from the frame `<=>` handed over
+  cmp = Class.new { include Comparable }.new
+  assert_nil cmp <=> 1
+  assert_false cmp == 1
+  assert_true cmp == cmp
+end
+
 assert('Kernel#__id__', '15.3.1.3.3') do
   assert_equal Integer, __id__.class
 end

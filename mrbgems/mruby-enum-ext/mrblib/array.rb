@@ -43,4 +43,21 @@ class Array
       __count(v)
     end
   end
+
+  ##
+  # call-seq:
+  #   array.__count_from(obj, i, n) -> int
+  #
+  # Internal method: the rest of Array#__count, from the element at `i`,
+  # whose `==` is written in Ruby, as Array#__index_from is the rest of
+  # #index; `n` elements before it were equal to `obj`.
+  #
+  def __count_from(obj, i, n)
+    while i < size
+      e = self[i]
+      n += 1 if e.equal?(obj) || e == obj
+      i += 1
+    end
+    n
+  end
 end

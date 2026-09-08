@@ -796,6 +796,22 @@ num_eql(mrb_state *mrb, mrb_value x)
   return mrb_bool_value(mrb_equal(mrb, x, y));
 }
 
+/* `Integer#==` and `Float#==` with an `other` that is no number: CRuby's
+   `num_equal()` asks `other == self` and answers what that answers, taken for
+   true or false. A `==` written in C is asked from here; one written in Ruby
+   is sent by `Numeric#__eq_ask`, which the method hands its own frame to, so
+   that it runs in the VM the method was dispatched from rather than in one
+   nested under it. `mrb_equal_in_c()` asks the same question for the walks
+   that compare through it, so a `==` written in Ruby is handed back to them
+   before this method is reached. */
+static mrb_value
+num_equal_ask(mrb_state *mrb, mrb_value self, mrb_value other)
+{
+  int r = mrb_equal_in_c(mrb, other, self);
+  if (r >= 0) return mrb_bool_value(r);
+  return mrb_exec_method(mrb, self, MRB_SYM(__eq_ask), 1, &other);
+}
+
 #ifndef MRB_NO_FLOAT
 /* 15.2.9.3.7 */
 /*
@@ -805,6 +821,8 @@ num_eql(mrb_state *mrb, mrb_value x)
  *  Returns `true` only if *obj* has the same value
  *  as *flt*. Contrast this with `Float#eql?`, which
  *  requires *obj* to be a `Float`.
+ *  An *obj* that is no number is asked `obj == flt` instead, as CRuby
+ *  asks it.
  *
  *     1.0 == 1   #=> true
  *
@@ -836,7 +854,7 @@ flo_eq(mrb_state *mrb, mrb_value x)
     return mrb_bool_value(mrb_equal(mrb, y, x));
 #endif
   default:
-    return mrb_false_value();
+    return num_equal_ask(mrb, x, y);
   }
 }
 
@@ -1443,7 +1461,8 @@ flo_divmod(mrb_state *mrb, mrb_value x)
  *   int == other  ->  true or false
  *
  * Return `true` if `int` equals `other`
- * numerically.
+ * numerically. An `other` that is no number is asked `other == int`
+ * instead, as CRuby asks it.
  *
  *   1 == 2      #=> false
  *   1 == 1.0    #=> true
@@ -1481,7 +1500,7 @@ int_equal(mrb_state *mrb, mrb_value x)
     return mrb_bool_value(mrb_equal(mrb, y, x));
 #endif
   default:
-    return mrb_false_value();
+    return num_equal_ask(mrb, x, y);
   }
 }
 

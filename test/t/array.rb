@@ -745,6 +745,88 @@ assert('Array#delete') do
   assert_equal [], a
 end
 
+assert('Array#delete on a frozen array') do
+  a = [1, 2].freeze
+  assert_raise(FrozenError) { a.delete(1) }
+  # deleting the last element writes nothing before the length changes
+  assert_raise(FrozenError) { a.delete(2) }
+  assert_equal [1, 2], a
+  assert_nil a.delete(3)
+  assert_equal :none, a.delete(3) { :none }
+end
+
+assert('Array#index, #rindex, #delete and #== compare a wide Integer by value') do
+  # An Integer past the inline range is an object of its own under word
+  # boxing, so two equal ones are not the same object, and `mrb_equal()` has
+  # to read them as numbers, as `OP_EQ` does. The two bases are the ones the
+  # sort test above takes.
+  bases = [1 << 30]
+  begin
+    k = 62
+    bases << (1 << k)
+  rescue RangeError
+  end
+
+  bases.each do |base|
+    a = [base + 1, base, base + 1]
+    assert_equal 1, a.index(base + 0)
+    assert_equal 2, a.rindex(base + 1)
+    assert_true a == [base + 1, base + 0, base + 1]
+    assert_false a == [base + 1, base + 2, base + 1]
+    assert_equal base + 1, a.delete(base + 1)
+    assert_equal [base], a
+  end
+end
+
+assert('Array#index, #rindex, #delete and #== past an element whose `==` is written in Ruby') do
+  # The rest of the walk, from that element on, is made in Ruby and answers
+  # what the C walk answers: an element is equal to the object when it is the
+  # same one, and its `==` is asked only otherwise, as `rb_equal()` asks it.
+  asked = 0
+  yes = Class.new { define_method(:==) {|other| asked += 1; other == :yes } }.new
+  never = Class.new { def ==(other); false; end }.new
+
+  a = [0, yes, never, 1, yes]
+  assert_equal 1, a.index(:yes)
+  assert_equal 3, a.index(1)
+  assert_equal 2, a.index(never)     # itself, with no `==` asked
+  assert_nil a.index(:no)
+  assert_equal 4, a.rindex(:yes)
+  assert_equal 0, a.rindex(0)
+  assert_equal 2, a.rindex(never)
+  assert_nil a.rindex(:no)
+  assert_true a == [0, :yes, never, 1, :yes]
+  assert_false a == [0, :yes, never, 2, :yes]
+  assert_false a == [0, :no, never, 1, :yes]
+  assert_true [never, yes] == [never, :yes]
+  assert_false [yes, never] == [:yes, Object.new]
+
+  # `delete` keeps compacting what it decided in C and what it decides in Ruby
+  a = [:yes, 0, yes, 1, yes, 2, :yes]
+  assert_equal :yes, a.delete(:yes)
+  assert_equal [0, 1, 2], a
+  a = [0, yes, 1]
+  assert_nil a.delete(:no)
+  assert_equal [:blk, :no], a.delete(:no) {|o| [:blk, o] }
+  assert_equal [0, yes, 1], a
+  a = [never, yes, never]
+  assert_same never, a.delete(never)
+  assert_equal [yes], a
+  assert_true asked > 0
+end
+
+assert('Array#== past an element whose `==` is written in Ruby keeps the recursion check') do
+  # The rest of the comparison runs under the frame of `==` itself, with the
+  # other array where the check reads it, so a pair already being compared is
+  # still taken as equal.
+  always = Class.new { def ==(other); true; end }.new
+  a = [always]
+  a << a
+  b = [always]
+  b << b
+  assert_true a == b
+end
+
 assert('Array#hash with self-referencing arrays') do
   a = []
   a << a

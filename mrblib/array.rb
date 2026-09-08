@@ -90,6 +90,91 @@ class Array
 
   ##
   # call-seq:
+  #   array.__index_from(obj, i) -> int or nil
+  #
+  # Internal method: the rest of Array#index, from the element at `i`, whose
+  # `==` is written in Ruby. The C walk hands over here instead of calling
+  # that `==` from C, which would nest a VM under the one this runs in. An
+  # element is compared as `mrb_equal()` compares it: it is equal to `obj`
+  # when it is the same object, and otherwise when its `==` says so.
+  #
+  def __index_from(obj, i)
+    while i < size
+      e = self[i]
+      return i if e.equal?(obj) || e == obj
+      i += 1
+    end
+    nil
+  end
+
+  ##
+  # call-seq:
+  #   array.__rindex_from(obj, i) -> int or nil
+  #
+  # Internal method: the rest of Array#rindex, from the element at `i`,
+  # whose `==` is written in Ruby, as `__index_from` is the rest of #index.
+  #
+  def __rindex_from(obj, i)
+    while i >= 0
+      e = self[i]
+      return i if e.equal?(obj) || e == obj
+      i -= 1
+      i = size - 1 if i >= size
+    end
+    nil
+  end
+
+  ##
+  # call-seq:
+  #   array.__eq_from(other, i) -> true or false
+  #
+  # Internal method: the rest of Array#==, from the `i`th pair, whose `==`
+  # is written in Ruby, as `__index_from` is the rest of #index. `other` is
+  # an Array of the same length, and stays the first argument for the
+  # recursion check Array#== makes.
+  #
+  def __eq_from(other, i)
+    while i < size
+      a = self[i]
+      b = other[i]
+      return false unless a.equal?(b) || a == b
+      i += 1
+    end
+    true
+  end
+
+  ##
+  # call-seq:
+  #   array.__delete_from(obj, i, last, found) -> object or nil
+  #
+  # Internal method: the rest of Array#delete, from the element at `i`,
+  # whose `==` is written in Ruby, as `__index_from` is the rest of #index.
+  # The elements before `i` hold none equal to `obj` any more; `last` is
+  # the one deleted last so far, and `found` whether any was.
+  #
+  def __delete_from(obj, i, last, found, &block)
+    j = i
+    while i < size
+      e = self[i]
+      if e.equal?(obj) || e == obj
+        last = e
+        found = true
+      else
+        self[j] = e if i != j
+        j += 1
+      end
+      i += 1
+    end
+    if found
+      self[j, size - j] = [] if j < size
+      last
+    else
+      block ? yield(obj) : nil
+    end
+  end
+
+  ##
+  # call-seq:
   #   array.deconstruct -> self
   #
   # Returns self. Used for array pattern matching in case/in expressions.

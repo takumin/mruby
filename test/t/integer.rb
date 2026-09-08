@@ -99,6 +99,36 @@ assert('Integer#==', '15.2.8.3.7') do
   assert_true b
 end
 
+assert('Integer#== asks an operand that is no number, as CRuby does') do
+  # CRuby's num_equal() answers `int == obj` for an `obj` that is no number
+  # by asking `obj == int`, taken for true or false: an Integer is equal to
+  # whatever says it is equal to the Integer. The question is put to a `==`
+  # written in C as much as to one written in Ruby, and by the walks that
+  # compare from C as much as by the operator.
+  asked = []
+  one = Class.new { define_method(:==) {|other| asked << other; other == 1 } }.new
+  assert_true 1 == one
+  assert_false 2 == one
+  assert_equal [1, 2], asked
+  assert_false 1 != one
+  assert_true 2 != one
+  assert_same true, 1 == Class.new { def ==(other); :yes; end }.new
+  assert_same false, 1 == Class.new { def ==(other); nil; end }.new
+  assert_false 1 == nil
+  assert_false 1 == :one
+  assert_false 1 == "1"
+  assert_false 1 == Object.new
+  assert_false 1.eql?(one)          # `eql?` asks nothing back
+  assert_true 1 === one             # case equality is `==`
+  assert_equal 1, [0, 1, 2].index(one)
+  assert_equal 3, [0, 1, 2, 1].rindex(one)
+  assert_true [0, 1] == [0, one]
+  assert_true({a: 0, b: 1}.value?(one))
+  a = [0, 1, 2]
+  assert_equal 1, a.delete(one)
+  assert_equal [0, 2], a
+end
+
 assert('Integer comparison with a Float that stands for another number') do
   # An mrb_float keeps fewer significant bits than an mrb_int, so an integer
   # past the significand rounds onto a neighbouring Float when the two are
@@ -580,8 +610,10 @@ assert('Integer comparison redefined on Integer itself reaches the redefinition'
     ge = a >= b
     mixed = a < 2.5 if Object.const_defined?(:Float)
     # `Array#index` compares through `mrb_equal()`, which answers an Integer
-    # pair from the values only while the builtin stands
+    # pair from the values only while the builtin stands, and asks what is
+    # no number back only for the builtin too
     index = [a].index(b)
+    sym_index = [a].index(:x)
   ensure
     Integer.class_eval do
       alias_method :==, :__eq_before_test
@@ -602,6 +634,7 @@ assert('Integer comparison redefined on Integer itself reaches the redefinition'
   assert_equal [:gt, 7, 2], gt
   assert_equal [:ge, 7, 2], ge
   assert_equal 0, index
+  assert_equal 0, sym_index
   assert_equal [:lt, 7, 2.5], mixed if Object.const_defined?(:Float)
   a = 7
   b = 2

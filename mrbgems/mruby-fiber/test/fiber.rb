@@ -227,3 +227,116 @@ assert('symbol GC keeps the symbols a suspended fiber holds') do
   GC.start
   assert_true f.resume
 end
+
+assert('Array#index, #rindex, #delete and #== send a `==` written in Ruby in the VM they run in') do
+  # A `==` written in Ruby is not called from the C walk, which would nest a
+  # VM under the one it was called from: the walk hands the rest of the array
+  # to Ruby, which sends `==` where a `Fiber.yield` inside it has no C frame
+  # to cross, as in CRuby.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { [0, yielder, 1].index(1) }
+  assert_equal :asked, f.resume
+  assert_equal 1, f.resume
+  f = Fiber.new { [1, yielder, 0].rindex(1) }
+  assert_equal :asked, f.resume
+  assert_equal 1, f.resume
+  a = [0, yielder, 1]
+  f = Fiber.new { a.delete(1) }
+  assert_equal :asked, f.resume
+  assert_equal 1, f.resume
+  assert_equal [0], a
+  f = Fiber.new { [0, yielder, 2] == [0, 1, 2] }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+end
+
+assert('Hash#value?, #== and __except send a `==` written in Ruby in the VM they run in') do
+  # A `==` written in Ruby is not called from the C walk, which would nest a
+  # VM under the one it was called from: the walk hands the rest of the hash
+  # to Ruby, which sends `==` where a `Fiber.yield` inside it has no C frame
+  # to cross, as in CRuby.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { {a: 0, b: yielder}.value?(1) }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+  f = Fiber.new { {a: 0, b: 1}.value?(yielder) }
+  assert_equal :asked, f.resume    # asked back by 0
+  assert_equal :asked, f.resume    # and by 1
+  assert_true f.resume
+  f = Fiber.new { {1 => :a}.assoc(yielder) }
+  assert_equal :asked, f.resume
+  assert_equal [1, :a], f.resume
+  f = Fiber.new { {a: 0, b: 1}.rassoc(yielder) }
+  assert_equal :asked, f.resume
+  assert_equal :asked, f.resume
+  assert_equal [:b, 1], f.resume
+  f = Fiber.new { {a: 0, b: yielder} == {a: 0, b: 1} }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+  f = Fiber.new { {a: 0, yielder => 2}.__except([:a]) }
+  assert_equal :asked, f.resume
+  assert_equal({yielder => 2}, f.resume)
+end
+
+assert('Integer#== and Float#== send the `==` of what is no number in the VM they run in') do
+  # An operand that is no number is asked `obj == num`, as CRuby's num_equal()
+  # asks it. A `==` written in Ruby is not called from C, which would nest a
+  # VM under the one the method was dispatched from: the method hands its
+  # frame to Ruby, which sends `==` where a `Fiber.yield` inside it has no C
+  # frame to cross, as in CRuby. The walks that compare from C ask the same
+  # way, one Integer element after another.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { 1 == yielder }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+  f = Fiber.new { 2 == yielder }
+  assert_equal :asked, f.resume
+  assert_false f.resume
+  if Object.const_defined?(:Float)
+    f = Fiber.new { 1.0 == yielder }
+    assert_equal :asked, f.resume
+    assert_true f.resume
+  end
+  f = Fiber.new { [0, 1].index(yielder) }
+  assert_equal :asked, f.resume
+  assert_equal :asked, f.resume
+  assert_equal 1, f.resume
+  f = Fiber.new { [0, 1] == [0, yielder] }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+end
+
+assert('Kernel#=== and Kernel#<=> send a `==` written in Ruby in the VM they run in') do
+  # Neither calls a `==` written in Ruby from C, which would nest a VM under
+  # the one the method was dispatched from: the method hands its frame to
+  # Ruby, which sends `==` where a `Fiber.yield` inside it has no C frame to
+  # cross, as in CRuby. `case` reaches `===` the same way.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end }.new
+  f = Fiber.new { yielder === 1 }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+  f = Fiber.new { yielder <=> 2 }
+  assert_equal :asked, f.resume
+  assert_nil f.resume
+  f = Fiber.new { case 1 when yielder then :matched else :missed end }
+  assert_equal :asked, f.resume
+  assert_equal :matched, f.resume
+end
+
+assert('Range#== sends a `==` written in Ruby in the VM it runs in') do
+  # Neither end's `==` is called from C, which would nest a VM under the one
+  # `==` was called from: the comparison is handed to Ruby, which sends `==`
+  # where a `Fiber.yield` inside it has no C frame to cross, as in CRuby.
+  yielder = Class.new { def ==(other); Fiber.yield(:asked); other == 1; end; def <=>(other); 0; end }.new
+  r = Range.new(yielder, yielder)
+  f = Fiber.new { r == Range.new(1, 1) }
+  assert_equal :asked, f.resume
+  assert_equal :asked, f.resume
+  assert_true f.resume
+  # the beginning is answered in C, the end handed over
+  z = Class.new { def <=>(other); 0; end }.new
+  r = Range.new(z, yielder)
+  f = Fiber.new { r == Range.new(z, 1) }
+  assert_equal :asked, f.resume
+  assert_true f.resume
+end

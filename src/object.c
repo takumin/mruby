@@ -76,22 +76,63 @@ mrb_obj_equal(mrb_state *mrb, mrb_value v1, mrb_value v2)
  * pair is answered here or by a `==` written in C, and -1 when the `==` of
  * `obj1` is written in Ruby, which only the VM can run. A C method that the
  * VM called hands such a pair back to Ruby, which sends `==` in the VM it is
- * already in rather than nesting one, as `Array#__svalue_eq` does.
+ * already in rather than nesting one: through its answer, as
+ * `Array#__svalue_eq` does, or by handing the rest of its walk to a method
+ * written in Ruby with `mrb_exec_method()`, as `Array#index` does.
  *
  * An object is equal to itself before `==` is asked, as `rb_equal()` takes
  * it in CRuby. A pair of Integers or of Symbols is answered from the values
  * while the builtin `==` of the class stands, which `mrb->bop_redefined`
  * records as it does for `OP_EQ`; a mixed Integer and Float pair, and a
- * BigInt against a number, are compared as numbers; and an `obj1` whose `==`
+ * BigInt against a number, are compared as numbers; an `obj1` whose `==`
  * is the default `mrb_obj_equal_m` is unequal to whatever it is not identical
- * to.
+ * to; and one whose `==` is the builtin `String#==` is compared as that
+ * compares, without the frame a call of it would push.
+ *
+ * A number is equal to what is no number only if that says so: CRuby's
+ * `num_equal()` asks `obj2 == obj1`, and so do `Integer#==` and `Float#==`
+ * here. The question is asked from here while the builtin `==` stands, rather
+ * than through the method, so that a `==` written in Ruby is seen and handed
+ * back rather than reached inside the method, where its answer would have to
+ * be run in a VM nested under this one.
  */
+static mrb_bool
+num_eq_builtin_p(mrb_state *mrb, mrb_value v)
+{
+  if (mrb_integer_p(v) || mrb_bigint_p(v)) {
+    return !(mrb->bop_redefined & MRB_BOP_INTEGER(MRB_BOP_EQ));
+  }
+  if (mrb_float_p(v)) {
+    return !(mrb->bop_redefined & MRB_BOP_FLOAT(MRB_BOP_EQ));
+  }
+  return FALSE;
+}
+
+/* Whether `v` is one of the numbers `Integer#==` and `Float#==` answer for
+   between themselves. */
+static mrb_bool
+numeric_value_p(mrb_value v)
+{
+  switch (mrb_type(v)) {
+  case MRB_TT_INTEGER:
+  case MRB_TT_FLOAT:
+  case MRB_TT_BIGINT:
+  case MRB_TT_RATIONAL:
+  case MRB_TT_COMPLEX:
+    return TRUE;
+  default:
+    return FALSE;
+  }
+}
+
 int
 mrb_equal_in_c(mrb_state *mrb, mrb_value obj1, mrb_value obj2)
 {
   if (mrb_obj_eq(mrb, obj1, obj2)) return TRUE;
   if (mrb_integer_p(obj1) && mrb_integer_p(obj2)) {
-    if (!(mrb->bop_redefined & MRB_BOP_INTEGER(MRB_BOP_EQ))) return FALSE;
+    if (!(mrb->bop_redefined & MRB_BOP_INTEGER(MRB_BOP_EQ))) {
+      return mrb_integer(obj1) == mrb_integer(obj2);
+    }
   }
 #ifndef MRB_NO_FLOAT
   /* value mixing with integer and float */
@@ -111,10 +152,14 @@ mrb_equal_in_c(mrb_state *mrb, mrb_value obj1, mrb_value obj2)
     return mrb_bint_cmp(mrb, obj1, obj2) == 0;
   }
 #endif
+  if (num_eq_builtin_p(mrb, obj1) && !numeric_value_p(obj2)) {
+    return mrb_equal_in_c(mrb, obj2, obj1);
+  }
   struct RClass *c = mrb_class(mrb, obj1);
   mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_OPSYM(eq));
   if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m)) return -1;
   if (MRB_METHOD_CFUNC(m) == mrb_obj_equal_m) return FALSE;
+  if (MRB_METHOD_CFUNC(m) == mrb_str_equal_m) return mrb_str_equal(mrb, obj1, obj2);
   mrb_value result = mrb_funcall_argv(mrb, obj1, MRB_OPSYM(eq), 1, &obj2);
   return mrb_test(result);
 }
