@@ -382,8 +382,8 @@ mrb_utf8_to_buf(char *buf, mrb_int cp)
 
 /* UTF-8: what a run of bytes spells, and what a string holds character by
    character. Only a build that indexes strings by character has to answer
-   either, so a build without MRB_UTF8_STRING carries none of it. */
-#ifdef MRB_UTF8_STRING
+   either, so a build without the mruby-encoding gem carries none of it. */
+#ifdef HAVE_MRUBY_ENCODING_GEM
 
 #define utf8_islead(c) ((unsigned char)((c)&0xc0) != 0x80)
 
@@ -1019,7 +1019,7 @@ mrb_str_byte_subseq(mrb_state *mrb, mrb_value str, mrb_int beg, mrb_int len)
   return mrb_obj_value(s);
 }
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 static inline mrb_value
 str_subseq(mrb_state *mrb, mrb_value str, mrb_int beg, mrb_int len)
 {
@@ -1047,7 +1047,7 @@ mrb_str_beg_len(mrb_int str_len, mrb_int *begp, mrb_int *lenp)
   return TRUE;
 }
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* What a substring needs of the string is where two positions are, not how
    many the string has. Counting the whole of it to find that out reads every
    byte however near the head the range sits, so the walk here stops at the
@@ -1207,7 +1207,7 @@ str_byterindex(mrb_value str, mrb_value sub, mrb_int pos)
   return -1;
 }
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* Search backward for `sub` over character boundaries, so a match starting
    inside a multi-byte character is stepped over rather than reported. This
    is what a character-indexed string answers with. */
@@ -1449,7 +1449,7 @@ mrb_str_modify(mrb_state *mrb, struct RString *s)
   RSTR_CODERANGE_SET(s, MRB_STR_CODERANGE_UNKNOWN);
 }
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* mrb_str_modify() for a caller whose write leaves what the bytes read as
    standing: it puts ASCII where ASCII stood, or it cuts where a character
    ends. Such a write cannot turn a sound string unsound, so the answer the
@@ -2070,13 +2070,13 @@ str_escape(mrb_state *mrb, mrb_value str, mrb_bool inspect)
   const char *p, *pend;
   char buf[4];  /* `\x??` or UTF-8 character */
   mrb_value result = mrb_str_new_lit(mrb, "\"");
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   mrb_bool sb_flag = TRUE;      /* whether `result` comes out single byte */
   mrb_bool src_sb_flag = TRUE;  /* whether the walk found `str` single byte */
 #endif
 
   p = RSTRING_PTR(str); pend = RSTRING_END(str);
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   /* `inspect` passes a whole character through unescaped so it stays readable,
      which is why it reads the character at every byte. A single-byte string
      has none spelled in more than one byte: a byte-read one holds no
@@ -2088,7 +2088,7 @@ str_escape(mrb_state *mrb, mrb_value str, mrb_bool inspect)
 #endif
   for (;p < pend; p++) {
     unsigned char c, cc;
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
     if (inspect) {
       mrb_int clen = mrb_utf8len(p, pend);
       /* A non-ASCII byte either begins a character of several bytes or begins
@@ -2140,7 +2140,7 @@ str_escape(mrb_state *mrb, mrb_value str, mrb_bool inspect)
     }
   }
   mrb_str_cat_lit(mrb, result, "\"");
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   if (inspect) {
     if (src_sb_flag) RSTR_CODERANGE_SET(mrb_str_ptr(str), MRB_STR_CODERANGE_7BIT);
     if (sb_flag) RSTR_CODERANGE_SET(mrb_str_ptr(result), MRB_STR_CODERANGE_7BIT);
@@ -2221,7 +2221,7 @@ mrb_str_aset_m(mrb_state *mrb, mrb_value str)
   return replace;
 }
 
-#if defined(MRB_UTF8_STRING) && !defined(MRB_USE_ASCII_CTYPE)
+#if defined(HAVE_MRUBY_ENCODING_GEM) && !defined(MRB_USE_ASCII_CTYPE)
 
 /* What the walk below makes of an ASCII character. Each method keeps its own
    loop over a string that holds nothing but ASCII, so this is reached only for
@@ -2401,7 +2401,7 @@ mrb_str_case_convert_unicode(mrb_state *mrb, mrb_value str, enum mrb_case_mode m
   return str_case_convert_utf8(mrb, str, mode) ? 1 : 0;
 }
 
-#endif  /* MRB_UTF8_STRING && !MRB_USE_ASCII_CTYPE */
+#endif  /* HAVE_MRUBY_ENCODING_GEM && !MRB_USE_ASCII_CTYPE */
 
 /* 15.2.10.5.8  */
 /*
@@ -2531,7 +2531,7 @@ mrb_str_chomp_bang(mrb_state *mrb, mrb_value str)
   if (p[len-1] == newline &&
      (rslen <= 1 ||
      memcmp(RSTRING_PTR(rs), pp, rslen) == 0)) {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
     /* The bytes line up, but they can be the tail of a character rather than
        a character of its own, and cutting there would leave a string that is
        not UTF-8: "あ".chomp("\x82") is the whole of the last byte of a
@@ -2599,7 +2599,7 @@ mrb_str_chop_bang(mrb_state *mrb, mrb_value str)
   if (RSTR_LEN(s) > 0) {
     /* The last position of a single-byte string is its last byte. */
     mrb_int len = RSTR_LEN(s) - 1;
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
     if (!RSTR_SINGLE_BYTE_P(s)) {
       /* The last character starts at the head of the one covering the last
          byte, which is read backwards from there rather than by walking the
@@ -2615,7 +2615,7 @@ mrb_str_chop_bang(mrb_state *mrb, mrb_value str)
         len--;
       }
     }
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
     /* see mrb_str_chomp_bang(): the character cut here is the last one, so a
        non-ASCII lead byte at `len` is the whole of what leaves the string, and
        it can have been the last non-ASCII there was. */
@@ -2860,7 +2860,7 @@ mrb_str_include(mrb_state *mrb, mrb_value self)
 void
 mrb_str_check_byte_pos(mrb_state *mrb, mrb_value str, mrb_int pos)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   struct RString *s = mrb_str_ptr(str);
   if (RSTR_SINGLE_BYTE_P(s)) return;
 
@@ -2912,7 +2912,7 @@ mrb_str_byteindex_m(mrb_state *mrb, mrb_value str)
  *     "hello".index('a')             #=> nil
  *     "hello".index('l', -2)         #=> 3
  */
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 static mrb_value
 mrb_str_index_m(mrb_state *mrb, mrb_value str)
 {
@@ -3113,7 +3113,7 @@ mrb_str_reverse_bang(mrb_state *mrb, mrb_value str)
      nothing where they stand can spell a character turned around, and that is
      the string the helper asks again on its own. */
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   /* mrb_str_char_len() walks the string and records what it finds. The
      multi-byte path turns each character's bytes around where they stand and
      then turns the whole buffer around, which puts the characters back in the
@@ -3233,7 +3233,7 @@ mrb_str_byterindex_m(mrb_state *mrb, mrb_value str)
  *     "hello".rindex('a')             #=> nil
  *     "hello".rindex('l', 2)          #=> 2
  */
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 static mrb_value
 mrb_str_rindex_m(mrb_state *mrb, mrb_value str)
 {
@@ -4032,7 +4032,7 @@ mrb_str_cat(mrb_state *mrb, mrb_value str, const char *ptr, size_t len)
   memmove(RSTR_PTR(s) + RSTR_LEN(s), ptr, len);
   RSTR_SET_LEN(s, total);
   RSTR_PTR(s)[total] = '\0';   /* sentinel */
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   /* An append is the one write that can say what the string stands at
      afterwards without reading it: ASCII bytes added to a string of nothing
      but ASCII leave a string of nothing but ASCII. Carrying that across is
@@ -4141,7 +4141,8 @@ mrb_str_append(mrb_state *mrb, mrb_value str1, mrb_value str2)
  *
  * Returns a human-readable, printable version of the string, typically
  * surrounded by quotes and with special characters escaped.
- * UTF-8 characters are preserved if `MRB_UTF8_STRING` is defined and `inspect` is true.
+ * UTF-8 characters are preserved on a build carrying the mruby-encoding
+ * gem when `inspect` is true.
  */
 mrb_value
 mrb_str_inspect(mrb_state *mrb, mrb_value str)
@@ -4452,7 +4453,7 @@ static mrb_value
 mrb_encoding(mrb_state *mrb, mrb_value self)
 {
   mrb_get_args(mrb, "");
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   return mrb_str_new_lit(mrb, "UTF-8");
 #else
   return mrb_str_new_lit(mrb, "ASCII-8BIT");

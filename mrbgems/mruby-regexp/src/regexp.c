@@ -304,10 +304,10 @@ backref_gv_set(mrb_state *mrb, mrb_value v)
 }
 
 /* Byte-based substring extraction. The regexp engine records all capture
-   offsets in bytes, but mrb_str_substr indexes by character under
-   MRB_UTF8_STRING, which corrupts non-empty multibyte matches. Extract by
-   byte range so the byte offsets are honored as-is. Returns nil for an
-   out-of-range request, mirroring mrb_str_substr.
+   offsets in bytes, but mrb_str_substr indexes by character on a build
+   carrying the mruby-encoding gem, which corrupts non-empty multibyte
+   matches. Extract by byte range so the byte offsets are honored as-is.
+   Returns nil for an out-of-range request, mirroring mrb_str_substr.
 
    mrb_str_byte_subseq() shares the subject's buffer for a piece too long to
    embed rather than copying its bytes, and carries the byte reading across the
@@ -3570,9 +3570,9 @@ mrb_mruby_regexp_gem_init(mrb_state *mrb)
      mruby-string-ext method a non-Regexp argument goes back to is captured
      under a private name first, before the override takes the name, the way
      the mrblib overrides captured them with `alias` at the top of the class
-     body. On a build without MRB_UTF8_STRING the two of an index pair are
-     the same C function behind two method table entries, so each still
-     needs its own capture. `slice!`, `partition`, `rpartition` and
+     body. On a build without the mruby-encoding gem the two of an index
+     pair are the same C function behind two method table entries, so each
+     still needs its own capture. `slice!`, `partition`, `rpartition` and
      `start_with?` come from mruby-string-ext, which this gem depends on. */
   struct RClass *str = mrb->string_class;
   mrb_alias_method(mrb, str, MRB_SYM(__split), MRB_SYM(split));
