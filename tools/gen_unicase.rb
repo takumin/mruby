@@ -10,8 +10,8 @@
 #
 # unicase.h holds what `String#downcase`, `#upcase`, `#capitalize`,
 # `#swapcase` and `#casecmp?` answer for a character above ASCII, and is
-# compiled only into a build that defines MRB_UTF8_STRING, which is the build
-# that reads a string as characters rather than bytes. ASCII is folded inline
+# compiled only into a build carrying mruby-encoding, which is the build that
+# reads a string as characters rather than bytes. ASCII is folded inline
 # by the callers and is not in the table.
 #
 # The mappings are the full ones, so a source can map to more than one

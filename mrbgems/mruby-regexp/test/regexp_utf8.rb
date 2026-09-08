@@ -1,6 +1,6 @@
 # What a run of bytes spells is a question only a build that reads UTF-8 can
-# answer: core carries the scan behind MRB_UTF8_STRING, and a build without it
-# reads a String one byte per character, so the engine reads pattern and
+# answer: core carries the scan behind mruby-encoding, and a build without the
+# gem reads a String one byte per character, so the engine reads pattern and
 # subject that way too. Every block below that puts that question skips there,
 # whether it puts it to a subject read as UTF-8 or through a pattern spelling
 # a character in more than one byte. What holds on either build, a

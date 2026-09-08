@@ -352,7 +352,7 @@ spec.build.defines << "HAVE_MRUBY_IO_GEM"
 
 ```ruby
 spec.build_settings do
-  spec.cc.flags << "-any_flags" if build.has_define?("MRB_UTF8_STRING")
+  spec.cc.flags << "-any_flags" if build.has_define?("HAVE_MRUBY_ENCODING_GEM")
 end
 ```
 

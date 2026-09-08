@@ -4,7 +4,7 @@
 UTF8STRING = __ENCODING__ == "UTF-8"
 UNICODECASE = "\u00C4".downcase == "\u00E4"
 # Which characters above ASCII are letters and digits is a table compiled under
-# the pair the case tables are, MRB_UTF8_STRING without MRB_USE_ASCII_CTYPE, so
+# the pair the case tables are, mruby-encoding without MRB_USE_ASCII_CTYPE, so
 # what answers for the one answers for the other.
 UNICODEALNUM = UNICODECASE
 
@@ -1495,7 +1495,7 @@ assert('String#-@') do
 end
 
 assert('String#scrub default replacement (U+FFFD)') do
-  # scrub has UTF-8 semantics; on builds without MRB_UTF8_STRING it
+  # scrub has UTF-8 semantics; on builds without mruby-encoding it
   # degrades to a no-op (verified separately below).
   skip unless "あ".length == 1
   assert_equal "\u{FFFD}",       "\xE3\x81".scrub

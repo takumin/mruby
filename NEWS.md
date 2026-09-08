@@ -78,6 +78,11 @@ the rest. It is not in `default`, so a build asks for it.
 
 # Strings and encoding
 
+- **_NOTE_**: `MRB_UTF8_STRING` is gone. UTF-8 comes from `mruby-encoding`,
+  the gem that defines `HAVE_MRUBY_ENCODING_GEM`, and that define is what core
+  and the other gems branch on; a build configuration still spelling the old
+  name is stopped with an `#error` rather than quietly built with strings
+  indexed by byte
 - **_NOTE_**: what a string's bytes read as is held as a two-bit coderange
   beside a one-bit encoding index, rather than as three separate flags
   ([#7158](https://github.com/mruby/mruby/pull/7158), [#7169](https://github.com/mruby/mruby/pull/7169), [#7170](https://github.com/mruby/mruby/pull/7170), [#7173](https://github.com/mruby/mruby/pull/7173))
