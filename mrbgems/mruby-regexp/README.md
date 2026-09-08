@@ -244,7 +244,7 @@ Two engines, chosen automatically at compile time by pattern analysis.
 
 Every entry is a place this engine answers a pattern differently from CRuby.
 
-- **UTF-8 only where the build reads it**: without `MRB_UTF8_STRING` a pattern
+- **UTF-8 only where the build reads it**: without mruby-encoding a pattern
   and a subject are bytes: `/./` matches one byte, `/Ā/` is two atoms, and
   `/i` folds ASCII only. A binary (`ASCII-8BIT`) subject is bytes on either
   build.
@@ -402,7 +402,7 @@ forks.
 ### What the build decides
 
 Case folding beyond ASCII and what a POSIX bracket holds above it need
-`MRB_UTF8_STRING` without `MRB_USE_ASCII_CTYPE`.
+mruby-encoding without `MRB_USE_ASCII_CTYPE`.
 
 `/i` reads core's case table, the one `String#downcase` reads, so where the
 build folds Unicode `/Ā/i` matches `"ā"` and `[^Ā]` under `/i` stops accepting

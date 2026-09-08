@@ -231,34 +231,10 @@ end
 
 - Call `malloc_trim(0)` for each `mrb_full_gc()` call.
 
-`MRB_UTF8_STRING`
-
-- Adds UTF-8 encoding support to character-oriented String instance methods.
-- Case conversion follows Unicode: `String#downcase`, `#upcase`, `#capitalize`
-  and `#swapcase` map every character Unicode gives a case, and a mapping may
-  spell several characters (`"ß".upcase` is `"SS"`). `String#casecmp?` folds
-  by the same data rather than converting.
-- A string read as bytes (`String#b`) converts and folds ASCII alone, and one
-  holding bytes that spell no character is refused with `ArgumentError`.
-- The regexp `i` flag reads the same data, folding every character Unicode
-  pairs with one other. Without this macro it folds ASCII letters, and a
-  pattern holding a character that needs one of the Unicode foldings raises
-  `RegexpError` rather than answering as if the character had no case.
-- The regexp POSIX brackets classify by Unicode above ASCII: `[[:alpha:]]`
-  holds a letter of any script and `[[:^alpha:]]` rejects it, as in CRuby.
-  Without this macro a bracket holds its ASCII and no character above it.
-- `String#succ` steps a letter or a digit above ASCII within its own run of
-  them and wraps at the end of it, as in CRuby (`"ת".succ` is `"אא"`).
-  Without this macro nothing above ASCII is a letter or a digit, and the last
-  character steps as a character.
-- `MRB_USE_ASCII_CTYPE` narrows the case, the brackets and `String#succ` back
-  to ASCII, taking the refusal with them and leaving the indexing.
-- If it isn't defined, they only support the US-ASCII encoding.
-
 `MRB_USE_ASCII_CTYPE`
 
-- Narrows the character classification of `MRB_UTF8_STRING` back to ASCII
-  while keeping its indexing: `String#downcase`, `#upcase`, `#capitalize`,
+- Narrows the character classification the mruby-encoding gem brings back to
+  ASCII while keeping its indexing: `String#downcase`, `#upcase`, `#capitalize`,
   `#swapcase` and `#casecmp?` answer for `'A'` to `'Z'` and hand every other
   character back as it stands, a regexp POSIX bracket holds its ASCII and no
   character above it, and `String#succ` finds no letter and no digit above
@@ -266,7 +242,7 @@ end
 - Drops the Unicode tables the build would otherwise carry, core's case table,
   mruby-regexp's type table and mruby-string-ext's table of the letters and
   the digits. That is what the option is for: a target counting its bytes buys
-  the UTF-8 indexing of `MRB_UTF8_STRING` without the tables beside it.
+  the UTF-8 indexing mruby-encoding brings without the tables beside it.
 - Bytes that spell no character are handed back as they stand rather than
   refused with `ArgumentError`. That refusal belongs to the walk over
   characters, which is the walk this narrows away: what converts instead reads
@@ -275,8 +251,9 @@ end
   folds ASCII letters, and a pattern holding a character that needs one of the
   Unicode foldings raises `RegexpError` rather than answering as if the
   character had no case.
-- Nothing to narrow without `MRB_UTF8_STRING`: a build reading its strings as
-  bytes converts ASCII alone whatever this says.
+- Nothing to narrow without mruby-encoding: a build reading its strings as
+  bytes converts ASCII alone whatever this says. Which UTF-8 behavior there is
+  to narrow is in that gem's README.
 
 `MRB_STR_LENGTH_MAX`
 

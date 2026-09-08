@@ -334,7 +334,7 @@ Example:
 
 ### `String#swapcase`
 
-Returns a copy of `str` with uppercase alphabetic characters converted to lowercase and lowercase characters converted to uppercase. On a build defining `MRB_UTF8_STRING` every character Unicode gives a case is swapped, and a swap may spell a character as several (`"ß".swapcase` is `"SS"`); otherwise, and for a string read as bytes, only the ASCII region is affected.
+Returns a copy of `str` with uppercase alphabetic characters converted to lowercase and lowercase characters converted to uppercase. On a build carrying mruby-encoding every character Unicode gives a case is swapped, and a swap may spell a character as several (`"ß".swapcase` is `"SS"`); otherwise, and for a string read as bytes, only the ASCII region is affected.
 
 ```ruby
 str.swapcase   #=> new_str
@@ -656,12 +656,12 @@ Example:
 65.chr                  #=> "A"
 230.chr                 #=> "\xE6" (in ASCII-8BIT)
 230.chr("ASCII-8BIT")   #=> "\xE6"
-# 230.chr("UTF-8")        #=> "\u00E6" (if MRB_UTF8_STRING enabled)
+# 230.chr("UTF-8")        #=> "\u00E6" (with the mruby-encoding gem)
 ```
 
 ### `String#succ` (alias `String#next`)
 
-Returns the successor to `str`. Increments the rightmost alphanumeric character, carrying into the alphanumeric before it when it wraps. The carry crosses characters that are not alphanumeric, but not from a letter into a digit or from a digit into a letter; a new character goes in instead. A string with no alphanumeric increments its last character instead: a byte in a binary string (or in a build without `MRB_UTF8_STRING`), a code point in a UTF-8 string.
+Returns the successor to `str`. Increments the rightmost alphanumeric character, carrying into the alphanumeric before it when it wraps. The carry crosses characters that are not alphanumeric, but not from a letter into a digit or from a digit into a letter; a new character goes in instead. A string with no alphanumeric increments its last character instead: a byte in a binary string (or in a build without mruby-encoding), a code point in a UTF-8 string.
 
 ```ruby
 str.succ    #=> new_str
@@ -825,7 +825,7 @@ Example:
 "aBcDeF".casecmp?("abcdeg")    #=> false
 ```
 
-On a build defining `MRB_UTF8_STRING`, folding follows Unicode, and one folding may spell a character as several:
+On a build carrying mruby-encoding, folding follows Unicode, and one folding may spell a character as several:
 
 ```ruby
 "ä".casecmp?("Ä")     #=> true
