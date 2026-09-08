@@ -48,7 +48,7 @@ static mrb_value
 mrb_sym_length(mrb_state *mrb, mrb_value self)
 {
   mrb_int len;
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   mrb_int byte_len;
   const char *name = mrb_sym_name_len(mrb, mrb_symbol(self), &byte_len);
   len = mrb_utf8_strlen(name, byte_len);

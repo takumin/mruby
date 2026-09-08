@@ -16,13 +16,11 @@ MRuby::CrossBuild.new("i586-pc-msdosdjgpp") do |conf|
   conf.cc do |cc|
     cc.command = DJGPP_PATH ? File.join(DJGPP_PATH, GCC) : GCC
     cc.defines << 'MRB_NO_IO_PREAD_PWRITE'
-    cc.defines << 'MRB_UTF8_STRING'
   end
 
   conf.cxx do |cxx|
     cxx.command = DJGPP_PATH ? File.join(DJGPP_PATH, GXX) : GXX
     cxx.defines << 'MRB_NO_IO_PREAD_PWRITE'
-    cxx.defines << 'MRB_UTF8_STRING'
   end
 
   conf.linker do |linker|
@@ -64,6 +62,9 @@ MRuby::CrossBuild.new("i586-pc-msdosdjgpp") do |conf|
   # Other compilable gems
   conf.gem :core => 'mruby-binding'
   conf.gem :core => 'mruby-catch'
+  # UTF-8 strings: this gem is what defines HAVE_MRUBY_ENCODING_GEM, which is
+  # what has the build index its strings by character rather than by byte.
+  conf.gem :core => 'mruby-encoding'
   conf.gem :core => 'mruby-enum-chain'
   conf.gem :core => 'mruby-error'
   conf.gem :core => 'mruby-exit'

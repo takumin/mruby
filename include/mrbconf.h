@@ -102,8 +102,13 @@
 /* call malloc_trim(0) from mrb_full_gc() */
 //#define MRB_USE_MALLOC_TRIM
 
-/* string class to handle UTF-8 encoding */
-//#define MRB_UTF8_STRING
+/* UTF-8 strings are what the mruby-encoding gem brings, and the define it
+   hands the build is the one everything branches on. There is no switch here
+   to turn them on without the gem, so a config still spelling the old name is
+   stopped rather than quietly built with strings indexed by byte. */
+#ifdef MRB_UTF8_STRING
+#error "MRB_UTF8_STRING is gone; add the mruby-encoding gem instead"
+#endif
 
 /* maximum length of strings */
 /* the default value is 1MB */

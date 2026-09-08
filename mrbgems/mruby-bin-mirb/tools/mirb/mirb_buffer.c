@@ -10,10 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /*
  * UTF-8 helper functions
- * These are only compiled when MRB_UTF8_STRING is defined
+ * These are only compiled when HAVE_MRUBY_ENCODING_GEM is defined
  */
 
 /*
@@ -83,7 +83,7 @@ utf8_display_col(const char *str, size_t byte_pos)
   }
   return col;
 }
-#endif /* MRB_UTF8_STRING */
+#endif /* HAVE_MRUBY_ENCODING_GEM */
 
 /*
  * Helper: Initialize a single line
@@ -151,7 +151,7 @@ line_insert_at(mirb_line *line, size_t pos, char c)
 /*
  * Helper: Delete character at position in line
  */
-#ifndef MRB_UTF8_STRING
+#ifndef HAVE_MRUBY_ENCODING_GEM
 static mrb_bool
 line_delete_at(mirb_line *line, size_t pos)
 {
@@ -163,7 +163,7 @@ line_delete_at(mirb_line *line, size_t pos)
 }
 #endif
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /*
  * Helper: Delete N bytes at position in line (for UTF-8 multibyte chars)
  */
@@ -453,7 +453,7 @@ mirb_buffer_delete_back(mirb_buffer *buf)
   if (buf->cursor_col > 0) {
     /* Delete within line */
     mirb_line *line = &buf->lines[buf->cursor_line];
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
     /* Find start of previous UTF-8 character and delete entire character */
     size_t prev_pos = utf8_prev_char_start(line, buf->cursor_col);
     size_t char_len = buf->cursor_col - prev_pos;
@@ -492,7 +492,7 @@ mirb_buffer_delete_forward(mirb_buffer *buf)
 
   if (buf->cursor_col < line->len) {
     /* Delete within line */
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
     /* Delete entire UTF-8 character at cursor */
     size_t char_len = (size_t)mrb_utf8len(line->data + buf->cursor_col,
                                          line->data + line->len);
@@ -600,7 +600,7 @@ mrb_bool
 mirb_buffer_cursor_left(mirb_buffer *buf)
 {
   if (buf->cursor_col > 0) {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
     /* Move back to start of previous UTF-8 character */
     mirb_line *line = &buf->lines[buf->cursor_line];
     buf->cursor_col = utf8_prev_char_start(line, buf->cursor_col);
@@ -626,7 +626,7 @@ mirb_buffer_cursor_right(mirb_buffer *buf)
   mirb_line *line = &buf->lines[buf->cursor_line];
 
   if (buf->cursor_col < line->len) {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
     /* Skip entire UTF-8 character */
     size_t char_len = (size_t)mrb_utf8len(line->data + buf->cursor_col,
                                          line->data + line->len);
@@ -945,13 +945,13 @@ mirb_buffer_line_len(mirb_buffer *buf, size_t index)
 
 /*
  * Get cursor display column (visual column for terminal positioning)
- * When MRB_UTF8_STRING is defined, calculates display width considering
+ * When HAVE_MRUBY_ENCODING_GEM is defined, calculates display width considering
  * multibyte characters. Otherwise, returns the byte position directly.
  */
 size_t
 mirb_buffer_cursor_display_col(mirb_buffer *buf)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   mirb_line *line = &buf->lines[buf->cursor_line];
   return utf8_display_col(line->data, buf->cursor_col);
 #else

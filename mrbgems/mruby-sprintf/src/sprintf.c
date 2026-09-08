@@ -563,7 +563,7 @@ retry:
           if (mrb_integer_p(val)) {
             /* Integer: encode directly to stack buffer (no allocation) */
             mrb_int code = mrb_integer(val);
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
             /* A value that spells no character writes no byte, and is what
                CRuby reports here as an invalid character rather than as a
                range error. */

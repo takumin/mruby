@@ -332,7 +332,7 @@ size_t mrb_gc_mark_range(mrb_state *mrb, struct RRange *r);
    The values themselves stay in mruby/string.h: naming an answer is reading,
    and what reads MRB_STR_CODERANGE_7BIT off a string has to be able to say
    it. */
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* An answer is masked to the field's width on the way in, as an encoding index
    is, so a fifth one lands wrong rather than reaching the bits beside it. Here
    those bits are the encoding index rather than free ones, so an unmasked
@@ -401,7 +401,7 @@ void mrb_str_aset(mrb_state *mrb, mrb_value str, mrb_value idx, mrb_value len, m
    answer the string already carries. The promise cannot be checked from
    inside, which is why this is here rather than in mruby/string.h: a caller
    that cannot answer for its write wants mrb_str_modify(). */
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* See the definition in string.c for what a string read as broken is asked
    again about. */
 void mrb_str_modify_keep_cr(mrb_state *mrb, struct RString *s);
@@ -453,7 +453,7 @@ mrb_int mrb_str_byte_to_char(mrb_state *mrb, mrb_value str, mrb_int bi);
    definition in string.c for what it reads and what it leaves behind. */
 mrb_bool mrb_str_valid_encoding_p(mrb_state *mrb, mrb_value str);
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* What RSTR_SINGLE_BYTE_P() reads, asking the bytes where the string does not
    say rather than answering no for one nothing has read yet. See the
    definition in string.c for what it leaves behind.
@@ -466,8 +466,8 @@ mrb_bool mrb_str_single_byte_p(mrb_state *mrb, mrb_value str);
 
 /* Raise IndexError when `pos` lands inside a character of `str`, and return
    otherwise. See the definition in string.c for which offsets are positions
-   the string has; a build without MRB_UTF8_STRING has one per byte, so this
-   is a no-op there. */
+   the string has; a build without the mruby-encoding gem has one per byte,
+   so this is a no-op there. */
 void mrb_str_check_byte_pos(mrb_state *mrb, mrb_value str, mrb_int pos);
 
 /* Write the UTF-8 spelling of a codepoint into a buffer of at least four
@@ -478,9 +478,10 @@ mrb_int mrb_utf8_to_buf(char *buf, mrb_int cp);
 
 /* UTF-8: what a run of bytes spells, and how many characters a string holds.
    Only a build that indexes strings by character has to answer either, so a
-   build without MRB_UTF8_STRING carries none of them. What has to read a
-   string whatever the build encodes it in asks through mrb_enc_* below. */
-#ifdef MRB_UTF8_STRING
+   build without the mruby-encoding gem carries none of them. What has to
+   read a string whatever the build encodes it in asks through mrb_enc_*
+   below. */
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* The byte length of the character at `str`, which has to be a byte of the
    string rather than `end` itself, and 1 for a run of bytes that spells no
    character. See the definition in string.c for what it rejects. */
@@ -507,7 +508,7 @@ mrb_int mrb_utf8_strlen(const char *str, mrb_int byte_len);
    which is what a reader wants; this is for the few places that have to know
    the shape of the answer before they have bytes to ask about, such as
    whether a set of single characters can hold a named codepoint at all. */
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 # define MRB_ENC_MULTIBYTE_P 1
 #else
 # define MRB_ENC_MULTIBYTE_P 0
@@ -527,7 +528,7 @@ mrb_int mrb_utf8_strlen(const char *str, mrb_int byte_len);
 static inline mrb_int
 mrb_enc_charlen(const char *p, const char *e)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   return mrb_utf8len(p, e);
 #else
   (void)p; (void)e;
@@ -538,7 +539,7 @@ mrb_enc_charlen(const char *p, const char *e)
 static inline const char *
 mrb_enc_char_head(const char *beg, const char *p, const char *end)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   return mrb_utf8_char_head(beg, p, end);
 #else
   (void)beg; (void)end;
@@ -549,7 +550,7 @@ mrb_enc_char_head(const char *beg, const char *p, const char *end)
 static inline uint32_t
 mrb_enc_decode(const char *p, const char *e, mrb_int *lenp)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   return mrb_utf8_decode(p, e, lenp);
 #else
   (void)e;
@@ -587,13 +588,13 @@ enum mrb_case_mode {
    freezing: the caller's own loop is the one that writes it, and the one that
    refuses it. A refused conversion leaves the receiver as it was: the answer
    is built beside the string and taken only at the end. */
-#if defined(MRB_UTF8_STRING) && !defined(MRB_USE_ASCII_CTYPE)
+#if defined(HAVE_MRUBY_ENCODING_GEM) && !defined(MRB_USE_ASCII_CTYPE)
 int mrb_str_case_convert_unicode(mrb_state *mrb, mrb_value str, enum mrb_case_mode mode);
 #else
 #define mrb_str_case_convert_unicode(mrb, str, mode) (-1)
 #endif
 
-#if defined(MRB_UTF8_STRING) && !defined(MRB_USE_ASCII_CTYPE)
+#if defined(HAVE_MRUBY_ENCODING_GEM) && !defined(MRB_USE_ASCII_CTYPE)
 /* What case a character has, from the tables in unicase.c. A string is
    converted through mrb_str_case_convert_unicode() above; these are for a
    caller holding a codepoint rather than a string, which is mruby-regexp
@@ -651,7 +652,7 @@ void mrb_uni_case_fold_range(uint32_t lo, uint32_t hi,
 void mrb_uni_case_unfold_range(uint32_t lo, uint32_t hi,
                                void (*add)(void *, uint32_t, uint32_t), void *user);
 #endif  /* HAVE_MRUBY_REGEXP_GEM */
-#endif  /* MRB_UTF8_STRING && !MRB_USE_ASCII_CTYPE */
+#endif  /* HAVE_MRUBY_ENCODING_GEM && !MRB_USE_ASCII_CTYPE */
 
 /* attr accessor bodies (class.c); the VM compares function pointers against
    these to run attr calls without a full method-call frame */
