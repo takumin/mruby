@@ -414,6 +414,22 @@ void mrb_str_modify_keep_cr(mrb_state *mrb, struct RString *s);
 #define mrb_str_modify_keep_cr(mrb, s) mrb_str_modify(mrb, s)
 #endif
 
+/* Whether a byte stands outside ASCII, which is what the gem's scan looks for
+   and what core's inspect reads a character by. */
+#define NOASCII(c) ((c) & 0x80)
+
+/* The widest integer a byte-at-a-time loop is worth reading whole, and the
+   pattern that puts a 1 in the low bit of each of its bytes. Both core's
+   substring search and the gem's scan for a non-ASCII byte read a string this
+   way, which is why the pair is here rather than in one of them. */
+#ifdef MRB_64BIT
+#define bitint uint64_t
+#define MASK01 0x0101010101010101ull
+#else
+#define bitint uint32_t
+#define MASK01 0x01010101ul
+#endif
+
 mrb_bool mrb_strcasecmp_p(const char *s1, mrb_int len1, const char *s2, mrb_int len2);
 #define MRB_STR_CASECMP_P(str, lit) \
   mrb_strcasecmp_p(RSTRING_PTR(str), RSTRING_LEN(str), lit, sizeof(lit"")-1)
@@ -450,18 +466,44 @@ mrb_int mrb_str_byte_to_char(mrb_state *mrb, mrb_value str, mrb_int bi);
 /* Whether a string's bytes read as the encoding it is taken to have: FALSE for
    one holding a byte that stands for no character, TRUE for a binary string
    whatever its bytes are, and TRUE throughout on a non-UTF-8 build. See the
-   definition in string.c for what it reads and what it leaves behind. */
+   definition in the gem's utf8.c for what it reads and what it leaves
+   behind. */
 mrb_bool mrb_str_valid_encoding_p(mrb_state *mrb, mrb_value str);
 
 #ifdef HAVE_MRUBY_ENCODING_GEM
 /* What RSTR_SINGLE_BYTE_P() reads, asking the bytes where the string does not
    say rather than answering no for one nothing has read yet. See the
-   definition in string.c for what it leaves behind.
+   definition in the gem's utf8.c for what it leaves behind.
 
    Only a build that reads its strings as characters has anything to tell a
    single-byte string from, so a build indexing by byte carries no answer here
    rather than one saying TRUE of every string. */
 mrb_bool mrb_str_single_byte_p(mrb_state *mrb, mrb_value str);
+
+/* Whether every byte of the string is ASCII, and the scan that answers it over
+   a raw range. A walk that finds nothing else has made the statement 7BIT
+   makes, so the first leaves the answer on the string for the next asker.
+   Both live in the gem, which is where the walks that ask them per string are;
+   what reaches them from core is the handful of places that mark a spliced or
+   concatenated string as read by byte. */
+mrb_bool mrb_str_ascii_p(struct RString *s);
+const char *mrb_str_search_nonascii(const char *p, const char *e);
+
+/* String#index over a subject read as characters: the position argument and
+   the answer are both character indices, with the search itself still by byte.
+   A build indexing by byte has nothing to convert and searches directly. */
+mrb_int mrb_str_index_str_by_char(mrb_state *mrb, mrb_value str, mrb_value sub, mrb_int pos);
+
+/* Make `s1` hold what `s2` holds, letting go of the buffer `s1` had. Exported
+   for the gem's case walk, which builds its answer beside the receiver and
+   hands it over this way; a caller that cannot answer for freeing the old
+   buffer wants String#replace instead. */
+mrb_value mrb_str_replace_ptr(mrb_state *mrb, struct RString *s1, struct RString *s2);
+
+/* Grow `s` to hold `capacity` bytes, leaving its length as it stands. Exported
+   beside the above for the same walk, which sizes its buffer itself because it
+   knows how many bytes a mapping is about to write. */
+void mrb_str_resize_capa(mrb_state *mrb, struct RString *s, mrb_int capacity);
 #endif
 
 /* Raise IndexError when `pos` lands inside a character of `str`, and return
@@ -473,18 +515,22 @@ void mrb_str_check_byte_pos(mrb_state *mrb, mrb_value str, mrb_int pos);
 /* Write the UTF-8 spelling of a codepoint into a buffer of at least four
    bytes, and return how many it took (1-4), or 0 for a value that spells no
    character. What counts as one, and why a surrogate does spell one here
-   while mrb_utf8len() says it does not, is in the definition in string.c. */
+   while mrb_utf8len() says it does not, is in the definition in string.c.
+   Encoding is asked whatever the build indexes by, since a pattern spells \u
+   escapes and pack("U") writes characters on either one, so this stays in
+   core rather than moving to the gem with the reading beside it. */
 mrb_int mrb_utf8_to_buf(char *buf, mrb_int cp);
 
 /* UTF-8: what a run of bytes spells, and how many characters a string holds.
    Only a build that indexes strings by character has to answer either, so a
    build without the mruby-encoding gem carries none of them. What has to
    read a string whatever the build encodes it in asks through mrb_enc_*
-   below. */
+   below. The definitions are the gem's utf8.c; core's string.c holds only what
+   a byte-indexed build answers instead. */
 #ifdef HAVE_MRUBY_ENCODING_GEM
 /* The byte length of the character at `str`, which has to be a byte of the
    string rather than `end` itself, and 1 for a run of bytes that spells no
-   character. See the definition in string.c for what it rejects. */
+   character. See the definition in the gem's utf8.c for what it rejects. */
 mrb_int mrb_utf8len(const char *str, const char *end);
 
 /* The byte the character covering `p` starts at, or `p` itself when `p` is

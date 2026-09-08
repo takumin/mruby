@@ -5,13 +5,13 @@
 #
 # UCDDIR holds UnicodeData.txt, SpecialCasing.txt and CaseFolding.txt as
 # published under https://www.unicode.org/Public/<version>/ucd/, and defaults
-# to the copy tools/unicode/ucd.rb names, the same one core's
-# tools/gen_unicase.rb reads. The files are not in the repository: they are
+# to the copy tools/unicode/ucd.rb names, the same one mruby-encoding's
+# gen_unicase.rb reads. The files are not in the repository: they are
 # read when the table is regenerated and nowhere else.
 #
 # re_cased.h holds the ranges a build without the foldings must refuse under
 # /i, and is compiled only into such a build. A build with them reads them off
-# core's unicase.h and refuses nothing.
+# mruby-encoding's unicase.h and refuses nothing.
 #
 # The pass below reads the whole of the folding data even though only the
 # refusals are written out, since what has to be refused is defined by what

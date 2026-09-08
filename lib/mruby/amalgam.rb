@@ -53,7 +53,6 @@ module MRuby
       array.c
       hash.c
       string.c
-      unicase.c
       range.c
       numeric.c
       numops.c
