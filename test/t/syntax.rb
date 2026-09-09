@@ -3081,3 +3081,97 @@ assert('super reaches a private or protected operator') do
     o == 1
   end
 end
+
+class MasgnToAry
+  def initialize; @count = 0; end
+  attr_reader :count
+  def to_ary; @count += 1; [1, 2]; end
+  def inspect; "#<MasgnToAry>"; end
+end
+
+class MasgnBadToAry
+  def to_ary; 7; end
+end
+
+class MasgnRaisingToAry
+  def to_ary; raise ArgumentError, "from to_ary"; end
+end
+
+class MasgnNoToAry
+end
+
+assert('multiple assignment converts the right-hand side with to_ary') do
+  x, y = MasgnToAry.new
+  assert_equal 1, x
+  assert_equal 2, y
+
+  # a value with no to_ary is the whole assignment, as in Ruby: no TypeError
+  o = MasgnNoToAry.new
+  x, y = o
+  assert_same o, x
+  assert_nil y
+
+  # to_ary that gives back something else is a TypeError, raised on the result
+  assert_raise_with_message(TypeError, "Integer cannot be converted to Array") do
+    x, y = MasgnBadToAry.new
+  end
+  assert_raise(TypeError) do
+    x, *y = MasgnBadToAry.new
+  end
+
+  # an exception from to_ary passes through rather than turning into TypeError
+  assert_raise_with_message(ArgumentError, "from to_ary") do
+    x, y = MasgnRaisingToAry.new
+  end
+
+  # short right-hand side fills with nil, long one drops the rest
+  x, y, z = MasgnToAry.new
+  assert_equal [1, 2, nil], [x, y, z]
+  x, = MasgnToAry.new
+  assert_equal 1, x
+end
+
+assert('to_ary is sent once per multiple assignment') do
+  o = MasgnToAry.new
+  x, y = o
+  assert_equal 1, o.count
+
+  # the splat form reads the same converted value for its AREF and its APOST
+  o = MasgnToAry.new
+  x, *y = o
+  assert_equal 1, o.count
+  assert_equal [1, [2]], [x, y]
+
+  # and so does the form whose value is used
+  o = MasgnToAry.new
+  v = (x, *y = o)
+  assert_equal 1, o.count
+  assert_same o, v
+end
+
+assert('a multiple assignment used as an expression is the right-hand side') do
+  o = MasgnToAry.new
+
+  # every position that reads the value reads the object, not the conversion
+  v = (x, y = o)
+  assert_same o, v
+  assert_same o, (x, y = o)
+  assert_same o, [(x, y = o)][0]
+  assert_same o, (x, *y = o)
+  assert_same o, ((*y = o))
+  assert_equal [1, 2], (x, y = [1, 2])
+
+  # the outer assignment wins when it names one of the targets
+  w = (w, y = o)
+  assert_same o, w
+
+  # the last statement of a method body is such a position too
+  def masgn_tail(q); x, y = q; end
+  assert_same o, masgn_tail(o)
+
+  # a nested target destructures without changing the outer value
+  u = (x, (y, z) = [1, o])
+  assert_equal 1, x
+  assert_equal [1, 2], [y, z]
+  assert_equal [1, o], u
+end

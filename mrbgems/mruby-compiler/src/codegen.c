@@ -4989,11 +4989,22 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
       }
       else {
         /* variable rhs */
+        int src = rhs;
+
         codegen(s, cast->value, VAL);
-        gen_massignment(s, tree, rhs, val);
-        if (!val) {
-          pop();
+        if (val) {
+          /* The value of a multiple assignment used as an expression is the
+             object on the right, not what `to_ary` made of it.  `OP_AREF` and
+             `OP_APOST` convert the register they read, so hand them a copy and
+             keep the original where the surrounding expression reads it.  In
+             statement position nothing reads it afterwards and no copy is
+             made. */
+          src = cursp();
+          gen_move(s, src, rhs, 1);
+          push();
         }
+        gen_massignment(s, tree, src, val);
+        pop();                  /* the copy when `val`, the value otherwise */
       }
       break;
     }
