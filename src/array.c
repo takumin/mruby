@@ -2141,7 +2141,11 @@ mrb_ary_delete(mrb_state *mrb, mrb_value self)
 
   if (i == j) {
     if (mrb_nil_p(blk)) return mrb_nil_value();
-    return mrb_yield(mrb, blk, obj);
+    /* The block's result is this method's result, so it takes this frame
+       rather than a nested `mrb_vm_exec()`. */
+    struct RClass *tc;
+    mrb_value bself = mrb_proc_get_self(mrb, mrb_proc_ptr(blk), &tc);
+    return mrb_yield_cont(mrb, blk, bself, 1, &obj);
   }
 
   ARY_SET_LEN(ary, j);

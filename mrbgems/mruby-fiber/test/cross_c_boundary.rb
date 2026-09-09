@@ -36,6 +36,7 @@ assert_cross(:ng, 'Module.new with a block')   { Module.new { Fiber.yield } }
 # --- blocks a C method hands its own frame to ------------------------------
 assert_cross(:ok, "a Hash's default proc")     { h = Hash.new { Fiber.yield; 1 }; h[:x] }
 assert_cross(:ok, 'Hash#default with a proc')  { Hash.new { Fiber.yield; 1 }.default(:x) }
+assert_cross(:ok, 'Array#delete with a block') { [1].delete(2) { Fiber.yield } }
 
 # --- protocol methods a C method sends -------------------------------------
 class CrossEq

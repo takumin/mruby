@@ -14,6 +14,7 @@
 #include <mruby/range.h>
 #include <mruby/numeric.h>
 #include <mruby/error.h>
+#include <mruby/proc.h>
 #include <mruby/internal.h>
 #include "re_internal.h"
 
@@ -539,7 +540,11 @@ regexp_match(mrb_state *mrb, mrb_value self)
 
   md = exec_match(mrb, self, str, pos, FALSE, FALSE);
   if (!mrb_nil_p(md) && !mrb_nil_p(block)) {
-    return mrb_yield(mrb, block, md);
+    /* The block's result is this method's result, so it takes this frame
+       rather than a nested `mrb_vm_exec()`. */
+    struct RClass *tc;
+    mrb_value bself = mrb_proc_get_self(mrb, mrb_proc_ptr(block), &tc);
+    return mrb_yield_cont(mrb, block, bself, 1, &md);
   }
   return md;
 }
