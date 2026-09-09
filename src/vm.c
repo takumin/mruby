@@ -870,8 +870,10 @@ mrb_cont_stack_free(mrb_state *mrb, struct mrb_cont_stack *s)
   mrb_free(mrb, s);
 }
 
-static void
-cont_push(mrb_state *mrb, mrb_cont_func *func, mrb_int state, ptrdiff_t ci_index)
+/* Makes room for one entry. Out of line because a walk registers one per
+   element, and what it pays for on all but the first is the test below. */
+static struct mrb_cont_stack*
+cont_stack_grow(mrb_state *mrb)
 {
   struct mrb_context *c = mrb->c;
   struct mrb_cont_stack *s = c->conts;
@@ -883,10 +885,21 @@ cont_push(mrb_state *mrb, mrb_cont_func *func, mrb_int state, ptrdiff_t ci_index
     s->entries = (struct mrb_cont_entry*)mrb_malloc(mrb, sizeof(struct mrb_cont_entry) * 8);
     c->conts = s;
   }
-  else if (s->len == s->capa) {
+  else {
     s->capa *= 2;
     s->entries = (struct mrb_cont_entry*)mrb_realloc(mrb, s->entries,
                                                      sizeof(struct mrb_cont_entry) * s->capa);
+  }
+  return s;
+}
+
+static inline void
+cont_push(mrb_state *mrb, mrb_cont_func *func, mrb_int state, ptrdiff_t ci_index)
+{
+  struct mrb_cont_stack *s = mrb->c->conts;
+
+  if (s == NULL || s->len == s->capa) {
+    s = cont_stack_grow(mrb);
   }
   s->entries[s->len].func = func;
   s->entries[s->len].state = state;
