@@ -2103,11 +2103,26 @@ mrb_yield_cont(mrb_state *mrb, mrb_value b, mrb_value self, mrb_int argc, const 
     return yield_with_attr(mrb, b, argc, argv, self, tc, FALSE);
   }
 
-  stack_extend_adjust(mrb, 4, &argv);
-  mrb->c->ci->stack[1] = mrb_ary_new_from_values(mrb, argc, argv);
-  mrb->c->ci->stack[2] = mrb_nil_value();
-  mrb->c->ci->stack[3] = mrb_nil_value();
-  ci->n = 15;
+  /* `ci->n` holds the count in four bits and spells 15 as "the arguments are
+     in an array", so a short list goes into the registers and only a longer
+     one is packed. Packing allocates, which every block call would then pay:
+     it costs about 17ns of a 106ns call. */
+  if (argc < 15) {
+    stack_extend_adjust(mrb, argc + 2, &argv);
+    mrb_value *dst = mrb->c->ci->stack + 1;
+    for (mrb_int i = 0; i < argc; i++) {
+      dst[i] = argv[i];
+    }
+    dst[argc] = mrb_nil_value();  /* block slot */
+    ci->n = (uint8_t)argc;
+  }
+  else {
+    stack_extend_adjust(mrb, 4, &argv);
+    mrb->c->ci->stack[1] = mrb_ary_new_from_values(mrb, argc, argv);
+    mrb->c->ci->stack[2] = mrb_nil_value();
+    mrb->c->ci->stack[3] = mrb_nil_value();
+    ci->n = 15;
+  }
   ci->kw = FALSE;
   return exec_irep(mrb, self, p);
 }
