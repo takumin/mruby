@@ -80,6 +80,11 @@ mrb_dir_init(mrb_state *mrb, mrb_value self)
   struct mrb_dir *mdir;
   const char *path;
 
+  /* The path is read before the handle is replaced: a converted argument
+     takes the send from the top again, and the object would otherwise be
+     torn down and rebuilt for nothing. */
+  mrb_get_args(mrb, "z~", &path);
+
   mdir = (struct mrb_dir*)DATA_PTR(self);
   if (mdir) {
     mrb_dir_free(mrb, mdir);
@@ -91,7 +96,6 @@ mrb_dir_init(mrb_state *mrb, mrb_value self)
   mdir->handle = NULL;
   DATA_PTR(self) = mdir;
 
-  mrb_get_args(mrb, "z", &path);
   if ((handle = mrb_hal_dir_open(mrb, path)) == NULL) {
     mrb_sys_fail(mrb, path);
   }
@@ -113,7 +117,7 @@ mrb_dir_delete(mrb_state *mrb, mrb_value klass)
 {
   const char *path;
 
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
   if (mrb_hal_dir_rmdir(mrb, path) == -1) {
     mrb_sys_fail(mrb, path);
   }
@@ -134,7 +138,7 @@ mrb_dir_existp(mrb_state *mrb, mrb_value klass)
 {
   const char *path;
 
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
   if (mrb_hal_dir_is_directory(mrb, path)) {
     return mrb_true_value();
   }
@@ -189,7 +193,7 @@ mrb_dir_mkdir(mrb_state *mrb, mrb_value klass)
   const char *path;
 
   mode = 0777;
-  mrb_get_args(mrb, "z|i", &path, &mode);
+  mrb_get_args(mrb, "z~|i", &path, &mode);
   if (mrb_hal_dir_mkdir(mrb, path, (int)mode) == -1) {
     mrb_sys_fail(mrb, path);
   }
@@ -202,7 +206,7 @@ mrb_dir_chdir(mrb_state *mrb, mrb_value klass)
 {
   const char *path;
 
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
   if (mrb_hal_dir_chdir(mrb, path) == -1) {
     mrb_sys_fail(mrb, path);
   }
@@ -225,7 +229,7 @@ mrb_dir_chroot(mrb_state *mrb, mrb_value self)
   const char *path;
   int res;
 
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
   res = mrb_hal_dir_chroot(mrb, path);
   if (res == -1) {
     mrb_sys_fail(mrb, path);
@@ -299,7 +303,7 @@ mrb_dir_empty(mrb_state *mrb, mrb_value self)
   const char *path;
   mrb_value result;
 
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
   if ((handle = mrb_hal_dir_open(mrb, path)) == NULL) {
     mrb_sys_fail(mrb, path);
   }
@@ -452,7 +456,7 @@ mrb_dir_entries(mrb_state *mrb, mrb_value klass)
   const char *path;
   mrb_value result;
 
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
 
   mrb_dir_handle *handle = mrb_hal_dir_open(mrb, path);
   if (handle == NULL) {
@@ -480,7 +484,7 @@ mrb_dir_children(mrb_state *mrb, mrb_value klass)
   const char *path;
   mrb_value result;
 
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
 
   mrb_dir_handle *handle = mrb_hal_dir_open(mrb, path);
   if (handle == NULL) {

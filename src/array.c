@@ -591,7 +591,7 @@ mrb_ary_plus(mrb_state *mrb, mrb_value self)
   const mrb_value *ptr;
   mrb_int blen;
 
-  mrb_get_args(mrb, "a", &ptr, &blen);
+  mrb_get_args(mrb, "a~", &ptr, &blen);
   ary_check_too_big(mrb, ARY_LEN(a1), blen);
   mrb_int len1 = ARY_LEN(a1);
   struct RArray *a2 = ary_new_capa(mrb, len1 + blen);

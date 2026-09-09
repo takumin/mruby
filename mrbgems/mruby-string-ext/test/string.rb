@@ -1606,6 +1606,18 @@ assert('String#end_with? takes an implicit conversion') do
   assert_raise(TypeError) { "ab".end_with?(Object.new) }
 end
 
+assert('String#delete_prefix and String#delete_suffix take an implicit conversion') do
+  # These read the prefix as a pointer and a length rather than as a value,
+  # so the conversion has to be over before the pointer is taken.
+  o = Class.new { def to_str; "he"; end }.new
+  assert_equal("llo", "hello".delete_prefix(o))
+  assert_equal("llo", "hello".dup.delete_prefix!(o))
+  p = Class.new { def to_str; "lo"; end }.new
+  assert_equal("hel", "hello".delete_suffix(p))
+  assert_equal("hel", "hello".dup.delete_suffix!(p))
+  assert_raise(TypeError) { "hello".delete_prefix(Object.new) }
+end
+
 assert('String#start_with? and String#partition take an implicit conversion') do
   o = Class.new { def to_str; "l"; end }.new
   assert_true("llama".start_with?(o))

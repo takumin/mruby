@@ -43,7 +43,7 @@ mrb_uart_m_open_conn(mrb_state *mrb, mrb_value self)
 {
   const char *name;
   mrb_int tx_pin, rx_pin;
-  mrb_get_args(mrb, "zii", &name, &tx_pin, &rx_pin);
+  mrb_get_args(mrb, "z~ii", &name, &tx_pin, &rx_pin);
 
   int num = mrb_uart_unit_name_to_num(name);
   if (num < 0) {

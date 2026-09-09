@@ -212,7 +212,7 @@ mrb_addrinfo_getaddrinfo(mrb_state *mrb, mrb_value klass)
   const char *hostname;
 
   family = socktype = protocol = mrb_nil_value();
-  mrb_get_args(mrb, "z!o|oooi", &hostname, &service, &family, &socktype, &protocol, &flags);
+  mrb_get_args(mrb, "z~!o|oooi", &hostname, &service, &family, &socktype, &protocol, &flags);
 
   const char *servname = NULL;
   if (mrb_string_p(service)) {
@@ -892,7 +892,7 @@ mrb_ipsocket_ntop(mrb_state *mrb, mrb_value klass)
   const char *addr;
   char buf[50];
 
-  mrb_get_args(mrb, "is", &af, &addr, &n);
+  mrb_get_args(mrb, "is~", &af, &addr, &n);
   if ((af == AF_INET && n != 4) || (af == AF_INET6 && n != 16) ||
       mrb_hal_socket_inet_ntop((int)af, addr, buf, sizeof(buf)) == NULL)
     mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid address");
@@ -920,7 +920,7 @@ mrb_ipsocket_pton(mrb_state *mrb, mrb_value klass)
   const char *bp;
   char buf[50];
 
-  mrb_get_args(mrb, "is", &af, &bp, &n);
+  mrb_get_args(mrb, "is~", &af, &bp, &n);
   if ((size_t)n > sizeof(buf) - 1) {
     invalid_address_error(mrb);
   }

@@ -199,7 +199,7 @@ mrb_file_dirname(mrb_state *mrb, mrb_value klass)
 {
   const char *path;
   mrb_int level = 1;
-  mrb_get_args(mrb, "z|i", &path, &level);
+  mrb_get_args(mrb, "z~|i", &path, &level);
 
   if (level < 0) {
     mrb_raisef(mrb, E_ARGUMENT_ERROR, "negative level: %i", level);
@@ -258,7 +258,7 @@ mrb_file_basename(mrb_state *mrb, mrb_value klass)
   const char *path;
   const char *suffix = NULL;
 
-  mrb_get_args(mrb, "z|z", &path, &suffix);
+  mrb_get_args(mrb, "z~|z~", &path, &suffix);
 
   const char *endp = path + strlen(path);
   if (path == endp) {
@@ -567,7 +567,7 @@ mrb_file_expand_path(mrb_state *mrb, mrb_value self)
 {
   const char *path;
   const char *default_dir = ".";
-  mrb_get_args(mrb, "z|z", &path, &default_dir);
+  mrb_get_args(mrb, "z~|z~", &path, &default_dir);
   return path_expand(mrb, path, default_dir, TRUE);
 }
 
@@ -584,7 +584,7 @@ mrb_file_absolute_path(mrb_state *mrb, mrb_value self)
 {
   const char *path;
   const char *default_dir = ".";
-  mrb_get_args(mrb, "z|z", &path, &default_dir);
+  mrb_get_args(mrb, "z~|z~", &path, &default_dir);
   return path_expand(mrb, path, default_dir, FALSE);
 }
 
@@ -814,7 +814,7 @@ mrb_file_s_readlink(mrb_state *mrb, mrb_value klass)
 {
   const char *path;
 
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
 
   char *tmp = mrb_locale_from_utf8(path, -1);
   /* Use mrb_temp_alloc for exception safety - GC will clean up on exception */
@@ -853,7 +853,7 @@ static mrb_value
 mrb_file_extname(mrb_state *mrb, mrb_value klass)
 {
   char *path;
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
 
   size_t len = strlen(path);
   if (len == 0) {

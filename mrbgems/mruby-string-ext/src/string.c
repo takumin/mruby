@@ -1532,7 +1532,7 @@ str_del_prefix_bang(mrb_state *mrb, mrb_value self)
   mrb_int plen;
   const char *ptr;
 
-  mrb_get_args(mrb, "s", &ptr, &plen);
+  mrb_get_args(mrb, "s~", &ptr, &plen);
   struct RString *str = RSTRING(self);
   mrb_int slen = RSTR_LEN(str);
   if (plen > slen) return mrb_nil_value();
@@ -1571,7 +1571,7 @@ str_del_prefix(mrb_state *mrb, mrb_value self)
   mrb_int plen;
   const char *ptr;
 
-  mrb_get_args(mrb, "s", &ptr, &plen);
+  mrb_get_args(mrb, "s~", &ptr, &plen);
   mrb_int slen = RSTRING_LEN(self);
   if (plen > slen) return mrb_str_dup(mrb, self);
   if (!str_prefix_p(mrb, self, ptr, plen))
@@ -1603,7 +1603,7 @@ str_del_suffix_bang(mrb_state *mrb, mrb_value self)
   mrb_int plen;
   const char *ptr;
 
-  mrb_get_args(mrb, "s", &ptr, &plen);
+  mrb_get_args(mrb, "s~", &ptr, &plen);
   struct RString *str = RSTRING(self);
   mrb_check_frozen(mrb, str);
   mrb_int slen = RSTR_LEN(str);
@@ -1632,7 +1632,7 @@ str_del_suffix(mrb_state *mrb, mrb_value self)
   mrb_int plen;
   const char *ptr;
 
-  mrb_get_args(mrb, "s", &ptr, &plen);
+  mrb_get_args(mrb, "s~", &ptr, &plen);
   mrb_int slen = RSTRING_LEN(self);
   if (plen > slen) return mrb_str_dup(mrb, self);
   if (!str_suffix_p(mrb, self, ptr, plen))

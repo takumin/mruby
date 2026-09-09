@@ -32,6 +32,18 @@ assert('Dir.exist?') do
   assert_false Dir.exist?(DirTest.sandbox + "/nosuchdir")
 end
 
+assert('a path takes an implicit conversion') do
+  # The path reaches the C method as a NUL-terminated pointer, so the
+  # conversion has to be over before the pointer is taken.
+  o = Class.new { define_method(:to_str) { DirTest.sandbox } }.new
+  assert_true Dir.exist?(o)
+  assert_equal Dir.entries(DirTest.sandbox).sort, Dir.entries(o).sort
+  assert_raise(TypeError) { Dir.exist?(Object.new) }
+  # `Dir.mkdir` converts only where the mode is left out: the restart takes
+  # the send from the top, and it reaches the last argument alone
+  assert_raise(TypeError) { Dir.mkdir(o, 0700) }
+end
+
 assert('Dir.foreach') do
   a = []
   Dir.foreach(DirTest.sandbox) { |s| a << s }
