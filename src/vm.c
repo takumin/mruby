@@ -3398,6 +3398,46 @@ vm_op_getmcnst(mrb_state *mrb, uint32_t a, mrb_sym sym, mrb_bool room, mrb_sym *
   return VM_NEXT;
 }
 
+/* OP_GETCONST: the constant a bare name reads.  As in vm_op_getmcnst(), a name
+   no lexical scope holds goes to `const_missing` as a real send; its receiver
+   is the module the lexical search ended on, and it goes in regs[a], where the
+   read's own result belongs.  Only a value the search itself found is cached:
+   what the hook answers is not, on either path, so the hook is asked again on
+   the next read. */
+static int
+vm_op_getconst(mrb_state *mrb, uint32_t a, const mrb_irep *irep, mrb_sym sym, mrb_bool room, mrb_sym *midp)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  struct RClass *base = NULL;
+  mrb_value v = mrb_vm_const_get_noraise_base(mrb, ci, sym, &base);
+
+  if (!mrb_undef_p(v)) {
+    regs[a] = v;
+#ifndef MRB_NO_CONST_CACHE
+    {
+      uint32_t h = mrb_int_hash_func(mrb, ((intptr_t)irep) ^ sym) & (MRB_CONST_CACHE_SIZE-1);
+      struct mrb_const_cache_entry *cc = &mrb->const_cache[h];
+      cc->irep = irep;
+      cc->sym = sym;
+      cc->value = v;
+    }
+#else
+    (void)irep;
+#endif
+    return VM_NEXT;
+  }
+  if (room && base && const_missing_send_p(mrb, mrb_obj_value(base))) {
+    regs[a] = mrb_obj_value(base);
+    SET_SYM_VALUE(regs[a+1], sym);
+    *midp = MRB_SYM(const_missing);
+    return VM_SEND_SYM;
+  }
+  v = mrb_vm_const_get(mrb, sym);
+  ci = mrb->c->ci;
+  regs[a] = v;
+  return VM_NEXT;
+}
+
 static int
 vm_op_setidx(mrb_state *mrb, uint32_t a, mrb_sym *midp)
 {
@@ -3935,16 +3975,9 @@ RETRY_TRY_BLOCK:
         NEXT;
       }
 #endif
-      {
-        mrb_value v = mrb_vm_const_get(mrb, irep->syms[b]);
-        ci = mrb->c->ci;
-        regs[a] = v;
-#ifndef MRB_NO_CONST_CACHE
-        cc->irep = irep;
-        cc->sym = sym;
-        cc->value = v;
-#endif
-      }
+      int r = vm_op_getconst(mrb, a, irep, irep->syms[b], a+2 < irep->nregs, &mid);
+      ci = mrb->c->ci;
+      if (r == VM_SEND_SYM) goto L_SEND_SYM;
       NEXT;
     }
 
