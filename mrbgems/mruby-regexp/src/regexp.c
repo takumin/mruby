@@ -2363,17 +2363,24 @@ re_scan_ary(mrb_state *mrb, mrb_value re, mrb_value str, mrb_bool literal)
 }
 
 /* Check the pattern given to String#match, #match?, #sub, #gsub, #scan and
-   #split: a Regexp or a String passes through, everything else raises. The
-   real type is read rather than asked of the argument, so a redefined `is_a?`
-   or `class` cannot pose as a Regexp or fake the type name. What to do with
-   an accepted String is left to the caller, which compiles it for `match` and
-   quotes it first for `sub` and friends. CRuby names `nil`, `true` and
-   `false` by value and everything else by class. */
+   #split: a Regexp or a String passes through, everything else is asked for
+   `to_str` and raises when it does not answer. The real type is read rather
+   than asked of the argument, so a redefined `is_a?` or `class` cannot pose
+   as a Regexp or fake the type name. What to do with an accepted String is
+   left to the caller, which compiles it for `match` and quotes it first for
+   `sub` and friends. CRuby names `nil`, `true` and `false` by value and
+   everything else by class. */
 static mrb_value
 check_pattern(mrb_state *mrb, mrb_value re)
 {
   if (mrb_obj_is_kind_of(mrb, re, mrb_class_get_id(mrb, MRB_SYM(Regexp)))) return re;
   if (mrb_string_p(re)) return re;
+
+  /* Every caller reads the pattern as its first argument, which is what
+     CRuby's get_pat and get_pat_quoted convert. The request is answered only
+     where the send can be taken from the top again, so `sub` and `gsub`,
+     whose pattern is never their last argument, keep raising here. */
+  mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
 
   const char *name;
   if (mrb_nil_p(re)) name = "nil";
@@ -2382,6 +2389,17 @@ check_pattern(mrb_state *mrb, mrb_value re)
   else name = mrb_obj_classname(mrb, re);
   mrb_raisef(mrb, E_TYPE_ERROR, "wrong argument type %s (expected Regexp)", name);
 }
+
+/* ---- the conversion the delegating overrides ask for --------------------
+   An argument that is neither a pattern nor a String is asked for `to_str`
+   by the override rather than by the core method it goes back to: that one
+   is reached through mrb_funcall*(), which pushes no send for the dispatch
+   loop to take from the top again, so the conversion its format asks for is
+   refused once it gets there.  Asked here, from the frame the send did
+   reach, `mrb_convert_arg()` does not return, and the core method reads a
+   String when the send runs again.  Each override tests for a String first,
+   so the common argument reaches the funcall without reading the class the
+   pattern test looks up.  The sites below refer back to this. */
 
 /* True for the arguments the regexp-aware overrides take over; everything
    else goes to the captured core method. The real type is read, not
@@ -2697,9 +2715,9 @@ str_sub_m(mrb_state *mrb, mrb_value self)
 
   /* Unlike `match`, a String pattern is quoted rather than compiled: it is a
      literal here, the distinction CRuby draws between get_pat_quoted and
-     get_pat. Only the quoting is taken from it: get_pat_quoted also accepts
-     anything answering `to_str`, where check_pattern() keeps to a real
-     String, as `match` already does. */
+     get_pat. Only the quoting is taken from it: both read a `to_str` object
+     as the String it answers, which check_pattern() asks for and this method
+     never gets, its pattern not being its last argument. */
   mrb_value pattern = check_pattern(mrb, argv[0]);
   mrb_bool literal = mrb_string_p(pattern);
   /* A replacement argument wins over the block, as in CRuby. A literal goes
@@ -3199,7 +3217,12 @@ str_index_m(mrb_state *mrb, mrb_value self)
   mrb_int argc;
 
   mrb_get_args(mrb, "*", &argv, &argc);
-  if (argc == 0 || !regexp_arg_p(mrb, argv[0])) {
+  if (argc == 0 || mrb_string_p(argv[0])) {
+    return mrb_funcall_argv(mrb, self, MRB_SYM(__index), argc, argv);
+  }
+  if (!regexp_arg_p(mrb, argv[0])) {
+    /* see the note on the conversion above regexp_arg_p() */
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
     return mrb_funcall_argv(mrb, self, MRB_SYM(__index), argc, argv);
   }
   if (argc > 2) mrb_argnum_error(mrb, argc, 1, 2);
@@ -3227,7 +3250,12 @@ str_rindex_m(mrb_state *mrb, mrb_value self)
   mrb_int argc;
 
   mrb_get_args(mrb, "*", &argv, &argc);
-  if (argc == 0 || !regexp_arg_p(mrb, argv[0])) {
+  if (argc == 0 || mrb_string_p(argv[0])) {
+    return mrb_funcall_argv(mrb, self, MRB_SYM(__rindex), argc, argv);
+  }
+  if (!regexp_arg_p(mrb, argv[0])) {
+    /* see the note on the conversion above regexp_arg_p() */
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
     return mrb_funcall_argv(mrb, self, MRB_SYM(__rindex), argc, argv);
   }
   if (argc > 2) mrb_argnum_error(mrb, argc, 1, 2);
@@ -3277,7 +3305,12 @@ str_byteindex_m(mrb_state *mrb, mrb_value self)
   mrb_int argc;
 
   mrb_get_args(mrb, "*", &argv, &argc);
-  if (argc == 0 || !regexp_arg_p(mrb, argv[0])) {
+  if (argc == 0 || mrb_string_p(argv[0])) {
+    return mrb_funcall_argv(mrb, self, MRB_SYM(__byteindex), argc, argv);
+  }
+  if (!regexp_arg_p(mrb, argv[0])) {
+    /* see the note on the conversion above regexp_arg_p() */
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
     return mrb_funcall_argv(mrb, self, MRB_SYM(__byteindex), argc, argv);
   }
   if (argc > 2) mrb_argnum_error(mrb, argc, 1, 2);
@@ -3316,7 +3349,12 @@ str_byterindex_m(mrb_state *mrb, mrb_value self)
   mrb_int argc;
 
   mrb_get_args(mrb, "*", &argv, &argc);
-  if (argc == 0 || !regexp_arg_p(mrb, argv[0])) {
+  if (argc == 0 || mrb_string_p(argv[0])) {
+    return mrb_funcall_argv(mrb, self, MRB_SYM(__byterindex), argc, argv);
+  }
+  if (!regexp_arg_p(mrb, argv[0])) {
+    /* see the note on the conversion above regexp_arg_p() */
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
     return mrb_funcall_argv(mrb, self, MRB_SYM(__byterindex), argc, argv);
   }
   if (argc > 2) mrb_argnum_error(mrb, argc, 1, 2);
@@ -3354,7 +3392,12 @@ str_partition_m(mrb_state *mrb, mrb_value self)
 {
   mrb_value sep = mrb_get_arg1(mrb);
 
+  if (mrb_string_p(sep)) {
+    return mrb_funcall_argv(mrb, self, MRB_SYM(__partition), 1, &sep);
+  }
   if (!regexp_arg_p(mrb, sep)) {
+    /* see the note on the conversion above regexp_arg_p() */
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
     return mrb_funcall_argv(mrb, self, MRB_SYM(__partition), 1, &sep);
   }
   mrb_value md = re_search(mrb, sep, self, 0, FALSE);
@@ -3385,7 +3428,12 @@ str_rpartition_m(mrb_state *mrb, mrb_value self)
 {
   mrb_value sep = mrb_get_arg1(mrb);
 
+  if (mrb_string_p(sep)) {
+    return mrb_funcall_argv(mrb, self, MRB_SYM(__rpartition), 1, &sep);
+  }
   if (!regexp_arg_p(mrb, sep)) {
+    /* see the note on the conversion above regexp_arg_p() */
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
     return mrb_funcall_argv(mrb, self, MRB_SYM(__rpartition), 1, &sep);
   }
   /* The last match anywhere in the subject, so the limit is its end and the
@@ -3431,6 +3479,13 @@ str_start_with_p(mrb_state *mrb, mrb_value self)
     if (regexp_arg_p(mrb, argv[i])) { any_re = TRUE; break; }
   }
   if (!any_re) {
+    /* Only for the single-prefix call (see the note above regexp_arg_p()):
+       a later argument is out of reach of the restart, and asking for one
+       ahead of the loop would ask it even where an earlier prefix already
+       answered. */
+    if (argc == 1 && !mrb_string_p(argv[0])) {
+      mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
+    }
     return mrb_funcall_argv(mrb, self, MRB_SYM_Q(__start_with), argc, argv);
   }
   mrb_value args = mrb_ary_new_from_values(mrb, argc, argv);

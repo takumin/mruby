@@ -271,17 +271,12 @@ assert("String#match / #match? with a non-Regexp argument raise TypeError") do
     "abc".match?(class_liar)
   end
 
-  # CRuby converts an argument responding to `to_str` and matches with it.
-  # mruby has no implicit String conversion in core, so the gem names such an
-  # argument by class like any other, and this row stays an intentional
-  # difference rather than a gap to close.
+  # An argument answering `to_str` is converted and matched with, as in
+  # CRuby: the pattern is the last argument of these calls, so the send can
+  # be taken from the top again with the String it gave back.
   to_str = StringMatchToStr.new
-  assert_raise_with_message(TypeError, "wrong argument type StringMatchToStr (expected Regexp)") do
-    "abc".match(to_str)
-  end
-  assert_raise_with_message(TypeError, "wrong argument type StringMatchToStr (expected Regexp)") do
-    "abc".match?(to_str)
-  end
+  assert_equal("b", "abc".match(to_str)[0])
+  assert_true("abc".match?(to_str))
 
   # The pattern is rejected before pos is looked at.
   assert_raise_with_message(TypeError, "wrong argument type nil (expected Regexp)") do
@@ -1397,4 +1392,36 @@ assert("String#sub / #gsub / #scan / #split raise where a search hits a limit") 
   assert_equal "xx", t.gsub(re, "x")
   assert_equal ["b", fits + "c"], t.scan(re)
   assert_equal [], t.split(re)
+end
+
+assert("the String methods this gem takes over ask for an implicit conversion") do
+  o = StringMatchToStr.new   # to_str gives "b"
+
+  # The captured core method is reached through mrb_funcall(), which is no
+  # send to go back to, so the override asks before it hands the argument on.
+  assert_equal(["a", "c"], "abc".split(o))
+  assert_equal(1, "abc".index(o))
+  assert_equal(1, "abc".rindex(o))
+  assert_equal(1, "abc".byteindex(o))
+  assert_equal(1, "abc".byterindex(o))
+  assert_equal(["a", "b", "c"], "abc".partition(o))
+  assert_equal(["a", "b", "c"], "abc".rpartition(o))
+  assert_true("bcd".start_with?(o))
+
+  # The gem's own regexp forms ask through check_pattern().
+  assert_equal(["b"], "abc".scan(o))
+
+  # A Regexp is asked for nothing, and a pattern of neither type still raises.
+  assert_equal(["a", "c"], "abc".split(/b/))
+  assert_raise(TypeError) { "abc".split(Object.new) }
+  assert_raise(TypeError) { "abc".scan(Object.new) }
+end
+
+assert("a pattern that is not the last argument keeps the type error") do
+  # The conversion restarts the send, so it can only answer for the argument
+  # the send leaves on top of the stack: `sub` and `gsub` never qualify.
+  o = StringMatchToStr.new
+  assert_raise(TypeError) { "abc".sub(o, "x") }
+  assert_raise(TypeError) { "abc".gsub(o, "x") }
+  assert_raise(TypeError) { "abc".index(o, 0) }
 end

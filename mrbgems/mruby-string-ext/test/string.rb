@@ -1605,3 +1605,11 @@ assert('String#end_with? takes an implicit conversion') do
   assert_false("ac".end_with?(o))
   assert_raise(TypeError) { "ab".end_with?(Object.new) }
 end
+
+assert('String#start_with? and String#partition take an implicit conversion') do
+  o = Class.new { def to_str; "l"; end }.new
+  assert_true("llama".start_with?(o))
+  assert_equal(["he", "l", "lo"], "hello".partition(o))
+  assert_equal(["hel", "l", "o"], "hello".rpartition(o))
+  assert_raise(TypeError) { "hello".partition(Object.new) }
+end
