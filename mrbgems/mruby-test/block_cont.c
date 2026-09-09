@@ -20,15 +20,19 @@ static mrb_value block_cont_resume(mrb_state *mrb, mrb_value result, mrb_int i);
 static mrb_value
 block_cont_walk(mrb_state *mrb, mrb_int i)
 {
-  mrb_callinfo *ci = mrb->c->ci;
-  mrb_value ary = ci->stack[1];
-  mrb_value blk = ci->stack[2];
+  mrb_value ary = mrb->c->ci->stack[1];
 
-  /* The block may have changed the array's length, so it is read afresh. */
-  if (i >= RARRAY_LEN(ary)) return mrb_nil_value();
+  /* The block may have changed the array's length, so it is read afresh, and
+     so is the frame: a call that was not handed over ran a VM of its own. */
+  for (; i < RARRAY_LEN(ary); i++) {
+    mrb_value v = RARRAY_PTR(ary)[i], r;
 
-  mrb_value v = RARRAY_PTR(ary)[i];
-  return mrb_block_cont(mrb, block_cont_resume, i, blk, 1, &v);
+    if (mrb_block_cont_p(mrb, &r, block_cont_resume, i, mrb->c->ci->stack[2], 1, &v)) {
+      return r;
+    }
+    if (mrb_test(r)) return v;
+  }
+  return mrb_nil_value();
 }
 
 static mrb_value
@@ -143,6 +147,22 @@ block_cont_under_nested(mrb_state *mrb, mrb_value self)
   return mod;
 }
 
+/* BlockCont.from_c(ary) { ... } -> what BlockCont.detect answers
+ *
+ * The same walk, reached through mrb_funcall_with_block() rather than from
+ * bytecode. The frame is one a C caller is waiting on, so not one call the
+ * walk makes can be handed to the VM: every element takes the fallback, which
+ * is the path that must not cost a C frame per element.
+ */
+static mrb_value
+block_cont_from_c(mrb_state *mrb, mrb_value self)
+{
+  mrb_value ary, blk;
+
+  mrb_get_args(mrb, "A&", &ary, &blk);
+  return mrb_funcall_with_block(mrb, self, mrb_intern_lit(mrb, "detect"), 1, &ary, blk);
+}
+
 /* BlockCont.depth -> the number of frames below this one */
 static mrb_value
 block_cont_depth(mrb_state *mrb, mrb_value self)
@@ -161,5 +181,6 @@ mrb_init_test_block_cont(mrb_state *mrb)
   mrb_define_module_function(mrb, c, "apply_nested", block_cont_apply_nested, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
   mrb_define_module_function(mrb, c, "under", block_cont_under, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
   mrb_define_module_function(mrb, c, "under_nested", block_cont_under_nested, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
+  mrb_define_module_function(mrb, c, "from_c", block_cont_from_c, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
   mrb_define_module_function(mrb, c, "depth", block_cont_depth, MRB_ARGS_NONE());
 }

@@ -1805,10 +1805,10 @@ static mrb_value ary_min_resume(mrb_state *mrb, mrb_value result, mrb_int i);
 static mrb_value
 ary_max_min_walk(mrb_state *mrb, mrb_int i, mrb_int want)
 {
-  mrb_callinfo *ci = mrb->c->ci;
-  mrb_value self = ci->stack[0];
+  mrb_value self = mrb->c->ci->stack[0];
 
   for (; i < RARRAY_LEN(self); i++) {
+    mrb_callinfo *ci = mrb->c->ci;
     mrb_value val = RARRAY_PTR(self)[i];
     mrb_int cmp;
     int r = mrb_cmp_in_c(mrb, val, ci->stack[1], &cmp);
@@ -1817,17 +1817,29 @@ ary_max_min_walk(mrb_state *mrb, mrb_int i, mrb_int want)
       /* The `<=>` here is written in Ruby. Hand the call to the VM and ask to
          be resumed with its answer, rather than running it on a nested VM:
          that keeps this walk off the C stack, so a Fiber can suspend inside
-         the comparison. */
-      return mrb_funcall_cont(mrb, want > 0 ? ary_max_resume : ary_min_resume,
-                              i, val, MRB_OPSYM(cmp), 1, &ci->stack[1]);
+         the comparison. Where it cannot be handed over the answer comes back
+         here, and the walk goes on with it rather than through the resume,
+         which would cost a C frame for every element. */
+      mrb_value v;
+
+      if (mrb_funcall_cont_p(mrb, &v, want > 0 ? ary_max_resume : ary_min_resume,
+                             i, val, MRB_OPSYM(cmp), 1, &ci->stack[1])) {
+        return v;
+      }
+      ci = mrb->c->ci;
+      if (!mrb_integer_p(v)) {
+        mrb_raisef(mrb, E_ARGUMENT_ERROR, "comparison of %T with %T failed",
+                   val, ci->stack[1]);
+      }
+      cmp = mrb_integer(v);
     }
-    if (r == 0) {
+    else if (r == 0) {
       mrb_raisef(mrb, E_ARGUMENT_ERROR, "comparison of %T with %T failed",
                  val, ci->stack[1]);
     }
     if (cmp == want) ci->stack[1] = val;
   }
-  return ci->stack[1];
+  return mrb->c->ci->stack[1];
 }
 
 /* What `<=>` answered, read as mrb_cmp() reads it: an Integer for its sign,
@@ -1929,9 +1941,16 @@ ary_include_walk(mrb_state *mrb, mrb_int i)
       /* The `==` here is written in Ruby. Hand the call to the VM and ask to
          be resumed with its answer, rather than running it on a nested VM:
          that keeps this walk off the C stack, so a Fiber can suspend inside
-         the comparison. */
-      return mrb_funcall_cont(mrb, ary_include_resume, i,
-                              RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj);
+         the comparison. Where it cannot be handed over the answer comes back
+         here, and the walk goes on with it rather than through the resume,
+         which would cost a C frame for every element. */
+      mrb_value v;
+
+      if (mrb_funcall_cont_p(mrb, &v, ary_include_resume, i,
+                             RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj)) {
+        return v;
+      }
+      if (mrb_test(v)) return mrb_true_value();
     }
   }
   return mrb_false_value();

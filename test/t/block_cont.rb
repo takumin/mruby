@@ -18,6 +18,15 @@ assert('mrb_block_cont hands over an argument list of any length') do
   assert_equal [1, 2], BlockCont.apply([1, 2]) { |a, b| [a, b] }
 end
 
+assert('a walk whose calls cannot be handed over keeps its loop') do
+  # Reached from C, the frame belongs to that caller and no call the walk
+  # makes can be handed to the VM. Answering each of them through the resume
+  # would take a C frame per element, and this array has more of them than a
+  # C stack holds.
+  a = Array.new(20000) { |i| i }
+  assert_equal 19999, BlockCont.from_c(a) { |x| x == 19999 }
+end
+
 assert('mrb_block_cont leaves the caller where it found it') do
   before = BlockCont.depth
   BlockCont.detect([1, 2, 3]) { |x| x == 3 }

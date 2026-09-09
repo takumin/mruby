@@ -430,12 +430,18 @@ static mrb_value ary_init_resume(mrb_state *mrb, mrb_value val, mrb_int i);
 static mrb_value
 ary_init_fill(mrb_state *mrb, mrb_int i)
 {
-  mrb_callinfo *ci = mrb->c->ci;
+  mrb_int size = mrb_integer(mrb->c->ci->stack[1]);
 
-  if (i >= mrb_integer(ci->stack[1])) return ci->stack[0];
+  for (; i < size; i++) {
+    mrb_callinfo *ci = mrb->c->ci;
+    mrb_value iv = mrb_int_value(mrb, i), v;
 
-  mrb_value iv = mrb_int_value(mrb, i);
-  return mrb_block_cont(mrb, ary_init_resume, i, ci->stack[mrb_ci_bidx(ci)], 1, &iv);
+    if (mrb_block_cont_p(mrb, &v, ary_init_resume, i, ci->stack[mrb_ci_bidx(ci)], 1, &iv)) {
+      return v;
+    }
+    mrb_ary_set(mrb, mrb->c->ci->stack[0], i, v);
+  }
+  return mrb->c->ci->stack[0];
 }
 
 static mrb_value
@@ -1628,13 +1634,24 @@ ary_index_walk(mrb_state *mrb, mrb_int i)
 {
   mrb_callinfo *ci = mrb->c->ci;
   mrb_value self = ci->stack[0];
+  mrb_value blk = ci->stack[mrb_ci_bidx(ci)];
+  mrb_bool tail = mrb_block_cont_ready_p(mrb, blk);
 
   /* The block may have grown or shrunk the array under us, so the length and
-     the pointer are read afresh each turn. */
-  if (i >= RARRAY_LEN(self)) return mrb_nil_value();
+     the pointer are read afresh each turn, and so is the frame: a call made
+     here rather than handed over ran a VM of its own, which can have moved
+     both the frames and the registers they point into. */
+  for (; i < RARRAY_LEN(self); i++) {
+    mrb_value v = RARRAY_PTR(self)[i], r;
 
-  mrb_value v = RARRAY_PTR(self)[i];
-  return mrb_block_cont(mrb, ary_index_resume, i, ci->stack[mrb_ci_bidx(ci)], 1, &v);
+    if (tail) return mrb_block_cont(mrb, ary_index_resume, i, blk, 1, &v);
+    if (mrb_block_cont_p(mrb, &r, ary_index_resume, i, blk, 1, &v)) return r;
+    if (mrb_test(r)) return mrb_int_value(mrb, i);
+    ci = mrb->c->ci;
+    self = ci->stack[0];
+    blk = ci->stack[mrb_ci_bidx(ci)];
+  }
+  return mrb_nil_value();
 }
 
 static mrb_value
@@ -1662,8 +1679,13 @@ ary_index_eq_walk(mrb_state *mrb, mrb_int i)
     int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
     if (r > 0) return mrb_int_value(mrb, i);
     if (r < 0) {
-      return mrb_funcall_cont(mrb, ary_index_eq_resume, i,
-                              RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj);
+      mrb_value v;
+
+      if (mrb_funcall_cont_p(mrb, &v, ary_index_eq_resume, i,
+                             RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj)) {
+        return v;
+      }
+      if (mrb_test(v)) return mrb_int_value(mrb, i);
     }
   }
   return mrb_nil_value();
@@ -1714,23 +1736,32 @@ static mrb_value ary_rindex_resume(mrb_state *mrb, mrb_value result, mrb_int i);
 static mrb_value
 ary_rindex_walk(mrb_state *mrb, mrb_int i)
 {
-  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = mrb->c->ci->stack[0];
 
-  if (i < 0) return mrb_nil_value();
+  for (; i >= 0; i--) {
+    mrb_callinfo *ci;
+    mrb_value v, r;
 
-  mrb_value v = RARRAY_PTR(ci->stack[0])[i];
-  return mrb_block_cont(mrb, ary_rindex_resume, i, ci->stack[mrb_ci_bidx(ci)], 1, &v);
+    /* A block that shortened the array leaves the index past its end, and the
+       step below brings it back inside rather than reading where it points. */
+    if (i >= RARRAY_LEN(self)) {
+      i = RARRAY_LEN(self);
+      continue;
+    }
+    ci = mrb->c->ci;
+    v = RARRAY_PTR(self)[i];
+    if (mrb_block_cont_p(mrb, &r, ary_rindex_resume, i, ci->stack[mrb_ci_bidx(ci)], 1, &v)) {
+      return r;
+    }
+    if (mrb_test(r)) return mrb_int_value(mrb, i);
+  }
+  return mrb_nil_value();
 }
 
 static mrb_value
 ary_rindex_resume(mrb_state *mrb, mrb_value result, mrb_int i)
 {
   if (mrb_test(result)) return mrb_int_value(mrb, i);
-
-  /* A block that shortened the array would leave the index past its end, so it
-     is brought back to the new end before stepping down. */
-  mrb_int len = RARRAY_LEN(mrb->c->ci->stack[0]);
-  if (i > len) i = len;
   return ary_rindex_walk(mrb, i - 1);
 }
 
@@ -1757,8 +1788,13 @@ ary_rindex_eq_walk(mrb_state *mrb, mrb_int i)
       int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
       if (r > 0) return mrb_int_value(mrb, i);
       if (r < 0) {
-        return mrb_funcall_cont(mrb, ary_rindex_eq_resume, i,
-                                RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj);
+        mrb_value v;
+
+        if (mrb_funcall_cont_p(mrb, &v, ary_rindex_eq_resume, i,
+                               RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj)) {
+          return v;
+        }
+        if (mrb_test(v)) return mrb_int_value(mrb, i);
       }
     }
   }
@@ -2283,7 +2319,23 @@ ary_delete_walk(mrb_state *mrb, mrb_int i, mrb_int j, mrb_value ret, mrb_value s
           }
           RARRAY_PTR(st)[ADEL_J] = mrb_fixnum_value(j);
         }
-        return mrb_funcall_cont(mrb, ary_delete_resume, i, elem, MRB_OPSYM(eq), 1, &obj);
+        {
+          mrb_value v;
+
+          if (mrb_funcall_cont_p(mrb, &v, ary_delete_resume, i, elem,
+                                 MRB_OPSYM(eq), 1, &obj)) {
+            return v;
+          }
+          /* The call was made here rather than handed over, so the walk goes
+             on with the answer instead of coming back through the resume,
+             which would cost a C frame for every element. It ran Ruby all the
+             same, so the frame and the array are read afresh. */
+          ci = mrb->c->ci;
+          ary = RARRAY(self);
+          if (i >= ARY_LEN(ary)) break;
+          elem = ARY_PTR(ary)[i];
+          r = mrb_test(v) ? 1 : 0;
+        }
       }
     }
 
@@ -2580,14 +2632,35 @@ enum { SORT_PHASE_BUILD, SORT_PHASE_EXTRACT, SORT_PHASE_INSERT };
 static mrb_value sort_resume(mrb_state *mrb, mrb_value result, mrb_int pc);
 
 /* Hands one comparison to the VM: to the block where there is one, and to the
-   pair's own `<=>` where there is not. */
-static mrb_value
-sort_hand_over(mrb_state *mrb, mrb_value blk, mrb_int pc, mrb_value *args)
+   pair's own `<=>` where there is not. Answers whether it was handed over; if
+   it was not, the answer is in `*vp` and the sort goes on with it. */
+static mrb_bool
+sort_hand_over(mrb_state *mrb, mrb_value *vp, mrb_value blk, mrb_int pc, mrb_value *args)
 {
   if (mrb_nil_p(blk)) {
-    return mrb_funcall_cont(mrb, sort_resume, pc, args[0], MRB_OPSYM(cmp), 1, &args[1]);
+    return mrb_funcall_cont_p(mrb, vp, sort_resume, pc, args[0], MRB_OPSYM(cmp), 1, &args[1]);
   }
-  return mrb_block_cont(mrb, sort_resume, pc, blk, 2, args);
+  return mrb_block_cont_p(mrb, vp, sort_resume, pc, blk, 2, args);
+}
+
+/* One comparison's answer, read as the sort reads it: true when the first of
+   the pair is to come after the second. Without a block that is what mrb_cmp()
+   makes of a `<=>`; with one it is cmpint(), which takes more than an Integer
+   and names the pair in what it raises. */
+static inline mrb_bool
+sort_read(mrb_state *mrb, mrb_value result, mrb_bool no_blk, mrb_value x, mrb_value y)
+{
+  /* An Integer is what both ways of ordering a pair answer with almost every
+     time, and it is read here rather than through the two functions below,
+     which a comparison would otherwise call one of on every element. */
+  if (mrb_fixnum_p(result)) return mrb_fixnum(result) > 0;
+  if (no_blk) {
+    if (!mrb_integer_p(result)) {
+      mrb_raise(mrb, E_ARGUMENT_ERROR, "comparison failed");
+    }
+    return mrb_integer(result) > 0;
+  }
+  return cmpint(mrb, result, x, y) > 0;
 }
 
 /* Runs the sort until it needs the block again, or until it is done. `cmp`
@@ -2610,16 +2683,25 @@ sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
   mrb_int phase = mrb_fixnum(sp[SORT_PHASE]);
   mrb_value *a;
   mrb_value args[2];
-  /* Read once: the sort asks it of every comparison it makes. */
+  mrb_value ans;
+  /* Read once: the sort asks these of every comparison it makes. A block
+     written in Ruby, on a frame no C caller owns, is a comparison the VM can
+     always be handed; the ask is then the last thing this function does,
+     which is what keeps a handover from costing anything on the way out. The
+     `<=>` of an object is not that: whether it can be handed over is a
+     property of the pair, so those go through the form that answers here. */
   mrb_bool no_blk = mrb_nil_p(sp[SORT_BLK]);
+  mrb_bool tail_ok = !no_blk && !MRB_CI_PINS_C_FRAME_P(mrb->c->ci) &&
+                     mrb_proc_p(sp[SORT_BLK]) &&
+                     !MRB_PROC_CFUNC_P(mrb_proc_ptr(sp[SORT_BLK])) &&
+                     mrb_proc_ptr(sp[SORT_BLK])->body.irep != NULL;
 
-  /* The block is free to change the array under the sort, and the sort reads
-     it afresh on the way back in. A change of length is refused rather than
-     sorted around, as the C loop refuses it. */
-  if (RARRAY_LEN(ary) != len) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "array modified during sort");
-  }
-  a = RARRAY_PTR(ary);
+#define SORT_REREAD do {                                        \
+    if (RARRAY_LEN(ary) != len) {                               \
+      mrb_raise(mrb, E_RUNTIME_ERROR, "array modified during sort"); \
+    }                                                           \
+    a = RARRAY_PTR(ary);                                        \
+  } while (0)
 
 #define SORT_SWAP(x, y) do {                    \
     mrb_value tmp_ = a[x];                      \
@@ -2651,10 +2733,22 @@ sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
     sp[SORT_Y] = mrb_fixnum_value(y);           \
     args[0] = a[x];                             \
     args[1] = a[y];                             \
-    return sort_hand_over(mrb, sp[SORT_BLK], next, args); \
+    if (tail_ok) return mrb_block_cont(mrb, sort_resume, next, sp[SORT_BLK], 2, args); \
+    if (sort_hand_over(mrb, &ans, sp[SORT_BLK], next, args)) return ans; \
+    /* Not handed over: the answer is here, and the sort goes on with it
+       rather than through the resume, which would cost a C frame for every
+       comparison. Its place is read back from the array rather than kept in
+       registers across the call, which is what would make the call above cost
+       something on the way out as well. */     \
+    cmp = sort_read(mrb, ans, no_blk, args[0], args[1]); \
+    i = mrb_fixnum(sp[SORT_I]);                 \
+    index = mrb_fixnum(sp[SORT_INDEX]);         \
+    pc = (next);                                \
+    SORT_REREAD;                                \
+    continue;                                   \
   }
 
-#define SORT_ASK(next, x, y) {                  \
+#define SORT_ASK(next, x, y) {              \
     SORT_TRY(next, x, y)                        \
     sp[SORT_HSIZE] = mrb_fixnum_value(hsize);   \
     sp[SORT_I] = mrb_fixnum_value(i);           \
@@ -2665,8 +2759,25 @@ sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
     sp[SORT_Y] = mrb_fixnum_value(y);           \
     args[0] = a[x];                             \
     args[1] = a[y];                             \
-    return sort_hand_over(mrb, sp[SORT_BLK], next, args); \
+    if (tail_ok) return mrb_block_cont(mrb, sort_resume, next, sp[SORT_BLK], 2, args); \
+    if (sort_hand_over(mrb, &ans, sp[SORT_BLK], next, args)) return ans; \
+    /* as above: the place is read back rather than held across the call */ \
+    cmp = sort_read(mrb, ans, no_blk, args[0], args[1]); \
+    hsize = mrb_fixnum(sp[SORT_HSIZE]);         \
+    i = mrb_fixnum(sp[SORT_I]);                 \
+    index = mrb_fixnum(sp[SORT_INDEX]);         \
+    child = mrb_fixnum(sp[SORT_CHILD]);         \
+    phase = mrb_fixnum(sp[SORT_PHASE]);         \
+    pc = (next);                                \
+    SORT_REREAD;                                \
+    continue;                                   \
   }
+
+  /* Whatever orders the array is free to change it, and the sort reads it
+     afresh wherever it can have changed: on the way back in, and after a
+     comparison made here rather than handed over. A change of length is
+     refused rather than sorted around, as the C loop refused it. */
+  SORT_REREAD;
 
   for (;;) {
     switch (pc) {
@@ -2776,34 +2887,26 @@ sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
 #undef SORT_ASK
 #undef SORT_ASK_INS
 #undef SORT_TRY
+#undef SORT_REREAD
 #undef SORT_SWAP
 }
 
 static mrb_value
 sort_resume(mrb_state *mrb, mrb_value result, mrb_int pc)
 {
-  mrb_value st = mrb->c->ci->stack[1];
-  mrb_value ary = RARRAY_PTR(st)[SORT_ARY];
+  mrb_value *sp = RARRAY_PTR(mrb->c->ci->stack[1]);
+  mrb_value ary = sp[SORT_ARY];
   mrb_value x = mrb_nil_value(), y = mrb_nil_value();
-  mrb_int ix = mrb_fixnum(RARRAY_PTR(st)[SORT_X]);
-  mrb_int iy = mrb_fixnum(RARRAY_PTR(st)[SORT_Y]);
-
-  if (mrb_nil_p(RARRAY_PTR(st)[SORT_BLK])) {
-    /* What `<=>` answered, read as mrb_cmp() reads it: an Integer for its
-       sign, and anything else for a pair with no order. */
-    if (!mrb_integer_p(result)) {
-      mrb_raise(mrb, E_ARGUMENT_ERROR, "comparison failed");
-    }
-    return sort_step(mrb, pc, mrb_integer(result) > 0);
-  }
+  mrb_int ix = mrb_fixnum(sp[SORT_X]);
+  mrb_int iy = mrb_fixnum(sp[SORT_Y]);
 
   /* cmpint() names the pair in the error it raises for an answer it cannot
      read, and asks the answer itself where that answer is an object rather
-     than an Integer. The pair comes from the array as it stands now, the
-     block having had its turn at it. */
+     than an Integer. The pair comes from the array as it stands now, whatever
+     ordered it having had its turn at the array. */
   if (ix < RARRAY_LEN(ary)) x = RARRAY_PTR(ary)[ix];
   if (iy < RARRAY_LEN(ary)) y = RARRAY_PTR(ary)[iy];
-  return sort_step(mrb, pc, cmpint(mrb, result, x, y) > 0);
+  return sort_step(mrb, pc, sort_read(mrb, result, mrb_nil_p(sp[SORT_BLK]), x, y));
 }
 
 /* Sorts `ary`, running whatever orders it -- the block, or a `<=>` written in
