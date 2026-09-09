@@ -15,4 +15,5 @@ MRuby::Gem::Specification.new('mruby-sprintf') do |spec|
   if build.gems.any? {|g| g.name == 'mruby-encoding'}
     spec.add_test_dependency 'mruby-encoding', :core => 'mruby-encoding'
   end
+  spec.add_test_dependency 'mruby-fiber', core: 'mruby-fiber'
 end
