@@ -189,6 +189,29 @@ typedef struct {
   } u;
 } mrb_callinfo;
 
+/* Values of mrb_callinfo::cci. The frame's relation to the C stack:
+
+   CINFO_NONE     nothing of C stands between this frame and the one below
+   CINFO_SKIP     a C caller started this mrb_vm_exec() and waits for it
+   CINFO_DIRECT   a C caller called this method and waits for its return
+   CINFO_RESUMED  entered by Fiber.yield returning into mrb_fiber_resume()
+   CINFO_CONT     called for a C method that asked to be resumed with the
+                  result (mrb_funcall_cont()); that method left a
+                  continuation rather than a C frame
+
+   MRB_CI_PINS_C_FRAME_P() asks the question the values exist to answer: is a
+   C frame waiting on this one? A fiber switched away from such a frame could
+   not return to it. A CINFO_CONT frame is not one: what the C method needs to
+   go on is in its own frame and in the continuation, both on the heap. */
+#define CINFO_NONE    0
+#define CINFO_SKIP    1
+#define CINFO_DIRECT  2
+#define CINFO_RESUMED 3
+#define CINFO_CONT    4
+
+#define MRB_CI_PINS_C_FRAME_P(ci) \
+  ((ci)->cci != CINFO_NONE && (ci)->cci != CINFO_CONT)
+
 enum mrb_fiber_state {
   MRB_FIBER_CREATED = 0,
   MRB_FIBER_RUNNING,

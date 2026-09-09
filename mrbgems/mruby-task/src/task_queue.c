@@ -221,7 +221,7 @@ queue_pop_try(mrb_state *mrb, mrb_value self)
   /* Guard against yielding from inside a C function boundary */
   mrb_callinfo *ci;
   for (ci = mrb->c->ci; ci >= mrb->c->cibase; ci--) {
-    if (ci->cci > 0) {
+    if (MRB_CI_PINS_C_FRAME_P(ci)) {
       mrb_raise(mrb, E_RUNTIME_ERROR, "blocking pop cannot be called from within a C function boundary");
     }
   }

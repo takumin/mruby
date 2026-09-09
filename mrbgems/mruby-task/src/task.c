@@ -780,7 +780,7 @@ sleep_us_impl(mrb_state *mrb, uint32_t usec)
   /* Check for C function boundary - cannot do cooperative context switch */
   mrb_callinfo *ci;
   for (ci = mrb->c->ci; ci >= mrb->c->cibase; ci--) {
-    if (ci->cci > 0) {
+    if (MRB_CI_PINS_C_FRAME_P(ci)) {
       /* Inside C function - fall back to blocking sleep without context switch */
       mrb_hal_task_sleep_us(mrb, usec);
       switching_ = FALSE;
@@ -848,7 +848,7 @@ mrb_f_sleep(mrb_state *mrb, mrb_value self)
     }
     mrb_callinfo *ci;
     for (ci = mrb->c->ci; ci >= mrb->c->cibase; ci--) {
-      if (ci->cci > 0) {
+      if (MRB_CI_PINS_C_FRAME_P(ci)) {
         mrb_raise(mrb, E_RUNTIME_ERROR, "can't sleep across C function boundary");
       }
     }
@@ -1087,7 +1087,7 @@ mrb_task_s_pass(mrb_state *mrb, mrb_value self)
     /* Check for C function boundary - cannot yield from C function */
     mrb_callinfo *ci;
     for (ci = mrb->c->ci; ci >= mrb->c->cibase; ci--) {
-      if (ci->cci > 0) {
+      if (MRB_CI_PINS_C_FRAME_P(ci)) {
         mrb_raise(mrb, E_RUNTIME_ERROR, "can't pass across C function boundary");
       }
     }

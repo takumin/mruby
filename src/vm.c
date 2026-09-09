@@ -817,10 +817,7 @@ mrb_vm_svar_set(mrb_state *mrb, enum mrb_svar_index key, mrb_value v)
   }
 }
 
-#define CINFO_NONE    0 // called method from mruby VM (without C functions)
-#define CINFO_SKIP    1 // ignited mruby VM from C
-#define CINFO_DIRECT  2 // called method from C
-#define CINFO_RESUMED 3 // resumed by `Fiber.yield` (probably the main call is `mrb_fiber_resume()`)
+/* CINFO_* and MRB_CI_PINS_C_FRAME_P() are in mruby.h */
 
 #define BLK_PTR(b) ((mrb_proc_p(b)) ? mrb_proc_ptr(b) : NULL)
 
@@ -897,23 +894,22 @@ cont_push(mrb_state *mrb, mrb_cont_func *func, mrb_int state, ptrdiff_t ci_index
   s->len++;
 }
 
-/* Frames above `depth` are gone, so the continuations they own are too. Called
-   from cipop(), which is why it is spelled as one comparison on the top entry:
-   frames are popped one at a time, and a context that registers none never
-   reaches here. */
-static void
-cont_discard_above(struct mrb_cont_stack *s, ptrdiff_t depth)
+/* Takes the continuation the frame at `depth` is owed. Entries left by frames
+   that unwound instead of returning are dropped here rather than in cipop():
+   they sit above this one, a fresh entry for a reused index is always the
+   upper of the two, and paying for the check on every return of every method
+   to save this walk is the wrong trade. */
+/* Kept out of line: mrb_vm_exec() pays for its own size in instruction cache
+   (see the note on CHECK_VM_INTERRUPT), and this runs only for the returns a
+   continuation is waiting on. */
+static struct mrb_cont_entry
+cont_take(struct mrb_cont_stack *s, ptrdiff_t depth)
 {
   while (s->len > 0 && s->entries[s->len-1].ci_index > depth) {
     s->len--;
   }
-}
-
-static mrb_bool
-cont_owned_by(struct mrb_context *c, const mrb_callinfo *ci)
-{
-  struct mrb_cont_stack *s = c->conts;
-  return s && s->len > 0 && s->entries[s->len-1].ci_index == ci - c->cibase;
+  mrb_assert(s->len > 0 && s->entries[s->len-1].ci_index == depth);
+  return s->entries[--s->len];
 }
 
 static inline mrb_callinfo*
@@ -1241,10 +1237,6 @@ cipop(mrb_state *mrb)
 {
   struct mrb_context *c = mrb->c;
   mrb_callinfo *ci = c->ci;
-
-  if (mrb_unlikely(c->conts != NULL)) {
-    cont_discard_above(c->conts, ci - c->cibase - 1);
-  }
 
   /* Fast path: no env and no blk (most common for simple method calls) */
   if (mrb_likely((!ci->u.env || ci->u.env->tt != MRB_TT_ENV) && !ci->blk)) {
@@ -2201,6 +2193,19 @@ mrb_yield_cont(mrb_state *mrb, mrb_value b, mrb_value self, mrb_int argc, const 
   return exec_irep(mrb, self, p);
 }
 
+/* Runs the continuation the frame at `idx` is owed. Answers 1 if it asked for
+   another call (callee and dummy frame pushed), 0 if it answered into *vp,
+   and -1 if it raised. */
+static int
+cont_resume(mrb_state *mrb, mrb_value *vp, ptrdiff_t idx)
+{
+  struct mrb_cont_entry e = cont_take(mrb->c->conts, idx);
+
+  *vp = e.func(mrb, *vp, e.state);
+  if (mrb_unlikely(mrb->exc != NULL)) return -1;
+  return (mrb->c->ci - mrb->c->cibase != idx) ? 1 : 0;
+}
+
 MRB_API mrb_value
 mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
                  mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv)
@@ -2229,7 +2234,7 @@ mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
   {
     ptrdiff_t idx = ci - mrb->c->cibase;
     mrb_int n = mrb_ci_nregs(ci);
-    mrb_callinfo *ci2 = cipush(mrb, n, CINFO_NONE, tc, p, NULL, mid, 0);
+    mrb_callinfo *ci2 = cipush(mrb, n, CINFO_CONT, tc, p, NULL, mid, 0);
     mrb_int keep, nregs;
 
     funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci2);
@@ -2513,7 +2518,7 @@ static mrb_bool
 task_across_c_boundary(mrb_state *mrb)
 {
   for (mrb_callinfo *ci = mrb->c->ci; ci > mrb->c->cibase; ci--) {
-    if (ci->cci > 0) return TRUE;
+    if (MRB_CI_PINS_C_FRAME_P(ci)) return TRUE;
   }
   return FALSE;
 }
@@ -4229,7 +4234,7 @@ RETRY_TRY_BLOCK:
             break;
           }
           ci = cipop(mrb);
-          if (ci[1].cci != CINFO_NONE) {
+          if (MRB_CI_PINS_C_FRAME_P(&ci[1])) {
             mrb_assert(prev_jmp != NULL);
             mrb->exc = (struct RObject*)break_new(mrb, RBREAK_TAG_BREAK, return_ci, v);
             mrb_gc_arena_restore(mrb, ai);
@@ -4279,24 +4284,21 @@ RETRY_TRY_BLOCK:
       }
       acc = ci->cci;
       ci = cipop(mrb);
+      if (mrb_unlikely(acc != CINFO_NONE)) {
       if (acc == CINFO_SKIP || acc == CINFO_DIRECT) {
         mrb_gc_arena_restore(mrb, ai);
         mrb->jmp = prev_jmp;
         return v;
       }
-      if (mrb_unlikely(cont_owned_by(mrb->c, ci))) {
+      if (acc == CINFO_CONT) {
         /* The frame returned into is a C method that asked to be resumed with
            this value (see mrb_funcall_cont()). It runs here rather than on a
            nested VM, so what it does next -- answer, or ask for another call
            -- is decided without leaving this loop. */
-        struct mrb_cont_stack *cs = mrb->c->conts;
-        struct mrb_cont_entry e = cs->entries[--cs->len];
-        ptrdiff_t idx = ci - mrb->c->cibase;
-
-        v = e.func(mrb, v, e.state);
-        if (mrb_unlikely(mrb->exc)) goto L_RAISE;
+        int r = cont_resume(mrb, &v, ci - mrb->c->cibase);
+        if (mrb_unlikely(r < 0)) goto L_RAISE;
         ci = mrb->c->ci;
-        if (ci - mrb->c->cibase != idx) {
+        if (r > 0) {
           /* it asked for another call: callee and dummy frame are pushed */
           irep = ci[-1].proc->body.irep;
           ci->stack[0] = v;
@@ -4306,6 +4308,7 @@ RETRY_TRY_BLOCK:
         }
         /* it answered: return that from the C method */
         ci = cipop(mrb);
+      }
       }
       DEBUG(fprintf(stderr, "from :%s\n", mrb_sym_name(mrb, ci->mid)));
       irep = ci->proc->body.irep;
