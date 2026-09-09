@@ -2243,6 +2243,40 @@ mrb_funcall_tail(mrb_state *mrb, mrb_value self, mrb_sym mid, mrb_int argc, cons
   return exec_irep(mrb, self, MRB_METHOD_PROC(m));
 }
 
+/* Lays out the frame of a call handed to the VM: the receiver, the arguments,
+   the block slot, and whatever registers the callee has beyond them. Done in
+   one pass rather than through funcall_args_capture() and a second extend for
+   the callee's own registers, since a walk pays for it on every element. The
+   argument count that path cannot lay out register by register, fifteen and
+   up, is still left to it. */
+static inline void
+cont_frame_setup(mrb_state *mrb, mrb_callinfo *ci2, mrb_value self,
+                 mrb_int argc, const mrb_value *argv, mrb_int nregs)
+{
+  mrb_value *regs;
+
+  if (mrb_unlikely(argc >= CALL_MAXARGS)) {
+    funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci2);
+    stack_extend(mrb, nregs > 3 ? nregs : 3);
+    regs = ci2->stack;
+    if (nregs > 3) stack_clear(regs + 3, nregs - 3);
+  }
+  else {
+    mrb_int keep = argc + 2;          /* self + args + block */
+
+    ci2->n = (uint8_t)argc;
+    ci2->kw = FALSE;
+    stack_extend_adjust(mrb, nregs > keep ? nregs : keep, &argv);
+    /* Read after the extend: growing the stack moves every frame onto the
+       new one. */
+    regs = ci2->stack;
+    stack_copy(regs + 1, argv, argc);
+    regs[keep-1] = mrb_nil_value();   /* the callee takes no block */
+    if (nregs > keep) stack_clear(regs + keep, nregs - keep);
+  }
+  regs[0] = self;
+}
+
 /* Runs the continuation the frame at `idx` is owed. Answers 1 if it asked for
    another call (callee and dummy frame pushed), 0 if it answered into *vp,
    and -1 if it raised. */
@@ -2285,19 +2319,8 @@ mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
     ptrdiff_t idx = ci - mrb->c->cibase;
     mrb_int n = mrb_ci_nregs(ci);
     mrb_callinfo *ci2 = cipush(mrb, n, CINFO_CONT, tc, p, NULL, mid, 0);
-    mrb_int keep, nregs;
 
-    funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci2);
-    ci2->stack[0] = recv;
-    keep = ci_bidx(ci2) + 1;
-    nregs = p->body.irep->nregs;
-    if (nregs < keep) {
-      stack_extend(mrb, keep);
-    }
-    else {
-      stack_extend(mrb, nregs);
-      stack_clear(ci2->stack + keep, nregs - keep);
-    }
+    cont_frame_setup(mrb, ci2, recv, argc, argv, p->body.irep->nregs);
     cont_push(mrb, k, state, idx);
     /* The frame the cfunc epilogue in mrb_vm_exec() pops on the way back. Its
        NULL `u` is what tells that epilogue to reload `irep` from the callee
@@ -2353,34 +2376,8 @@ block_cont_attr(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
     ptrdiff_t idx = ci - mrb->c->cibase;
     mrb_int n = mrb_ci_nregs(ci);
     mrb_callinfo *ci2 = cipush(mrb, n, CINFO_CONT, tc, p, NULL, mid, 0);
-    mrb_int nregs = p->body.irep->nregs;
-    mrb_value *regs;
 
-    /* The arguments are laid out here rather than through
-       funcall_args_capture(), which would size the stack for them and leave
-       the block's own registers to a second call. A walk pays for this on
-       every element, so the two are done as one. The count it cannot lay out
-       flat is left to it. */
-    if (mrb_unlikely(argc >= CALL_MAXARGS)) {
-      funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci2);
-      stack_extend(mrb, nregs > 3 ? nregs : 3);
-      regs = ci2->stack;
-      if (nregs > 3) stack_clear(regs + 3, nregs - 3);
-    }
-    else {
-      mrb_int keep = argc + 2;          /* self + args + block */
-
-      ci2->n = (uint8_t)argc;
-      ci2->kw = FALSE;
-      stack_extend_adjust(mrb, nregs > keep ? nregs : keep, &argv);
-      /* Read after the extend: growing the stack moves every frame onto the
-         new one. */
-      regs = ci2->stack;
-      stack_copy(regs + 1, argv, argc);
-      regs[keep-1] = mrb_nil_value();   /* the block takes no block of its own */
-      if (nregs > keep) stack_clear(regs + keep, nregs - keep);
-    }
-    regs[0] = bself;
+    cont_frame_setup(mrb, ci2, bself, argc, argv, p->body.irep->nregs);
     if (c) {
       /* A block given a class of its own is a class body: a `def` in it lands
          on that class, and a visibility written in it ends with the block.
