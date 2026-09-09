@@ -3130,7 +3130,7 @@ mrb_vm_interrupt(mrb_state *mrb)
  *       when not using switch-based dispatch. It also manages the callinfo
  *       stack (`ci`) for tracking method/block calls.
  */
-/* ---- implicit conversion trampoline (PROTOTYPE) -------------------------
+/* ---- implicit conversion trampoline -------------------------------------
    An instruction that meets the wrong type does not convert it in C: it
    rewinds its own pc, pushes this frame over the offending register, and
    lets the dispatch loop run the conversion as ordinary bytecode.  The
@@ -3164,18 +3164,168 @@ static const struct RProc coerce_ary_proc = {
   { &coerce_ary_irep }, NULL, { NULL }
 };
 
-static mrb_bool
-vm_coerce_ary(mrb_state *mrb, mrb_code op, int opnd)
+/* `flatten` on mrb_vm_exec pulls every callee into the dispatch loop.  These
+   run only when a conversion is about to happen, and letting them inline
+   there costs the whole VM in register pressure: `fib(25)` ran 1.3% more
+   instructions before they were kept out of line. */
+#if defined(__clang__) || defined(__GNUC__)
+#define VM_COLD __attribute__((noinline))
+#elif defined(_MSC_VER)
+#define VM_COLD __declspec(noinline)
+#else
+#define VM_COLD
+#endif
+
+/* One decoded instruction, an OP_EXT1/2/3 prefix folded in. */
+struct vm_insn {
+  mrb_code insn;
+  uint16_t a, b, c;
+};
+
+/* The operand shape of each opcode, taken from the second column of ops.h so
+   that a change there is picked up rather than restated here. */
+enum vm_insn_shape {
+  VM_SHAPE_Z, VM_SHAPE_B, VM_SHAPE_BB, VM_SHAPE_BBB,
+  VM_SHAPE_BS, VM_SHAPE_BSS, VM_SHAPE_S, VM_SHAPE_W
+};
+
+static const uint8_t vm_insn_shape[] = {
+#define OPCODE(i,x) VM_SHAPE_ ## x,
+#include <mruby/ops.h>
+#undef OPCODE
+};
+
+/* Decode the instruction at `pc0` and return its length in bytes, 0 for a
+   byte that is not an opcode.  The operands are read with the very macros the
+   dispatch loop fetches with, so a change to a layout is picked up here
+   instead of drifting from a table written out by hand.  Reading the shape
+   from a table rather than switching on the opcode four times over keeps this
+   a few hundred bytes of code instead of ten thousand. */
+static VM_COLD uint32_t
+vm_insn_decode(const mrb_code *pc0, struct vm_insn *out)
+{
+  const mrb_code *pc = pc0;
+  uint16_t a = 0, b = 0, c = 0;
+  mrb_code insn = READ_B();
+  int ext = 0;
+
+  switch (insn) {
+  case OP_EXT1: ext = 1; insn = READ_B(); break;
+  case OP_EXT2: ext = 2; insn = READ_B(); break;
+  case OP_EXT3: ext = 3; insn = READ_B(); break;
+  default: break;
+  }
+  if (insn >= sizeof(vm_insn_shape)) return 0;
+
+#define VM_FETCH_SHAPE(x)                                       \
+    switch (ext) {                                              \
+    case 1: FETCH_ ## x ## _1(); break;                         \
+    case 2: FETCH_ ## x ## _2(); break;                         \
+    case 3: FETCH_ ## x ## _3(); break;                         \
+    default: FETCH_ ## x (); break;                             \
+    }                                                           \
+    break
+
+  switch (vm_insn_shape[insn]) {
+  case VM_SHAPE_Z:   VM_FETCH_SHAPE(Z);
+  case VM_SHAPE_B:   VM_FETCH_SHAPE(B);
+  case VM_SHAPE_BB:  VM_FETCH_SHAPE(BB);
+  case VM_SHAPE_BBB: VM_FETCH_SHAPE(BBB);
+  case VM_SHAPE_BS:  VM_FETCH_SHAPE(BS);
+  case VM_SHAPE_BSS: VM_FETCH_SHAPE(BSS);
+  case VM_SHAPE_S:   VM_FETCH_SHAPE(S);
+  case VM_SHAPE_W:   VM_FETCH_SHAPE(W);
+  default: return 0;
+  }
+#undef VM_FETCH_SHAPE
+
+  out->insn = insn;
+  out->a = a;
+  out->b = b;
+  out->c = c;
+  return (uint32_t)(pc - pc0);
+}
+
+/* Walk the iseq from the top and hand back the instruction that ends at
+   `end`.  Exact, and linear in the size of the method. */
+static VM_COLD const mrb_code *
+vm_insn_start_scan(const mrb_irep *irep, const mrb_code *end, struct vm_insn *out)
+{
+  const mrb_code *pc = irep->iseq;
+
+  while (pc < end) {
+    struct vm_insn d;
+    uint32_t len = vm_insn_decode(pc, &d);
+    if (len == 0) return NULL;
+    if (pc + len == end) {
+      *out = d;
+      return pc;
+    }
+    pc += len;
+  }
+  return NULL;
+}
+
+/* Where the instruction that just ran began.  `ci->pc` is past its operands
+   by then, and bytecode cannot be read backwards, so try the few lengths it
+   can have and keep the addresses that decode to `insn` and end exactly here.
+   A lone survivor is the answer.  Two survivors are possible when the bytes
+   before the instruction happen to decode as one too, and there the walk from
+   the top settles it. */
+static const mrb_code *
+vm_insn_start(const mrb_irep *irep, const mrb_code *end, mrb_code insn,
+              struct vm_insn *out)
+{
+  const mrb_code *found = NULL;
+  struct vm_insn d;
+  int hits = 0;
+
+  /* Both instructions that trap are a BBB, so the length is 4 with no prefix
+     and 6 or 7 with one.  These are hints, not the answer: a candidate counts
+     only once it decodes back to `insn` and to that very length, and a trap
+     on some other shape matches nothing here and falls through to the walk
+     from the top, which needs no hint. */
+#define VM_TRY_START(len, pfx) do {                                     \
+    const mrb_code *pc = end - (len);                                   \
+    if (pc >= irep->iseq &&                                             \
+        ((pfx) ? (pc[0] == (pfx) && pc[1] == insn) : (pc[0] == insn)) && \
+        vm_insn_decode(pc, &d) == (len) && d.insn == insn) {             \
+      found = pc;                                                       \
+      *out = d;                                                         \
+      hits++;                                                           \
+    }                                                                   \
+  } while (0)
+  VM_TRY_START(4, 0);
+  VM_TRY_START(6, OP_EXT1);
+  VM_TRY_START(6, OP_EXT2);
+  VM_TRY_START(7, OP_EXT3);
+#undef VM_TRY_START
+  if (hits != 1) {
+    found = vm_insn_start_scan(irep, end, out);
+    if (found && out->insn != insn) found = NULL;
+  }
+#ifdef MRB_DEBUG
+  {
+    struct vm_insn d;
+    const mrb_code *exact = vm_insn_start_scan(irep, end, &d);
+    if (exact && d.insn != insn) exact = NULL;
+    mrb_assert(found == exact);
+  }
+#endif
+  return found;
+}
+
+/* `which` picks the operand holding the value: 0 for a, 1 for b. */
+static VM_COLD mrb_bool
+vm_coerce_ary(mrb_state *mrb, mrb_code op, int which)
 {
   mrb_callinfo *ci = mrb->c->ci;
-  /* PROTOTYPE: an unprefixed BBB instruction is 4 bytes.  The real one
-     recovers the start with the instruction-length table so that an
-     OP_EXT1/2/3 prefix is handled. */
   const mrb_irep *cirep = ci->proc->body.irep;
-  const mrb_code *start = ci->pc - 4;
-  if (start < cirep->iseq || *start != op) return FALSE;
+  struct vm_insn d;
+  const mrb_code *start = vm_insn_start(cirep, ci->pc, op, &d);
+  if (start == NULL) return FALSE;
 
-  uint32_t reg = start[opnd];
+  uint32_t reg = which ? d.b : d.a;
   mrb_value v = ci->stack[reg];
   struct RClass *c = mrb_class(mrb, v);
   mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(to_ary));
@@ -4536,7 +4686,7 @@ RETRY_TRY_BLOCK:
       }
       else {
         if (mrb_unlikely(mrb->conv_defined & MRB_CONV_TO_ARY) &&
-            vm_coerce_ary(mrb, OP_AREF, 2)) {
+            vm_coerce_ary(mrb, OP_AREF, 1)) {
           irep = &coerce_ary_irep;
           ci = mrb->c->ci;
           JUMP;
@@ -4564,7 +4714,7 @@ RETRY_TRY_BLOCK:
 
       if (mrb_unlikely(!mrb_array_p(v))) {
         if (mrb_unlikely(mrb->conv_defined & MRB_CONV_TO_ARY) &&
-            vm_coerce_ary(mrb, OP_APOST, 1)) {
+            vm_coerce_ary(mrb, OP_APOST, 0)) {
           irep = &coerce_ary_irep;
           ci = mrb->c->ci;
           JUMP;

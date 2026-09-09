@@ -323,3 +323,29 @@ assert('a -r library that loads still runs the program') do
   File.write(lib.path, "def libfn; 42; end\n")
   assert_mruby("42\n", "", true, ["-r", lib.path, "-e", "puts libfn"])
 end
+
+assert('implicit to_ary under an OP_EXT prefix') do
+  # A register number past 255 makes the compiler write `OP_AREF` and
+  # `OP_APOST` with an `OP_EXT1`/`OP_EXT2` prefix, which changes both where
+  # the instruction starts and how wide its operands are.  The conversion
+  # restarts the instruction it trapped on, so it has to find that start
+  # rather than step back a fixed number of bytes.  The shape needs a scope
+  # with a few hundred locals, so it is built here rather than written out.
+  prologue = [
+    "class ExtConv; def to_ary; [1, 2, 3]; end; end",
+    "def ext_id(v); v; end",
+    "a = ExtConv.new",
+    *(0...248).map { |i| "v#{i} = #{i}" },
+  ].join("\n")
+  nest = 6
+  wrap = ->(masgn) { "r = " + "ext_id(" * nest + masgn + ")" * nest }
+
+  [["(x, y = a)", "p [x, y]", "[1, 2]"],
+   ["(*y, z = a)", "p [y, z]", "[[1, 2], 3]"]].each do |masgn, show, expected|
+    script = Tempfile.new('ext_conv.rb')
+    script.write [prologue, wrap.call(masgn), show, "p r.equal?(a)"].join("\n") + "\n"
+    script.flush
+    o, = Open3.capture2(*(cmd_list(MRUBY_BIN) + [script.path]))
+    assert_equal "#{expected}\ntrue", o.chomp
+  end
+end
