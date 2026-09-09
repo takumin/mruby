@@ -5,8 +5,13 @@ class SprintfCrossStr
   def to_s; Fiber.yield; 'x'; end
 end
 
-# The walk over the format is convertible in the shape the array walks took,
-# but mrb_str_format() is what mrb_format() builds every message the core
-# raises with, and only the method's own frame can be handed over. It is left
-# to a stage that can pay for the walk to exist twice.
+# The conversion asked for here is made in the middle of the format walk,
+# whose place is a dozen locals -- where it is in the format, where it is in
+# the buffer it is still writing, the width and precision it has read for this
+# directive, which argument comes next. A resumed method carries an integer
+# and its own registers, and the walk that Array#join shares between the
+# method and the C API shows what carrying that much costs to write. Hoisting
+# the conversions ahead of the walk instead would change what a bad format
+# meets first: a `to_s` with something to say for itself would run before the
+# error that the format is malformed, rather than after it.
 assert_cross(:ng, 'sprintf %s sending to_s') { sprintf('%s', SprintfCrossStr.new) }
