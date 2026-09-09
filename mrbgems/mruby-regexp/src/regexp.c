@@ -2172,14 +2172,18 @@ sub_piece(mrb_state *mrb, mrb_value block, mrb_value hash, mrb_value matched)
 }
 
 /*
- * gsub core with a block or a Hash: the walk of `gsub`'s remaining two
- * replacement forms, `hash` standing where the block call would be when it
- * is given.
+ * gsub with a block or a Hash: the walk of `gsub`'s remaining two replacement
+ * forms, `hash` standing where the block call would be when it is given.
  *
- * `literal` carries the same meaning as in re_search().
+ * The block runs through the VM rather than on a nested mrb_vm_exec(), so a
+ * Fiber.yield written in it has no C frame to lose. What the walk carries
+ * cannot stay in C locals across that, and does not fit in the one integer
+ * the protocol carries either, so it goes into an array the frame holds: the
+ * block's own register takes it, the block moving inside. The offset the
+ * search started from is what the protocol carries.
  *
- * The loop yields from C the way CRuby's does: every match is published
- * before the block sees it, which is why a MatchData is built per turn.
+ * The loop publishes every match before the block sees it, as CRuby's does,
+ * which is why a MatchData is built per turn.
  *
  * The block can reach the receiver, and CRuby's `str_gsub` answers for a
  * block that changes it in three ways this loop follows.  It refuses one that
@@ -2198,97 +2202,201 @@ sub_piece(mrb_state *mrb, mrb_value block, mrb_value hash, mrb_value matched)
  * A Hash's default proc is as free to reach the receiver as a block is, so
  * the lookup form walks under the same answers.
  */
-static mrb_value
-re_gsub_walk(mrb_state *mrb, mrb_value re, mrb_value str, mrb_bool literal,
-             mrb_value block, mrb_value hash)
+static void str_assign(mrb_state *mrb, mrb_value str, mrb_value src);
+
+enum {
+  GSUB_BLK, GSUB_HASH, GSUB_RE, GSUB_RESULT, GSUB_LEN,
+  GSUB_LAST, GSUB_BEG, GSUB_END, GSUB_FLAGS, GSUB_ARENA, GSUB_MDREG, GSUB_NSLOTS
+};
+
+/* GSUB_FLAGS holds the two answers that do not change over the walk. */
+#define GSUB_F_LITERAL 1
+#define GSUB_F_BANG    2
+
+static mrb_value gsub_resume(mrb_state *mrb, mrb_value piece, mrb_int pos);
+
+/* Appends what the block or the Hash answered, together with the stretch of
+   the subject before the match, and answers with the offset the next search
+   starts from. Everything it reads comes from the frame, the receiver
+   included: the block has had its turn at both. */
+static mrb_int
+gsub_after(mrb_state *mrb, mrb_value piece, mrb_int pos)
 {
-  mrb_regexp_pattern *pat;
-  mrb_bool binary = re_search_binary(mrb, re, str, literal, &pat);
-  int cap_size = pat->num_captures * 2;
-  int captures[RE_MAX_CAPTURES * 2];
-  mrb_value result = mrb_str_new_capa(mrb, RSTRING_LEN(str));
-  /* The match the block was given last, and the offset it was found from:
-     what the closing search below starts from, or stands in for. */
-  mrb_value last_md = mrb_nil_value();
-  mrb_int last = 0;
-  mrb_int pos = 0;
-  /* The subject the walk is bounded by. Every turn checks its length against
-     the receiver the block hands back, so it holds for the whole walk; the
-     bytes and their reading are taken afresh after every block call. */
-  const char *s = RSTRING_PTR(str);
-  mrb_int slen = RSTRING_LEN(str);
-  int ai = mrb_gc_arena_save(mrb);
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value str = ci->stack[0];
+  mrb_value *sp = RARRAY_PTR(ci->stack[1]);
+  mrb_value result = sp[GSUB_RESULT];
+  mrb_int slen = mrb_integer(sp[GSUB_LEN]);
+  mrb_int beg = mrb_integer(sp[GSUB_BEG]), end = mrb_integer(sp[GSUB_END]);
+  mrb_bool literal = (mrb_integer(sp[GSUB_FLAGS]) & GSUB_F_LITERAL) != 0;
+  const char *s;
+  mrb_bool binary;
 
-  while (pos <= slen) {
-    memset(captures, -1, sizeof(int) * cap_size);
-    int n = mrb_re_exec(mrb, pat, s, slen, pos, captures, cap_size, binary);
-    re_check_exec_error(mrb, n);
-    if (n == 0) break;
-    mrb_int beg = captures[0], end = captures[1];
+  /* What the block did to the receiver while it had it. A change of length
+     moved every offset the walk holds, and the walk stops there. Bytes it
+     rewrote in place are read from where they are now, since the write can
+     have moved the buffer; whether they are read by byte can have changed
+     with them (`s.replace(s.b)`), and so can whether they spell characters
+     at all, which is asked again here as `__byte_search` would ask it. */
+  if (RSTRING_LEN(str) != slen) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "string modified");
+  }
+  s = RSTRING_PTR(str);
+  binary = re_subject_binary(mrb, str, literal);
 
-    mrb_value matched = re_byte_substr(mrb, str, beg, end - beg);
-    last_md = create_matchdata(mrb, literal ? mrb_nil_value() : re, str, captures, cap_size);
-    last = pos;
-    mrb_value piece = sub_piece(mrb, block, hash, matched);
-    /* What the block did to the receiver while it had it. A change of length
-       moved every offset the walk holds, and the walk stops there. Bytes it
-       rewrote in place are read from where they are now, since the write can
-       have moved the buffer; whether they are read by byte can have changed
-       with them (`s.replace(s.b)`), and so can whether they spell characters
-       at all, which is asked again here as `__byte_search` would ask it. */
-    if (RSTRING_LEN(str) != slen) {
-      mrb_raise(mrb, E_RUNTIME_ERROR, "string modified");
+  /* After the block and not before it, as in CRuby: the bytes before the
+     match are taken from the receiver as the block left it. */
+  if (beg > pos) re_cat_bytes(mrb, result, s + pos, beg - pos, binary);
+  mrb_str_cat_str(mrb, result, mrb_obj_as_string(mrb, piece));
+
+  /* A zero-width match carries the character it stood before, so that the
+     next search starts past a place the pattern would answer at again. */
+  if (beg == end) {
+    if (end < slen) {
+      int clen = mrb_re_charlen(s + end, s + slen, binary);
+      re_cat_bytes(mrb, result, s + end, clen, binary);
+      return end + clen;
     }
-    s = RSTRING_PTR(str);
-    binary = re_subject_binary(mrb, str, literal);
+    return end + 1;
+  }
+  return end;
+}
 
-    /* After the block and not before it, as in CRuby: the bytes before the
-       match are taken from the receiver as the block left it. */
-    if (beg > pos) re_cat_bytes(mrb, result, s + pos, beg - pos, binary);
-    mrb_str_cat_str(mrb, result, piece);
+/* The walk, resumable from any offset. */
+static mrb_value
+gsub_walk(mrb_state *mrb, mrb_int pos)
+{
+  int captures[RE_MAX_CAPTURES * 2];
 
-    /* A zero-width match carries the character it stood before, so that the
-       next search starts past a place the pattern would answer at again. */
-    if (beg == end) {
-      if (end < slen) {
-        int clen = mrb_re_charlen(s + end, s + slen, binary);
-        re_cat_bytes(mrb, result, s + end, clen, binary);
-        pos = end + clen;
+  for (;;) {
+    mrb_callinfo *ci = mrb->c->ci;
+    mrb_value str = ci->stack[0];
+    mrb_value *sp = RARRAY_PTR(ci->stack[1]);
+    mrb_int mdreg = mrb_integer(sp[GSUB_MDREG]);
+    mrb_int flags = mrb_integer(sp[GSUB_FLAGS]);
+    mrb_bool literal = (flags & GSUB_F_LITERAL) != 0;
+    mrb_int slen = mrb_integer(sp[GSUB_LEN]);
+    mrb_regexp_pattern *pat;
+    mrb_bool binary = re_search_binary(mrb, sp[GSUB_RE], str, literal, &pat);
+    int cap_size = pat->num_captures * 2;
+    const char *s = RSTRING_PTR(str);
+    mrb_value matched, piece;
+    mrb_int beg, end;
+    int n;
+
+    if (pos > slen) goto done;
+    /* Only downwards: the VM restores the arena to its own level when the
+       block returns, and that is below this one. Raising the index back would
+       take slots that have been let go of since. */
+    {
+      int ai = (int)mrb_fixnum(sp[GSUB_ARENA]);
+      if (mrb_gc_arena_save(mrb) > ai) mrb_gc_arena_restore(mrb, ai);
+    }
+    memset(captures, -1, sizeof(int) * cap_size);
+    n = mrb_re_exec(mrb, pat, s, slen, pos, captures, cap_size, binary);
+    re_check_exec_error(mrb, n);
+    if (n == 0) goto done;
+    beg = captures[0];
+    end = captures[1];
+
+    matched = re_byte_substr(mrb, str, beg, end - beg);
+    /* The match is kept by a register of the frame rather than by `$~`, which
+       the block is free to publish over. A register rather than the array
+       below it: a register takes no write barrier, and this is written on
+       every turn. */
+    ci->stack[mdreg] = create_matchdata(mrb, literal ? mrb_nil_value() : sp[GSUB_RE],
+                                       str, captures, cap_size);
+    sp[GSUB_LAST] = mrb_int_value(mrb, pos);
+    sp[GSUB_BEG] = mrb_int_value(mrb, beg);
+    sp[GSUB_END] = mrb_int_value(mrb, end);
+
+    if (mrb_nil_p(sp[GSUB_HASH])) {
+      if (mrb_block_cont_p(mrb, &piece, gsub_resume, pos, sp[GSUB_BLK], 1, &matched)) {
+        return piece;
       }
-      else {
-        pos = end + 1;
-      }
+      /* The call was made here rather than handed over, so the walk goes on
+         in its own loop rather than through the resume, which would cost a C
+         frame for every match. */
     }
     else {
-      pos = end;
+      piece = mrb_hash_get(mrb, sp[GSUB_HASH], matched);
     }
+    pos = gsub_after(mrb, piece, pos);
+    continue;
 
-    mrb_gc_arena_restore(mrb, ai);
-    /* Nothing allocates between the restore and this, so the match spends one
-       arena slot for the whole loop rather than one per turn. It cannot be
-       left to `$~` alone: the block is free to publish a match of its own. */
-    mrb_gc_protect(mrb, last_md);
-  }
+  done:
+    {
+      mrb_value result = sp[GSUB_RESULT];
 
-  if (pos < slen) {
-    re_cat_bytes(mrb, result, s + pos, slen - pos, binary);
-  }
+      if (pos < slen) re_cat_bytes(mrb, result, s + pos, slen - pos, binary);
 
-  if (mrb_nil_p(last_md)) {
-    /* The loop ends on a failed search, which clears the globals. A gsub that
-       matched nothing has nothing to restore and keeps the cleared state, as
-       CRuby does. */
-    clear_match_globals(mrb);
+      if (mrb_nil_p(ci->stack[mdreg])) {
+        /* The loop ends on a failed search, which clears the globals. A gsub
+           that matched nothing has nothing to restore and keeps the cleared
+           state, as CRuby does. */
+        clear_match_globals(mrb);
+      }
+      else if (re_subject_reads_as(mrb, str, ci->stack[mdreg])) {
+        set_match_globals(mrb, ci->stack[mdreg]);
+      }
+      else {
+        /* The closing search of `str_gsub`, on the receiver as the block left
+           it, which publishes what it finds or clears the globals for a
+           miss. */
+        exec_match(mrb, sp[GSUB_RE], str, mrb_integer(sp[GSUB_LAST]), literal, literal);
+      }
+      if (flags & GSUB_F_BANG) {
+        str_assign(mrb, str, result);
+        return str;
+      }
+      return result;
+    }
   }
-  else if (re_subject_reads_as(mrb, str, last_md)) {
-    set_match_globals(mrb, last_md);
-  }
-  else {
-    /* The closing search of `str_gsub`, on the receiver as the block left it,
-       which publishes what it finds or clears the globals for a miss. */
-    exec_match(mrb, re, str, last, literal, literal);
-  }
-  return result;
+}
+
+static mrb_value
+gsub_resume(mrb_state *mrb, mrb_value piece, mrb_int pos)
+{
+  return gsub_walk(mrb, gsub_after(mrb, piece, pos));
+}
+
+/* Sets the walk going: what it carries goes into the register the block came
+   in on, which mrb_get_args() has read by now. */
+static mrb_value
+gsub_start(mrb_state *mrb, mrb_value re, mrb_value str, mrb_bool literal,
+           mrb_value block, mrb_value hash, mrb_bool bang)
+{
+  mrb_value slots[GSUB_NSLOTS];
+  mrb_int flags = (literal ? GSUB_F_LITERAL : 0) | (bang ? GSUB_F_BANG : 0);
+
+  slots[GSUB_BLK] = block;
+  slots[GSUB_HASH] = hash;
+  slots[GSUB_RE] = re;
+  slots[GSUB_RESULT] = mrb_str_new_capa(mrb, RSTRING_LEN(str));
+  slots[GSUB_LEN] = mrb_int_value(mrb, RSTRING_LEN(str));
+  slots[GSUB_LAST] = mrb_fixnum_value(0);
+  slots[GSUB_BEG] = mrb_fixnum_value(0);
+  slots[GSUB_END] = mrb_fixnum_value(0);
+  slots[GSUB_FLAGS] = mrb_int_value(mrb, flags);
+  /* Where the arena stood when the walk started. Every turn leaves a match, a
+     matched string and a replacement behind, and the walk drops them at the
+     next turn: what it still needs -- the answer being built and the last
+     match -- is held by the array rather than by the arena. */
+  slots[GSUB_ARENA] = mrb_fixnum_value(mrb_gc_arena_save(mrb));
+  /* The array goes into the register the pattern came in on, which is at a
+     place the walk knows without asking; the last match goes into the one the
+     block came in on, whose place the array carries so that the walk does not
+     work it out on every turn. */
+  mrb_int mdreg = mrb_ci_bidx(mrb->c->ci);
+  mrb_value st;
+
+  slots[GSUB_MDREG] = mrb_fixnum_value(mdreg);
+  /* The array is made while the block is still in its register: nothing else
+     holds the block until the array does, and making the array can collect. */
+  st = mrb_ary_new_from_values(mrb, GSUB_NSLOTS, slots);
+  mrb->c->ci->stack[mdreg] = mrb_nil_value();
+  mrb->c->ci->stack[1] = st;
+  return gsub_walk(mrb, 0);
 }
 
 /*
@@ -2686,6 +2794,64 @@ sub_argnum_check(mrb_state *mrb, mrb_int argc, mrb_value block)
   }
 }
 
+/* `sub`'s answer: the subject the match was made on, with the match replaced.
+   Built from the snapshot the MatchData holds, so a block that mutated the
+   receiver changes nothing here. */
+static mrb_value
+str_sub_build(mrb_state *mrb, mrb_value md, mrb_value piece)
+{
+  mrb_match_data *m = DATA_GET_PTR(mrb, md, &matchdata_type, mrb_match_data);
+  mrb_int beg = m->captures[0], end = m->captures[1];
+  mrb_value source = m->source;
+  mrb_int slen = RSTRING_LEN(source);
+  mrb_value result = mrb_str_new_capa(mrb, slen);
+
+  mrb_str_cat_str(mrb, result, mrb_str_byte_subseq(mrb, source, 0, beg));
+  mrb_str_cat_str(mrb, result, mrb_obj_as_string(mrb, piece));
+  mrb_str_cat_str(mrb, result, mrb_str_byte_subseq(mrb, source, end, slen - end));
+  return result;
+}
+
+/* The match is read back from the register the pattern came in on: a C local
+   does not survive the return to the VM, and mrb_get_args() has taken what
+   was in that register. */
+static mrb_value
+str_sub_resume(mrb_state *mrb, mrb_value piece, mrb_int state)
+{
+  return str_sub_build(mrb, mrb->c->ci->stack[1], piece);
+}
+
+/* `sub!` builds its answer from the receiver as the block left it, which is
+   what rb_str_sub_bang does, so the length it had before the block is what
+   this is given to check against. */
+static mrb_value
+str_sub_bang_build(mrb_state *mrb, mrb_value self, mrb_value md, mrb_value piece, mrb_int len)
+{
+  mrb_match_data *m = DATA_GET_PTR(mrb, md, &matchdata_type, mrb_match_data);
+  mrb_int beg = m->captures[0], end = m->captures[1];
+  mrb_value result;
+
+  if (RSTRING_LEN(self) != len) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "string modified");
+  }
+  result = mrb_str_new_capa(mrb, len);
+  mrb_str_cat_str(mrb, result, mrb_str_byte_subseq(mrb, self, 0, beg));
+  mrb_str_cat_str(mrb, result, mrb_obj_as_string(mrb, piece));
+  mrb_str_cat_str(mrb, result, mrb_str_byte_subseq(mrb, self, end, len - end));
+  str_assign(mrb, self, result);
+  return self;
+}
+
+/* The match is read back from the register the pattern came in on, which is
+   where the walk put it before handing the block to the VM. */
+static mrb_value
+str_sub_bang_resume(mrb_state *mrb, mrb_value piece, mrb_int len)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  return str_sub_bang_build(mrb, ci->stack[0], ci->stack[1], piece, len);
+}
+
 /*
  * String#sub(pattern, replacement) / String#sub(pattern) { |match| }
  */
@@ -2738,14 +2904,16 @@ str_sub_m(mrb_state *mrb, mrb_value self)
   mrb_match_data *m = DATA_GET_PTR(mrb, md, &matchdata_type, mrb_match_data);
   mrb_int beg = m->captures[0], end = m->captures[1];
   mrb_value matched = re_byte_substr(mrb, m->source, beg, end - beg);
-  mrb_value piece = sub_piece(mrb, block, hash, matched);
-  mrb_value source = m->source;
-  mrb_int slen = RSTRING_LEN(source);
-  mrb_value result = mrb_str_new_capa(mrb, slen);
-  mrb_str_cat_str(mrb, result, mrb_str_byte_subseq(mrb, source, 0, beg));
-  mrb_str_cat_str(mrb, result, piece);
-  mrb_str_cat_str(mrb, result, mrb_str_byte_subseq(mrb, source, end, slen - end));
-  return result;
+
+  if (mrb_nil_p(hash)) {
+    /* The block runs through the VM rather than on a nested mrb_vm_exec(),
+       so a Fiber.yield written in it has no C frame to lose. The match goes
+       into the register the pattern came in on, for the resume to build the
+       answer from. */
+    mrb->c->ci->stack[1] = md;
+    return mrb_block_cont(mrb, str_sub_resume, 0, block, 1, &matched);
+  }
+  return str_sub_build(mrb, md, sub_piece(mrb, block, hash, matched));
 }
 
 /*
@@ -2818,16 +2986,15 @@ str_sub_bang(mrb_state *mrb, mrb_value self)
   mrb_match_data *m = DATA_GET_PTR(mrb, md, &matchdata_type, mrb_match_data);
   mrb_int beg = m->captures[0], end = m->captures[1];
   mrb_value matched = re_byte_substr(mrb, m->source, beg, end - beg);
-  mrb_value piece = sub_piece(mrb, block, hash, matched);
-  if (RSTRING_LEN(self) != len) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "string modified");
+
+  if (mrb_nil_p(hash)) {
+    /* As in `sub`: the block goes to the VM, the match into the register the
+       pattern came in on, and the length the receiver had before the block
+       rides back as the state the resume is given. */
+    mrb->c->ci->stack[1] = md;
+    return mrb_block_cont(mrb, str_sub_bang_resume, len, block, 1, &matched);
   }
-  mrb_value result = mrb_str_new_capa(mrb, len);
-  mrb_str_cat_str(mrb, result, mrb_str_byte_subseq(mrb, self, 0, beg));
-  mrb_str_cat_str(mrb, result, piece);
-  mrb_str_cat_str(mrb, result, mrb_str_byte_subseq(mrb, self, end, len - end));
-  str_assign(mrb, self, result);
-  return self;
+  return str_sub_bang_build(mrb, self, md, sub_piece(mrb, block, hash, matched), len);
 }
 
 /*
@@ -2870,7 +3037,7 @@ str_gsub_m(mrb_state *mrb, mrb_value self)
     }
   }
   if (literal) pattern = quote_to_regexp(mrb, pattern);
-  return re_gsub_walk(mrb, pattern, self, literal, block, hash);
+  return gsub_start(mrb, pattern, self, literal, block, hash, FALSE);
 }
 
 /*
@@ -2914,18 +3081,95 @@ str_gsub_bang(mrb_state *mrb, mrb_value self)
   }
   if (literal) pattern = quote_to_regexp(mrb, pattern);
   if (mrb_nil_p(re_search(mrb, pattern, self, 0, literal))) return mrb_nil_value();
-  mrb_value str;
   if (argc == 2 && mrb_nil_p(hash)) {
-    str = re_gsub_str(mrb, pattern, self, mrb_obj_as_string(mrb, a1));
+    mrb_value str = re_gsub_str(mrb, pattern, self, mrb_obj_as_string(mrb, a1));
+    str_assign(mrb, self, str);
+    return self;
   }
-  else if (!mrb_nil_p(hash)) {
-    str = re_gsub_walk(mrb, pattern, self, literal, mrb_nil_value(), hash);
+  /* The walk answers with the receiver, having assigned what it built: it
+     returns to the VM where the block does, so there is no C tail here for
+     the assignment to sit in. */
+  if (!mrb_nil_p(hash)) {
+    return gsub_start(mrb, pattern, self, literal, mrb_nil_value(), hash, TRUE);
   }
-  else {
-    str = re_gsub_walk(mrb, pattern, self, literal, block, mrb_nil_value());
+  return gsub_start(mrb, pattern, self, literal, block, mrb_nil_value(), TRUE);
+}
+
+enum {
+  SCAN_BLK, SCAN_PAT, SCAN_LEN, SCAN_LAST, SCAN_LITERAL,
+  SCAN_ARENA, SCAN_MDREG, SCAN_NSLOTS
+};
+
+static mrb_value scan_resume(mrb_state *mrb, mrb_value result, mrb_int pos);
+
+/* The walk, resumable from any offset. What it carries is read from the array
+   the frame holds; the receiver comes from the frame itself. */
+static mrb_value
+scan_walk(mrb_state *mrb, mrb_int pos)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+  mrb_value *sp = RARRAY_PTR(ci->stack[1]);
+  mrb_int mdreg = mrb_integer(sp[SCAN_MDREG]);
+  mrb_int len = mrb_integer(sp[SCAN_LEN]);
+  mrb_bool literal = mrb_test(sp[SCAN_LITERAL]);
+  int ai = (int)mrb_fixnum(sp[SCAN_ARENA]);
+
+  while (pos <= len) {
+    mrb_value md, yv, r;
+    mrb_match_data *m;
+    mrb_int beg, end;
+
+    /* Only downwards, as in `gsub`: the VM restores the arena to its own
+       level when the block returns, and that is below this one. */
+    if (mrb_gc_arena_save(mrb) > ai) mrb_gc_arena_restore(mrb, ai);
+    if (RSTRING_LEN(self) != len) {
+      mrb_raise(mrb, E_RUNTIME_ERROR, "string modified");
+    }
+    md = exec_match(mrb, sp[SCAN_PAT], self, pos, FALSE, literal);
+    if (mrb_nil_p(md)) break;
+    sp[SCAN_LAST] = mrb_int_value(mrb, pos);
+    /* The match is kept by a register of the frame rather than by `$~`, which
+       the block is free to publish over, and rather than by the array, which
+       would take a write barrier on every turn. */
+    ci->stack[mdreg] = md;
+    m = DATA_GET_PTR(mrb, md, &matchdata_type, mrb_match_data);
+    beg = m->captures[0];
+    end = m->captures[1];
+    yv = (m->num_captures == 1)
+      ? re_byte_substr(mrb, m->source, beg, end - beg)
+      : matchdata_to_ary(mrb, md, 1);
+    pos = (beg == end) ? end + 1 : end;
+    if (mrb_block_cont_p(mrb, &r, scan_resume, pos, sp[SCAN_BLK], 1, &yv)) {
+      return r;
+    }
+    /* The call was made here rather than handed over, so the walk goes on in
+       its own loop; it ran Ruby all the same, so the frame is read afresh.
+       The match is kept by the array rather than by `$~`, which the block is
+       free to publish over. */
+    ci = mrb->c->ci;
+    self = ci->stack[0];
+    sp = RARRAY_PTR(ci->stack[1]);
   }
-  str_assign(mrb, self, str);
+
+  if (!mrb_nil_p(ci->stack[mdreg])) {
+    if (re_subject_reads_as(mrb, self, ci->stack[mdreg])) {
+      set_match_globals(mrb, ci->stack[mdreg]);
+    }
+    else {
+      if (RSTRING_LEN(self) != len) {
+        mrb_raise(mrb, E_RUNTIME_ERROR, "string modified");
+      }
+      exec_match(mrb, sp[SCAN_PAT], self, mrb_integer(sp[SCAN_LAST]), FALSE, literal);
+    }
+  }
   return self;
+}
+
+static mrb_value
+scan_resume(mrb_state *mrb, mrb_value result, mrb_int pos)
+{
+  return scan_walk(mrb, pos);
 }
 
 /*
@@ -2963,44 +3207,39 @@ str_scan_m(mrb_state *mrb, mrb_value self)
      cleared state. And as in `gsub`, a receiver that still reads as it did
      when the last match was made gets that match republished, and the
      search runs only where it reads differently. */
-  mrb_int len = RSTRING_LEN(self);
-  mrb_int pos = 0, last = 0;
-  mrb_value last_md = mrb_nil_value();
-  int ai = mrb_gc_arena_save(mrb);
+  {
+    /* What the walk carries past the block, which C locals cannot hold: the
+       block returns to the VM, and only the frame survives that. The frame
+       holds the receiver, the pattern and the block, and the block's own
+       register takes the array below, the block moving into it. */
+    mrb_value slots[SCAN_NSLOTS];
 
-  while (pos <= len) {
-    if (RSTRING_LEN(self) != len) {
-      mrb_raise(mrb, E_RUNTIME_ERROR, "string modified");
-    }
-    mrb_value md = exec_match(mrb, pattern, self, pos, FALSE, literal);
-    if (mrb_nil_p(md)) break;
-    last = pos;
-    last_md = md;
-    mrb_match_data *m = DATA_GET_PTR(mrb, md, &matchdata_type, mrb_match_data);
-    mrb_int beg = m->captures[0], end = m->captures[1];
-    mrb_value yv = (m->num_captures == 1)
-      ? re_byte_substr(mrb, m->source, beg, end - beg)
-      : matchdata_to_ary(mrb, md, 1);
-    mrb_yield(mrb, block, yv);
-    pos = (beg == end) ? end + 1 : end;
-    mrb_gc_arena_restore(mrb, ai);
-    /* As in re_gsub_walk(): the block is free to publish a match of its own,
-       so `$~` alone cannot be what keeps the last match alive. */
-    mrb_gc_protect(mrb, last_md);
-  }
+    slots[SCAN_BLK] = block;
+    slots[SCAN_PAT] = pattern;
+    slots[SCAN_LEN] = mrb_int_value(mrb, RSTRING_LEN(self));
+    slots[SCAN_LAST] = mrb_fixnum_value(0);
+    slots[SCAN_LITERAL] = mrb_bool_value(literal);
+    /* Where the arena stood when the walk started: every turn leaves a match
+       and a matched string behind, and the walk drops them at the next turn.
+       What it still needs is held by the array. */
+    slots[SCAN_ARENA] = mrb_fixnum_value(mrb_gc_arena_save(mrb));
+    /* As in `gsub`: the array takes the register the pattern came in on, and
+       the last match the one the block came in on, whose place the array
+       carries. */
+    mrb_int mdreg = mrb_ci_bidx(mrb->c->ci);
+    mrb_value st;
 
-  if (!mrb_nil_p(last_md)) {
-    if (re_subject_reads_as(mrb, self, last_md)) {
-      set_match_globals(mrb, last_md);
-    }
-    else {
-      if (RSTRING_LEN(self) != len) {
-        mrb_raise(mrb, E_RUNTIME_ERROR, "string modified");
-      }
-      exec_match(mrb, pattern, self, last, FALSE, literal);
-    }
+    slots[SCAN_MDREG] = mrb_fixnum_value(mdreg);
+    /* The array is made while the block is still in its register: nothing
+       else holds the block until the array does, and making the array can
+       collect. */
+    st = mrb_ary_new_from_values(mrb, SCAN_NSLOTS, slots);
+    mrb->c->ci->stack[mdreg] = mrb_nil_value();
+    mrb->c->ci->stack[1] = st;
   }
-  return self;
+  /* The block runs through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in it has no C frame to lose. */
+  return scan_walk(mrb, 0);
 }
 
 /*
