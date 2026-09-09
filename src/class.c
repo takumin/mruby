@@ -2607,6 +2607,14 @@ mrb_mod_ancestors(mrb_state *mrb, mrb_value self)
   return result;
 }
 
+/* `initialize` answers with its receiver rather than with the block's value,
+   and the receiver is what the frame holds in its first register. */
+static mrb_value
+mod_initialize_resume(mrb_state *mrb, mrb_value result, mrb_int state)
+{
+  return mrb->c->ci->stack[0];
+}
+
 static mrb_value
 mrb_mod_initialize(mrb_state *mrb, mrb_value mod)
 {
@@ -2615,7 +2623,9 @@ mrb_mod_initialize(mrb_state *mrb, mrb_value mod)
   boot_initmod(mrb, m); /* bootstrap a newly initialized module */
   mrb_get_args(mrb, "|&", &b);
   if (!mrb_nil_p(b)) {
-    mrb_yield_with_class(mrb, b, 1, &mod, mod, m);
+    /* The body runs through the VM rather than on a nested mrb_vm_exec(), so
+       a Fiber.yield written in it has no C frame to lose. */
+    return mrb_block_cont_under(mrb, mod_initialize_resume, 0, b, 1, &mod, mod, m);
   }
   return mod;
 }
@@ -3519,6 +3529,14 @@ mrb_obj_new(mrb_state *mrb, struct RClass *c, mrb_int argc, const mrb_value *arg
   return obj;
 }
 
+/* `initialize` answers with its receiver rather than with the block's value,
+   and the receiver is what the frame holds in its first register. */
+static mrb_value
+class_initialize_resume(mrb_state *mrb, mrb_value result, mrb_int state)
+{
+  return mrb->c->ci->stack[0];
+}
+
 static mrb_value
 mrb_class_initialize(mrb_state *mrb, mrb_value obj)
 {
@@ -3527,9 +3545,18 @@ mrb_class_initialize(mrb_state *mrb, mrb_value obj)
   mrb_value a, b;
   mrb_get_args(mrb, "|C&", &a, &b);
   if (!mrb_nil_p(b)) {
-    mrb_yield_with_class(mrb, b, 1, &obj, obj, c);
+    /* The body runs through the VM rather than on a nested mrb_vm_exec(), so
+       a Fiber.yield written in it has no C frame to lose. */
+    return mrb_block_cont_under(mrb, class_initialize_resume, 0, b, 1, &obj, obj, c);
   }
   return obj;
+}
+
+/* The class the body was run for, put where the resume can read it. */
+static mrb_value
+class_new_resume(mrb_state *mrb, mrb_value result, mrb_int state)
+{
+  return mrb->c->ci->stack[1];
 }
 
 static mrb_value
@@ -3545,7 +3572,20 @@ mrb_class_new_class(mrb_state *mrb, mrb_value cv)
   mrb_class_inherited(mrb, mrb_class_ptr(super), mrb_class_ptr(new_class));
   mrb_sym mid = MRB_SYM(initialize);
   if (mrb_func_basic_p(mrb, new_class, mid, mrb_class_initialize)) {
-    mrb_class_initialize(mrb, new_class);
+    if (mrb_nil_p(blk)) {
+      mrb_class_initialize(mrb, new_class);
+    }
+    else {
+      /* The default `initialize` does nothing but run the block, and the block
+         is run from here rather than through that call: the body answers into
+         this frame, and this is the frame that has to answer with the class.
+         The class goes into a register to be read from there, C locals not
+         surviving the return; the register is free, mrb_get_args() having
+         taken what came in on it. */
+      mrb->c->ci->stack[1] = new_class;
+      return mrb_block_cont_under(mrb, class_new_resume, 0, blk, 1, &new_class,
+                                  new_class, mrb_class_ptr(new_class));
+    }
   }
   else {
     mrb_funcall_with_block(mrb, new_class, mid, n, &super, blk);
