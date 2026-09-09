@@ -1778,6 +1778,18 @@ typedef mrb_value mrb_cont_func(mrb_state *mrb, mrb_value result, mrb_int state)
 MRB_API mrb_value mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
                                    mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv);
 
+/**
+ * Hands a block call to the VM and asks to be resumed with its result.
+ *
+ * What mrb_funcall_cont() does for a method a C method sends, this does for a
+ * block a C method runs. A method that walks something and calls the block on
+ * each element uses it once per element, carrying the position in `state`.
+ *
+ * Falls back the same way, and to mrb_yield() rather than to a method call.
+ */
+MRB_API mrb_value mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                                 mrb_value blk, mrb_int argc, const mrb_value *argv);
+
 /* mrb_gc_protect() leaves the object in the arena */
 MRB_API void mrb_gc_protect(mrb_state *mrb, mrb_value obj);
 /* mrb_gc_register() keeps the object from GC. */

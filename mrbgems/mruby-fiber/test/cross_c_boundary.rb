@@ -100,3 +100,5 @@ end
 
 assert_cross(:ok, 'mrb_funcall_tail')           { FuncallTail.tail(CrossTail.new, :run) }
 assert_cross(:ng, 'mrb_funcall_tail falling back') { FuncallTail.from_c(CrossTail.new, :run) }
+assert_cross(:ok, 'mrb_block_cont')             { BlockCont.detect([1]) { Fiber.yield; true } }
+assert_cross(:ng, 'a block run by re-entering')  { BlockCont.detect_nested([1]) { Fiber.yield; true } }

@@ -2298,6 +2298,61 @@ nested:
   }
 }
 
+MRB_API mrb_value
+mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+               mrb_value blk, mrb_int argc, const mrb_value *argv)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  const struct RProc *p;
+  struct RClass *tc;
+  mrb_value bself;
+  mrb_sym mid;
+
+  check_block(mrb, blk);
+
+  /* The two conditions mrb_funcall_cont() checks, less the method lookup it
+     has no need of here. The frame this method runs on has to be one this
+     mrb_vm_exec() will return through, and the block has to be written in
+     Ruby: a C block returns to whoever called it rather than to the VM loop,
+     and cannot suspend. */
+  if (ci->cci != CINFO_NONE) goto nested;
+  p = mrb_proc_ptr(blk);
+  if (MRB_PROC_CFUNC_P(p) || p->body.irep == NULL) goto nested;
+
+  bself = mrb_proc_get_self(mrb, p, &tc);
+  /* A block reports the method it was written in, which is what a backtrace
+     and `__method__` read. yield_with_attr() takes it from the same place. */
+  mid = MRB_PROC_ENV_P(p) ? p->e.env->mid : ci->mid;
+
+  {
+    ptrdiff_t idx = ci - mrb->c->cibase;
+    mrb_int n = mrb_ci_nregs(ci);
+    mrb_callinfo *ci2 = cipush(mrb, n, CINFO_CONT, tc, p, NULL, mid, 0);
+    mrb_int keep, nregs;
+
+    funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci2);
+    ci2->stack[0] = bself;
+    keep = ci_bidx(ci2) + 1;
+    nregs = p->body.irep->nregs;
+    if (nregs < keep) {
+      stack_extend(mrb, keep);
+    }
+    else {
+      stack_extend(mrb, nregs);
+      stack_clear(ci2->stack + keep, nregs - keep);
+    }
+    cont_push(mrb, k, state, idx);
+    cipush(mrb, 0, 0, NULL, NULL, NULL, 0, 0);
+    return bself;
+  }
+
+nested:
+  {
+    mrb_value v = mrb_yield_argv(mrb, blk, argc, argv);
+    return k(mrb, v, state);
+  }
+}
+
 #define RBREAK_TAG_FOREACH(f) \
   f(RBREAK_TAG_BREAK, 0) \
   f(RBREAK_TAG_JUMP, 1) \

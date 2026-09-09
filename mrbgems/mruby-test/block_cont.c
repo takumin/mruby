@@ -1,0 +1,88 @@
+/*
+** block_cont.c - what a C method's block call through the VM does
+**
+** mrb_block_cont() is mrb_funcall_cont() for a block rather than for a
+** method a C method sends: the call goes to the VM and the C method is
+** resumed with its result, so the walk around it never sits on the C stack.
+** A method converted with it looks like BlockCont.detect below, which is
+** Array#index's shape with nothing else in it.
+*/
+
+#include <mruby.h>
+#include <mruby/array.h>
+#include <mruby/class.h>
+
+static mrb_value block_cont_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The walk, resumable from any index. The array and the block are read from
+   the frame rather than held in C locals: the walk returns to the VM on every
+   element, and only the frame survives that. */
+static mrb_value
+block_cont_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value ary = ci->stack[1];
+  mrb_value blk = ci->stack[2];
+
+  /* The block may have changed the array's length, so it is read afresh. */
+  if (i >= RARRAY_LEN(ary)) return mrb_nil_value();
+  return mrb_block_cont(mrb, block_cont_resume, i, blk, 1, &RARRAY_PTR(ary)[i]);
+}
+
+static mrb_value
+block_cont_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) {
+    mrb_value ary = mrb->c->ci->stack[1];
+    if (i < RARRAY_LEN(ary)) return RARRAY_PTR(ary)[i];
+    return mrb_nil_value();
+  }
+  return block_cont_walk(mrb, i + 1);
+}
+
+/* BlockCont.detect(ary) { |x| ... } -> the first element the block accepts */
+static mrb_value
+block_cont_detect(mrb_state *mrb, mrb_value self)
+{
+  mrb_value ary, blk;
+
+  mrb_get_args(mrb, "A&", &ary, &blk);
+  if (mrb_nil_p(blk)) mrb_raise(mrb, E_ARGUMENT_ERROR, "no block given");
+  return block_cont_walk(mrb, 0);
+}
+
+/* BlockCont.detect_nested(ary) { |x| ... } -> the same, the old way
+ *
+ * mrb_yield() on every element, so a test can say the two answer alike
+ * rather than only that the new one answers something.
+ */
+static mrb_value
+block_cont_detect_nested(mrb_state *mrb, mrb_value self)
+{
+  mrb_value ary, blk;
+
+  mrb_get_args(mrb, "A&", &ary, &blk);
+  if (mrb_nil_p(blk)) mrb_raise(mrb, E_ARGUMENT_ERROR, "no block given");
+  for (mrb_int i = 0; i < RARRAY_LEN(ary); i++) {
+    mrb_value v = RARRAY_PTR(ary)[i];
+    if (mrb_test(mrb_yield(mrb, blk, v))) return v;
+  }
+  return mrb_nil_value();
+}
+
+/* BlockCont.depth -> the number of frames below this one */
+static mrb_value
+block_cont_depth(mrb_state *mrb, mrb_value self)
+{
+  return mrb_int_value(mrb, (mrb_int)(mrb->c->ci - mrb->c->cibase));
+}
+
+void
+mrb_init_test_block_cont(mrb_state *mrb)
+{
+  struct RClass *c = mrb_define_module(mrb, "BlockCont");
+
+  mrb_define_module_function(mrb, c, "detect", block_cont_detect, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
+  mrb_define_module_function(mrb, c, "detect_nested", block_cont_detect_nested, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
+  mrb_define_module_function(mrb, c, "depth", block_cont_depth, MRB_ARGS_NONE());
+}
