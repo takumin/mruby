@@ -24,6 +24,21 @@ assert('mrb_block_cont leaves the caller where it found it') do
   assert_equal before, BlockCont.depth
 end
 
+assert('mrb_block_cont_under runs the block as a class body') do
+  a = Class.new
+  b = Class.new
+  assert_equal a, BlockCont.under(a) { def in_body; :body; end }
+  assert_equal b, BlockCont.under_nested(b) { def in_body; :body; end }
+  assert_equal :body, a.new.in_body
+  assert_equal :body, b.new.in_body
+  # the answer is the class the body ran for, not what the body answered
+  assert_equal a, BlockCont.under(a) { :something_else }
+  assert_equal a, BlockCont.under(a) { self }
+  before = BlockCont.depth
+  BlockCont.under(a) { 1 }
+  assert_equal before, BlockCont.depth
+end
+
 assert('break out of a block that ran through mrb_block_cont') do
   assert_equal :broke, (BlockCont.detect([1, 2, 3]) { |x| break :broke if x == 2; false })
   before = BlockCont.depth

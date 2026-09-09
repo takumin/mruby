@@ -2313,9 +2313,13 @@ nested:
   }
 }
 
-MRB_API mrb_value
-mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
-               mrb_value blk, mrb_int argc, const mrb_value *argv)
+/* mrb_block_cont() and mrb_block_cont_under() in one. `c` is the class the
+   block is to run under, and NULL asks for the one the block was written in,
+   which is what an ordinary yield gives it. */
+static inline mrb_value
+block_cont_attr(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                mrb_value blk, mrb_int argc, const mrb_value *argv,
+                mrb_value self, struct RClass *c)
 {
   mrb_callinfo *ci = mrb->c->ci;
   const struct RProc *p;
@@ -2334,7 +2338,13 @@ mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
   p = mrb_proc_ptr(blk);
   if (MRB_PROC_CFUNC_P(p) || p->body.irep == NULL) goto nested;
 
-  bself = mrb_proc_get_self(mrb, p, &tc);
+  if (c) {
+    bself = self;
+    tc = c;
+  }
+  else {
+    bself = mrb_proc_get_self(mrb, p, &tc);
+  }
   /* A block reports the method it was written in, which is what a backtrace
      and `__method__` read. yield_with_attr() takes it from the same place. */
   mid = MRB_PROC_ENV_P(p) ? p->e.env->mid : ci->mid;
@@ -2371,6 +2381,13 @@ mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
       if (nregs > keep) stack_clear(regs + keep, nregs - keep);
     }
     regs[0] = bself;
+    if (c) {
+      /* A block given a class of its own is a class body: a `def` in it lands
+         on that class, and a visibility written in it ends with the block.
+         yield_with_attr() marks the frame the same way. */
+      MRB_CI_SET_VISIBILITY_BREAK(ci2);
+      MRB_CI_SET_GIVEN_CLASS(ci2);
+    }
     cont_push(mrb, k, state, idx);
     cipush(mrb, 0, 0, NULL, NULL, NULL, 0, 0);
     return bself;
@@ -2378,9 +2395,26 @@ mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
 
 nested:
   {
-    mrb_value v = mrb_yield_argv(mrb, blk, argc, argv);
+    mrb_value v = c ? mrb_yield_with_class(mrb, blk, argc, argv, self, c)
+                    : mrb_yield_argv(mrb, blk, argc, argv);
     return k(mrb, v, state);
   }
+}
+
+MRB_API mrb_value
+mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+               mrb_value blk, mrb_int argc, const mrb_value *argv)
+{
+  return block_cont_attr(mrb, k, state, blk, argc, argv, mrb_nil_value(), NULL);
+}
+
+MRB_API mrb_value
+mrb_block_cont_under(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                     mrb_value blk, mrb_int argc, const mrb_value *argv,
+                     mrb_value self, struct RClass *c)
+{
+  mrb_assert(c != NULL);
+  return block_cont_attr(mrb, k, state, blk, argc, argv, self, c);
 }
 
 #define RBREAK_TAG_FOREACH(f) \

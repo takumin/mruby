@@ -106,6 +106,43 @@ block_cont_apply_nested(mrb_state *mrb, mrb_value self)
   return mrb_yield_argv(mrb, blk, RARRAY_LEN(ary), RARRAY_PTR(ary));
 }
 
+/* BlockCont.under(mod) { ... } -> mod
+ *
+ * The block runs as a class body: self and the class a `def` in it lands on
+ * are both `mod`, and the answer is `mod` rather than the block's value,
+ * which is the shape Class.new and Module.new have.
+ */
+static mrb_value
+block_cont_under_resume(mrb_state *mrb, mrb_value result, mrb_int state)
+{
+  /* The module is read from the register it came in on: a C local does not
+     survive the return to the VM. */
+  return mrb->c->ci->stack[1];
+}
+
+static mrb_value
+block_cont_under(mrb_state *mrb, mrb_value self)
+{
+  mrb_value mod, blk;
+
+  mrb_get_args(mrb, "C&", &mod, &blk);
+  if (mrb_nil_p(blk)) mrb_raise(mrb, E_ARGUMENT_ERROR, "no block given");
+  return mrb_block_cont_under(mrb, block_cont_under_resume, 0, blk, 1, &mod,
+                              mod, mrb_class_ptr(mod));
+}
+
+/* BlockCont.under_nested(mod) { ... } -> mod, the same the old way */
+static mrb_value
+block_cont_under_nested(mrb_state *mrb, mrb_value self)
+{
+  mrb_value mod, blk;
+
+  mrb_get_args(mrb, "C&", &mod, &blk);
+  if (mrb_nil_p(blk)) mrb_raise(mrb, E_ARGUMENT_ERROR, "no block given");
+  mrb_yield_with_class(mrb, blk, 1, &mod, mod, mrb_class_ptr(mod));
+  return mod;
+}
+
 /* BlockCont.depth -> the number of frames below this one */
 static mrb_value
 block_cont_depth(mrb_state *mrb, mrb_value self)
@@ -122,5 +159,7 @@ mrb_init_test_block_cont(mrb_state *mrb)
   mrb_define_module_function(mrb, c, "detect_nested", block_cont_detect_nested, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
   mrb_define_module_function(mrb, c, "apply", block_cont_apply, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
   mrb_define_module_function(mrb, c, "apply_nested", block_cont_apply_nested, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
+  mrb_define_module_function(mrb, c, "under", block_cont_under, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
+  mrb_define_module_function(mrb, c, "under_nested", block_cont_under_nested, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
   mrb_define_module_function(mrb, c, "depth", block_cont_depth, MRB_ARGS_NONE());
 }

@@ -1790,6 +1790,20 @@ MRB_API mrb_value mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int sta
 MRB_API mrb_value mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
                                  mrb_value blk, mrb_int argc, const mrb_value *argv);
 
+/**
+ * The same, for a block that runs under a class of its own.
+ *
+ * What mrb_yield_with_class() does for a nested call, this does for a call
+ * handed to the VM: the block runs with `self` for a receiver and `c` for the
+ * class a `def` in it lands on, which is what a class or module body is.
+ *
+ * The value the block answers with is rarely the answer of a method written
+ * this way, so `k` reads what it is to return from its own frame's registers.
+ */
+MRB_API mrb_value mrb_block_cont_under(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                                       mrb_value blk, mrb_int argc, const mrb_value *argv,
+                                       mrb_value self, struct RClass *c);
+
 /* mrb_gc_protect() leaves the object in the arena */
 MRB_API void mrb_gc_protect(mrb_state *mrb, mrb_value obj);
 /* mrb_gc_register() keeps the object from GC. */
