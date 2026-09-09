@@ -1637,7 +1637,15 @@ mrb_hash_default(mrb_state *mrb, mrb_value hash)
   if (MRB_RHASH_DEFAULT_P(hash)) {
     if (MRB_RHASH_PROCDEFAULT_P(hash)) {
       if (!given) return mrb_nil_value();
-      return mrb_funcall_argv2(mrb, RHASH_PROCDEFAULT(hash), MRB_SYM(call), hash, key);
+      /* the proc's result is this method's result; see mrb_hash_aget() */
+      mrb_value blk = RHASH_PROCDEFAULT(hash);
+      struct RClass *tc;
+      mrb_value bself = mrb_proc_get_self(mrb, mrb_proc_ptr(blk), &tc);
+      mrb_value args[2];
+
+      args[0] = hash;
+      args[1] = key;
+      return mrb_yield_cont(mrb, blk, bself, 2, args);
     }
     else {
       return RHASH_IFNONE(hash);
