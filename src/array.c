@@ -1644,6 +1644,38 @@ ary_index_resume(mrb_state *mrb, mrb_value result, mrb_int i)
   return ary_index_walk(mrb, i + 1);
 }
 
+static mrb_value ary_index_eq_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The search for an equal element, resumable from any index. `==` is answered
+   in C wherever mrb_equal_in_c() can answer it, and the walk returns to the VM
+   for the one written in Ruby. */
+static mrb_value
+ary_index_eq_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+  mrb_value obj = ci->stack[1];
+
+  /* A `==` written in Ruby may grow or shrink the array under us, so the
+     length and the pointer are read afresh each turn. */
+  for (; i < RARRAY_LEN(self); i++) {
+    int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+    if (r > 0) return mrb_int_value(mrb, i);
+    if (r < 0) {
+      return mrb_funcall_cont(mrb, ary_index_eq_resume, i,
+                              RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj);
+    }
+  }
+  return mrb_nil_value();
+}
+
+static mrb_value
+ary_index_eq_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) return mrb_int_value(mrb, i);
+  return ary_index_eq_walk(mrb, i + 1);
+}
+
 static mrb_value
 mrb_ary_index_m(mrb_state *mrb, mrb_value self)
 {
@@ -1653,16 +1685,10 @@ mrb_ary_index_m(mrb_state *mrb, mrb_value self)
     return mrb_funcall_argv1(mrb, self, MRB_SYM(to_enum), mrb_symbol_value(MRB_SYM(index)));
   }
 
-  if (mrb_nil_p(blk)) {
-    for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-      if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-        return mrb_int_value(mrb, i);
-      }
-    }
-    return mrb_nil_value();
-  }
-  /* The block runs through the VM rather than on a nested mrb_vm_exec(), so a
-     Fiber.yield written in it has no C frame to lose. */
+  /* Both walks run through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in the block, or in a `==` the search reaches, has no
+     C frame to lose. */
+  if (mrb_nil_p(blk)) return ary_index_eq_walk(mrb, 0);
   return ary_index_walk(mrb, 0);
 }
 
@@ -1708,6 +1734,44 @@ ary_rindex_resume(mrb_state *mrb, mrb_value result, mrb_int i)
   return ary_rindex_walk(mrb, i - 1);
 }
 
+static mrb_value ary_rindex_eq_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The backward search for an equal element, resumable from any index. */
+static mrb_value
+ary_rindex_eq_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+  mrb_value obj = ci->stack[1];
+
+  for (; i >= 0; i--) {
+    /* A `==` written in Ruby may have shortened the array, which leaves the
+       index past its end. The C loop answers that by bringing the index back
+       to the new length and letting the step below take it inside; reading at
+       the index first would read past the end. */
+    if (i >= RARRAY_LEN(self)) {
+      i = RARRAY_LEN(self);
+      continue;
+    }
+    {
+      int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+      if (r > 0) return mrb_int_value(mrb, i);
+      if (r < 0) {
+        return mrb_funcall_cont(mrb, ary_rindex_eq_resume, i,
+                                RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj);
+      }
+    }
+  }
+  return mrb_nil_value();
+}
+
+static mrb_value
+ary_rindex_eq_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) return mrb_int_value(mrb, i);
+  return ary_rindex_eq_walk(mrb, i - 1);
+}
+
 static mrb_value
 mrb_ary_rindex_m(mrb_state *mrb, mrb_value self)
 {
@@ -1717,20 +1781,10 @@ mrb_ary_rindex_m(mrb_state *mrb, mrb_value self)
     return mrb_funcall_argv1(mrb, self, MRB_SYM(to_enum), mrb_symbol_value(MRB_SYM(rindex)));
   }
 
-  if (mrb_nil_p(blk)) {
-    for (mrb_int i = RARRAY_LEN(self) - 1; i >= 0; i--) {
-      if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-        return mrb_int_value(mrb, i);
-      }
-      mrb_int len = RARRAY_LEN(self);
-      if (i > len) {
-        i = len;
-      }
-    }
-    return mrb_nil_value();
-  }
-  /* The block runs through the VM rather than on a nested mrb_vm_exec(), so a
-     Fiber.yield written in it has no C frame to lose. */
+  /* Both walks run through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in the block, or in a `==` the search reaches, has no
+     C frame to lose. */
+  if (mrb_nil_p(blk)) return ary_rindex_eq_walk(mrb, RARRAY_LEN(self) - 1);
   return ary_rindex_walk(mrb, RARRAY_LEN(self) - 1);
 }
 

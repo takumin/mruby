@@ -589,6 +589,25 @@ assert("Array (Longish inline array)") do
   assert_equal({Array=>200}, h)
 end
 
+assert('Array#rindex with a == that shortens the array') do
+  # The search steps down from the end, so a `==` that shortens the array
+  # leaves the index past the new end. What the step has to do there is come
+  # back inside the array rather than read where the index points.
+  shrink = Class.new do
+    def initialize(a)
+      @a = a
+    end
+
+    def ==(other)
+      @a.replace([1])
+      false
+    end
+  end
+  a = (2..40).to_a
+  a.push(shrink.new(a))
+  assert_equal 0, a.rindex(1)
+end
+
 assert("Array#rindex") do
   class Sneaky
     def ==(*)

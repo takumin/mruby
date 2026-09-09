@@ -75,9 +75,10 @@ assert_cross(:ok, 'method_missing')             { CrossMissing.new.nosuch }
 assert_cross(:ok, 'Comparable#< sending <=>')   { CrossCmp.new(1) < CrossCmp.new(2) }
 assert_cross(:ok, 'Array#+ sending to_ary')     { [1] + [CrossAry.new] }
 assert_cross(:ok, 'respond_to? sending respond_to_missing?') { CrossMissing.new.respond_to?(:nosuch) }
+assert_cross(:ok, 'Array#index sending ==')     { [CrossEq.new].index(CrossEq.new) }
+assert_cross(:ok, 'Array#rindex sending ==')    { [CrossEq.new].rindex(CrossEq.new) }
 
 assert_cross(:ng, 'Array#sort sending <=>')     { [CrossCmp.new(2), CrossCmp.new(1)].sort }
-assert_cross(:ng, 'Array#index sending ==')     { [CrossEq.new].index(CrossEq.new) }
 assert_cross(:ng, 'Array#delete sending ==')    { [CrossEq.new].delete(CrossEq.new) }
 assert_cross(:ng, 'Hash#[] sending hash')       { ({CrossEq.new => 1})[CrossEq.new] }
 assert_cross(:ng, 'Array#inspect sending inspect') { [CrossStr.new].inspect }
