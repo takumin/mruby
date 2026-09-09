@@ -1957,28 +1957,51 @@ mrb_ary_entry(mrb_value ary, mrb_int n)
   return ARY_PTR(a)[n];
 }
 
-static mrb_value
-join_ary(mrb_state *mrb, mrb_value ary, mrb_value sep)
+/* What the walk carries. The frame's second register holds it where the walk
+   may hand a `to_s` to the VM; where it may not -- mrb_ary_join() is C API as
+   well as the method behind `join`, and a C caller goes on after it returns --
+   it is a local of the caller and JOIN_HAND says so. */
+enum {
+  JOIN_SEP, JOIN_RESULT, JOIN_STACK, JOIN_ARY, JOIN_IDX, JOIN_HAND, JOIN_NSLOTS
+};
+
+static mrb_value join_resume(mrb_state *mrb, mrb_value result, mrb_int state);
+
+/* Appends what `to_s` answered, as mrb_type_convert() answers for it: an
+   answer that is not a String is answered for with the default `to_s`. */
+static void
+join_cat(mrb_state *mrb, mrb_value str, mrb_value elem, mrb_value result)
 {
-  mrb_value result = mrb_str_new_capa(mrb, 64);
-  /* Explicit stack of (array, index) frames instead of C recursion, so a
-     deeply nested (non-cyclic) array cannot overflow the native stack.
-     Nested results are concatenated verbatim, so appending every element
-     into one shared buffer in depth-first order yields the same bytes a
-     per-level recursion would.  The stack is a GC-tracked array; an
-     exception unwind reclaims it, so there is no leak. */
-  mrb_value stack = mrb_ary_new(mrb);
-  mrb_int idx = 0;
+  mrb_str_cat_str(mrb, str, mrb_string_p(result) ? result : mrb_any_to_s(mrb, elem));
+}
+
+/* Explicit stack of (array, index) frames instead of C recursion, so a deeply
+   nested (non-cyclic) array cannot overflow the native stack. Nested results
+   are concatenated verbatim, so appending every element into one shared
+   buffer in depth-first order yields the same bytes a per-level recursion
+   would. The stack is a GC-tracked array; an exception unwind reclaims it, so
+   there is no leak. */
+static mrb_value
+join_walk(mrb_state *mrb, mrb_value st)
+{
+  mrb_value *sp = RARRAY_PTR(st);
+  mrb_value sep = sp[JOIN_SEP];
+  mrb_value result = sp[JOIN_RESULT];
+  mrb_value stack = sp[JOIN_STACK];
+  mrb_bool hand = mrb_test(sp[JOIN_HAND]);
+  mrb_value ary = sp[JOIN_ARY];
+  mrb_int idx = mrb_fixnum(sp[JOIN_IDX]);
 
   for (;;) {
     while (idx < RARRAY_LEN(ary)) {
       mrb_value val = RARRAY_PTR(ary)[idx];
+      mrb_bool as_array = FALSE;
+
       if (idx > 0 && !mrb_nil_p(sep)) {
         mrb_str_cat_str(mrb, result, sep);
       }
       idx++;
 
-      mrb_bool as_array = FALSE;
       switch (mrb_type(val)) {
       case MRB_TT_ARRAY:
         as_array = TRUE;
@@ -2000,6 +2023,23 @@ join_ary(mrb_state *mrb, mrb_value ary, mrb_value sep)
             as_array = TRUE;
             break;
           }
+          /* The element's `to_s` runs through the VM rather than on a nested
+             mrb_vm_exec(), so a Fiber.yield written in it has no C frame to
+             lose. An element with no `to_s` at all is left to
+             mrb_obj_as_string(), which answers for that with the TypeError
+             the conversion protocol raises rather than a NoMethodError. */
+          if (hand && mrb_respond_to(mrb, val, MRB_SYM(to_s))) {
+            mrb_value v;
+
+            sp[JOIN_IDX] = mrb_fixnum_value(idx);
+            if (mrb_funcall_cont_p(mrb, &v, join_resume, 0, val, MRB_SYM(to_s), 0, NULL)) {
+              return v;
+            }
+            /* The call was made here rather than handed over, so the walk
+               goes on in its own loop. */
+            join_cat(mrb, result, val, v);
+            continue;
+          }
         }
         val = mrb_obj_as_string(mrb, val);
         break;
@@ -2020,6 +2060,7 @@ join_ary(mrb_state *mrb, mrb_value ary, mrb_value sep)
         mrb_ary_push(mrb, stack, mrb_fixnum_value(idx));
         ary = val;
         idx = 0;
+        mrb_ary_set(mrb, st, JOIN_ARY, ary);
       }
       else {
         mrb_str_cat_str(mrb, result, val);
@@ -2030,9 +2071,47 @@ join_ary(mrb_state *mrb, mrb_value ary, mrb_value sep)
     /* ascend: restore the parent frame */
     idx = mrb_fixnum(mrb_ary_pop(mrb, stack));
     ary = mrb_ary_pop(mrb, stack);
+    mrb_ary_set(mrb, st, JOIN_ARY, ary);
   }
 
   return result;
+}
+
+static mrb_value
+join_resume(mrb_state *mrb, mrb_value result, mrb_int state)
+{
+  mrb_value st = mrb->c->ci->stack[1];
+  mrb_value *sp = RARRAY_PTR(st);
+  mrb_value ary = sp[JOIN_ARY];
+  mrb_int idx = mrb_fixnum(sp[JOIN_IDX]);
+
+  /* The element asked was the one before the index, which the walk had moved
+     on before it asked. */
+  join_cat(mrb, sp[JOIN_RESULT],
+           (idx > 0 && idx <= RARRAY_LEN(ary)) ? RARRAY_PTR(ary)[idx-1] : mrb_nil_value(),
+           result);
+  return join_walk(mrb, st);
+}
+
+/* Makes what the walk carries. `hand` says whether a `to_s` may be handed to
+   the VM, which only a caller that ends with the walk can allow. */
+static mrb_value
+join_start(mrb_state *mrb, mrb_value ary, mrb_value sep, mrb_bool hand)
+{
+  mrb_value slots[JOIN_NSLOTS];
+  mrb_value st;
+
+  slots[JOIN_SEP] = sep;
+  slots[JOIN_RESULT] = mrb_str_new_capa(mrb, 64);
+  slots[JOIN_STACK] = mrb_ary_new(mrb);
+  slots[JOIN_ARY] = ary;
+  slots[JOIN_IDX] = mrb_fixnum_value(0);
+  slots[JOIN_HAND] = mrb_bool_value(hand);
+  st = mrb_ary_new_from_values(mrb, JOIN_NSLOTS, slots);
+  /* The register the separator came in on carries it, so that the resume can
+     find it; mrb_get_args() has read what was there. */
+  if (hand) mrb->c->ci->stack[1] = st;
+  return join_walk(mrb, st);
 }
 
 /**
@@ -2055,7 +2134,9 @@ mrb_ary_join(mrb_state *mrb, mrb_value ary, mrb_value sep)
   if (!mrb_nil_p(sep)) {
     sep = mrb_obj_as_string(mrb, sep);
   }
-  return join_ary(mrb, ary, sep);
+  /* A C caller goes on after this returns, so nothing here may be handed to
+     the VM. `Array#join` allows it; this is the API behind it. */
+  return join_start(mrb, ary, sep, FALSE);
 }
 
 /*
@@ -2075,7 +2156,8 @@ mrb_ary_join_m(mrb_state *mrb, mrb_value ary)
   mrb_value sep = mrb_nil_value();
 
   mrb_get_args(mrb, "|S!", &sep);
-  return mrb_ary_join(mrb, ary, sep);
+  /* The walk ends this method, so a `to_s` it reaches can go to the VM. */
+  return join_start(mrb, ary, sep, TRUE);
 }
 
 /*

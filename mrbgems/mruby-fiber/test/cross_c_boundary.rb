@@ -81,21 +81,18 @@ assert_cross(:ok, 'Array#delete sending ==')    { [CrossEq.new].delete(CrossEq.n
 assert_cross(:ok, 'Array#sort sending <=>')     { [CrossCmp.new(2), CrossCmp.new(1)].sort }
 assert_cross(:ok, 'Array#inspect sending inspect') { [CrossStr.new].inspect }
 
+assert_cross(:ok, 'Array#join sending to_s')    { [CrossStr.new].join }
+
 # The sends below are not ones the continuation protocol reaches, each for a
 # reason of its own.
 #
 # `hash` is asked from inside the table's own walk over its buckets, whose
 # place is a C iterator rather than an index a resumed method could carry.
 #
-# `join` builds its answer through mrb_ary_join(), which C callers use as well
-# as the method; only the method's frame can be handed over, so the walk would
-# have to exist twice.
-#
 # The last three are sent by an instruction rather than by a method. An
 # instruction has no frame of its own to be resumed on, and no spare register
 # to build a call in: the compiler hands it exactly the ones it names.
 assert_cross(:ng, 'Hash#[] sending hash')       { ({CrossEq.new => 1})[CrossEq.new] }
-assert_cross(:ng, 'Array#join sending to_s')    { [CrossStr.new].join }
 assert_cross(:ng, 'string interpolation sending to_s') { "#{CrossStr.new}" }
 assert_cross(:ng, 'const_missing')              { CrossConst::NoSuch }
 assert_cross(:ng, '&obj sending to_proc')       { [1].map(&CrossProc.new) }
