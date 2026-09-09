@@ -2285,6 +2285,14 @@ cont_resume(mrb_state *mrb, mrb_value *vp, ptrdiff_t idx)
 {
   struct mrb_cont_entry e = cont_take(mrb->c->conts, idx);
 
+  /* The answer sits in a register of the frame that has just been popped, and
+     the collector nils those. It goes into the arena for as long as the
+     continuation might allocate before it has put the answer somewhere of its
+     own. An immediate needs none of that, which is what nearly every
+     comparison answers with. */
+  if (!mrb_immediate_p(*vp)) {
+    mrb_gc_protect(mrb, *vp);
+  }
   *vp = e.func(mrb, *vp, e.state);
   if (mrb_unlikely(mrb->exc != NULL)) return -1;
   return (mrb->c->ci - mrb->c->cibase != idx) ? 1 : 0;
