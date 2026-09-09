@@ -24,10 +24,6 @@ assert_cross(:ok, 'Kernel#loop')          { n = 0; loop { Fiber.yield; n += 1; b
 assert_cross(:ok, 'Module#module_eval')   { Object.module_eval { Fiber.yield } }
 assert_cross(:ok, 'Object#instance_eval') { Object.new.instance_eval { Fiber.yield } }
 
-# --- blocks a C method runs by re-entering the VM --------------------------
-assert_cross(:ng, 'Array#sort with a block')   { [3, 1, 2].sort { |a, b| Fiber.yield; a <=> b } }
-assert_cross(:ng, 'Array#sort! with a block')  { [3, 1, 2].sort! { |a, b| Fiber.yield; a <=> b } }
-
 # --- blocks a C method passes to the VM instead of re-entering it ----------
 assert_cross(:ok, "a Hash's default proc")     { h = Hash.new { Fiber.yield; 1 }; h[:x] }
 assert_cross(:ok, 'Hash#default with a proc')  { Hash.new { Fiber.yield; 1 }.default(:x) }
@@ -37,6 +33,8 @@ assert_cross(:ok, 'Array#rindex with a block') { [1, 2].rindex { Fiber.yield; fa
 assert_cross(:ok, 'Array.new with a block')    { Array.new(2) { Fiber.yield; 0 } }
 assert_cross(:ok, 'Class.new with a block')    { Class.new { Fiber.yield } }
 assert_cross(:ok, 'Module.new with a block')   { Module.new { Fiber.yield } }
+assert_cross(:ok, 'Array#sort with a block')   { [3, 1, 2].sort { |a, b| Fiber.yield; a <=> b } }
+assert_cross(:ok, 'Array#sort! with a block')  { [3, 1, 2].sort! { |a, b| Fiber.yield; a <=> b } }
 
 # --- protocol methods a C method sends -------------------------------------
 class CrossEq

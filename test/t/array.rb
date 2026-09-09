@@ -601,6 +601,19 @@ assert("Array#rindex") do
   assert_equal 0, $a.rindex(1)
 end
 
+assert('Array#sort with a block on an array long enough for the heap') do
+  a = Array.new(100) { |i| (i * 37) % 100 }
+  assert_equal (0...100).to_a, a.sort { |x, y| x <=> y }
+  assert_equal (0...100).to_a.reverse, a.sort { |x, y| y <=> x }
+  b = Array.new(100) { |i| i % 5 }
+  assert_equal b.sort, b.sort { |x, y| x <=> y }
+end
+
+assert('Array#sort! with a block that changes the array length') do
+  a = [3, 1, 2, 5, 4]
+  assert_raise(RuntimeError) { a.sort! { |x, y| a.pop; x <=> y } }
+end
+
 assert('Array#sort!') do
   a = [3, 2, 1]
   assert_equal a, a.sort!      # sort! returns self.

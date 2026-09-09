@@ -2573,6 +2573,272 @@ insertion_sort(mrb_state *mrb, mrb_value ary, mrb_value *a, mrb_int size, mrb_va
   }
 }
 
+/* --- the sort a block orders -------------------------------------------
+   The block runs through the VM, so the sort cannot keep its place in C
+   locals: every comparison returns to the VM and comes back through
+   sort_resume(). What it keeps goes into an array instead. The frame has no
+   register to spare (`sort!` takes no argument, so it holds the receiver and
+   the block alone), so the block moves into that array too and the array
+   takes the register the block came in on.
+
+   The order the comparisons come in is the one the C sort makes: an
+   insertion sort for a short array, and for a longer one a heap built with
+   sift-downs and emptied by Floyd's bottom-up deletion. Each of them sifts
+   by swapping rather than by carrying a value in a hole, which leaves the
+   element being sifted in the array where the resumed sort can find it
+   again. The two arrangements make the same comparisons and answer alike. */
+enum {
+  SORT_ARY,                     /* the array being sorted */
+  SORT_BLK,                     /* the block that orders it */
+  SORT_LEN,                     /* the length it had when the sort started */
+  SORT_HSIZE,                   /* how much of it is still a heap */
+  SORT_I,                       /* the outer loop's place */
+  SORT_INDEX,                   /* the sift's place, and the insertion's */
+  SORT_CHILD,
+  SORT_PHASE,
+  SORT_X,                       /* where the pair the block was handed came
+                                   from, for the error naming that pair */
+  SORT_Y,
+  SORT_NSLOTS
+};
+
+/* Each comparison returns to the VM, so each has a name to come back to. */
+enum {
+  SORT_PC_SIFT,                 /* at the top of a sift-down */
+  SORT_PC_CHILD,                /* the answer says which child is the greater */
+  SORT_PC_PARENT,               /* the answer says whether the child outranks
+                                   the element being sifted */
+  SORT_PC_DOWN,                 /* at the top of Floyd's descent */
+  SORT_PC_DOWN_CHILD,           /* the answer says which child to descend to */
+  SORT_PC_UP,                   /* at the top of Floyd's climb */
+  SORT_PC_UP_ANS,               /* the answer says whether to climb further */
+  SORT_PC_STEP,                 /* the sift is done: move the outer loop on */
+  SORT_PC_INS,                  /* the answer says whether the pair the
+                                   insertion is at is out of order */
+  SORT_PC_INS_STEP
+};
+
+enum { SORT_PHASE_BUILD, SORT_PHASE_EXTRACT, SORT_PHASE_INSERT };
+
+static mrb_value sort_resume(mrb_state *mrb, mrb_value result, mrb_int pc);
+
+/* Runs the sort until it needs the block again, or until it is done. `cmp`
+   answers the comparison it was waiting on: true when the first of the pair
+   is to come after the second.
+
+   The array holding the sort's place is read into locals here and written
+   back only where the block is asked, which is the only way out. */
+static mrb_value
+sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
+{
+  mrb_value st = mrb->c->ci->stack[1];
+  mrb_value *sp = RARRAY_PTR(st);
+  mrb_value ary = sp[SORT_ARY];
+  mrb_int len = mrb_fixnum(sp[SORT_LEN]);
+  mrb_int hsize = mrb_fixnum(sp[SORT_HSIZE]);
+  mrb_int i = mrb_fixnum(sp[SORT_I]);
+  mrb_int index = mrb_fixnum(sp[SORT_INDEX]);
+  mrb_int child = mrb_fixnum(sp[SORT_CHILD]);
+  mrb_int phase = mrb_fixnum(sp[SORT_PHASE]);
+  mrb_value *a;
+  mrb_value args[2];
+
+  /* The block is free to change the array under the sort, and the sort reads
+     it afresh on the way back in. A change of length is refused rather than
+     sorted around, as the C loop refuses it. */
+  if (RARRAY_LEN(ary) != len) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "array modified during sort");
+  }
+  a = RARRAY_PTR(ary);
+
+#define SORT_SWAP(x, y) do {                    \
+    mrb_value tmp_ = a[x];                      \
+    a[x] = a[y];                                \
+    a[y] = tmp_;                                \
+  } while (0)
+
+  /* The insertion sort keeps two of the slots, and writes back those. */
+#define SORT_ASK_INS(next, x, y) do {           \
+    sp[SORT_I] = mrb_fixnum_value(i);           \
+    sp[SORT_INDEX] = mrb_fixnum_value(index);   \
+    sp[SORT_X] = mrb_fixnum_value(x);           \
+    sp[SORT_Y] = mrb_fixnum_value(y);           \
+    args[0] = a[x];                             \
+    args[1] = a[y];                             \
+    return mrb_block_cont(mrb, sort_resume, next, sp[SORT_BLK], 2, args); \
+  } while (0)
+
+#define SORT_ASK(next, x, y) do {               \
+    sp[SORT_HSIZE] = mrb_fixnum_value(hsize);   \
+    sp[SORT_I] = mrb_fixnum_value(i);           \
+    sp[SORT_INDEX] = mrb_fixnum_value(index);   \
+    sp[SORT_CHILD] = mrb_fixnum_value(child);   \
+    sp[SORT_PHASE] = mrb_fixnum_value(phase);   \
+    sp[SORT_X] = mrb_fixnum_value(x);           \
+    sp[SORT_Y] = mrb_fixnum_value(y);           \
+    args[0] = a[x];                             \
+    args[1] = a[y];                             \
+    return mrb_block_cont(mrb, sort_resume, next, sp[SORT_BLK], 2, args); \
+  } while (0)
+
+  for (;;) {
+    switch (pc) {
+    case SORT_PC_INS:
+      /* the pair at index-1 and index is out of order: move it down one and
+         look at the pair below */
+      if (cmp) {
+        SORT_SWAP(index-1, index);
+        index--;
+        if (index > 0) SORT_ASK_INS(SORT_PC_INS, index-1, index);
+      }
+      /* fall through: this element is where it belongs, so the next one
+         comes up */
+    case SORT_PC_INS_STEP:
+      i++;
+      if (i >= len) return ary;
+      index = i;
+      SORT_ASK_INS(SORT_PC_INS, i-1, i);
+
+    case SORT_PC_SIFT:
+      child = 2 * index + 1;
+      if (child >= hsize) {
+        pc = SORT_PC_STEP;
+        continue;
+      }
+      if (child + 1 < hsize) SORT_ASK(SORT_PC_CHILD, child+1, child);
+      SORT_ASK(SORT_PC_PARENT, child, index);
+
+    case SORT_PC_CHILD:
+      if (cmp) child++;
+      SORT_ASK(SORT_PC_PARENT, child, index);
+
+    case SORT_PC_PARENT:
+      if (!cmp) {
+        pc = SORT_PC_STEP;
+        continue;
+      }
+      SORT_SWAP(index, child);
+      index = child;
+      pc = SORT_PC_SIFT;
+      continue;
+
+    case SORT_PC_DOWN:
+      /* Floyd's descent: the element taken off the root travels down with
+         the hole, so it is compared against nothing on the way. */
+      child = 2 * index + 1;
+      if (child + 1 < hsize) SORT_ASK(SORT_PC_DOWN_CHILD, child+1, child);
+      if (child < hsize) {
+        SORT_SWAP(index, child);
+        index = child;
+      }
+      pc = SORT_PC_UP;
+      continue;
+
+    case SORT_PC_DOWN_CHILD:
+      if (cmp) child++;
+      SORT_SWAP(index, child);
+      index = child;
+      pc = SORT_PC_DOWN;
+      continue;
+
+    case SORT_PC_UP:
+      if (index == 0) {
+        pc = SORT_PC_STEP;
+        continue;
+      }
+      SORT_ASK(SORT_PC_UP_ANS, index, (index-1)/2);
+
+    case SORT_PC_UP_ANS:
+      if (!cmp) {
+        pc = SORT_PC_STEP;
+        continue;
+      }
+      child = (index-1)/2;
+      SORT_SWAP(index, child);
+      index = child;
+      pc = SORT_PC_UP;
+      continue;
+
+    case SORT_PC_STEP:
+      if (phase == SORT_PHASE_BUILD) {
+        i--;
+        if (i >= 0) {
+          index = i;
+          pc = SORT_PC_SIFT;
+          continue;
+        }
+        /* the heap stands: start taking the root off it */
+        phase = SORT_PHASE_EXTRACT;
+        i = len - 1;
+      }
+      else {
+        i--;
+      }
+      if (i < 1) return ary;    /* one element left, and it is in place */
+      SORT_SWAP(0, i);
+      hsize = i;
+      index = 0;
+      pc = SORT_PC_DOWN;
+      continue;
+
+    default:
+      mrb_assert(0);
+      return ary;
+    }
+  }
+#undef SORT_ASK
+#undef SORT_ASK_INS
+#undef SORT_SWAP
+}
+
+static mrb_value
+sort_resume(mrb_state *mrb, mrb_value result, mrb_int pc)
+{
+  mrb_value st = mrb->c->ci->stack[1];
+  mrb_value ary = RARRAY_PTR(st)[SORT_ARY];
+  mrb_value x = mrb_nil_value(), y = mrb_nil_value();
+  mrb_int ix = mrb_fixnum(RARRAY_PTR(st)[SORT_X]);
+  mrb_int iy = mrb_fixnum(RARRAY_PTR(st)[SORT_Y]);
+
+  /* cmpint() names the pair in the error it raises for an answer it cannot
+     read, and asks the answer itself where that answer is an object rather
+     than an Integer. The pair comes from the array as it stands now, the
+     block having had its turn at it. */
+  if (ix < RARRAY_LEN(ary)) x = RARRAY_PTR(ary)[ix];
+  if (iy < RARRAY_LEN(ary)) y = RARRAY_PTR(ary)[iy];
+  return sort_step(mrb, pc, cmpint(mrb, result, x, y) > 0);
+}
+
+/* Sorts `ary` by the block, through the VM rather than on a nested
+   mrb_vm_exec(), so a Fiber.yield written in the block has no C frame to
+   lose. Answers with `ary` once the sort is done. */
+static mrb_value
+sort_by_block(mrb_state *mrb, mrb_value ary, mrb_value blk, mrb_int len)
+{
+  mrb_value slots[SORT_NSLOTS];
+  mrb_bool small = len <= SMALL_ARRAY_SORT_THRESHOLD;
+  mrb_int i;
+
+  for (i = 0; i < SORT_NSLOTS; i++) {
+    slots[i] = mrb_fixnum_value(0);
+  }
+  slots[SORT_ARY] = ary;
+  slots[SORT_BLK] = blk;
+  slots[SORT_LEN] = mrb_fixnum_value(len);
+  slots[SORT_HSIZE] = mrb_fixnum_value(len);
+  /* A short array is sorted by insertion, which asks the block fewer times
+     than a heap does, and each of those asks is a call into the VM. */
+  slots[SORT_PHASE] = mrb_fixnum_value(small ? SORT_PHASE_INSERT : SORT_PHASE_BUILD);
+  if (!small) {
+    slots[SORT_I] = mrb_fixnum_value(len / 2 - 1);
+    slots[SORT_INDEX] = mrb_fixnum_value(len / 2 - 1);
+  }
+  /* The register the block came in on carries the state from here on. */
+  mrb->c->ci->stack[1] = mrb_ary_new_from_values(mrb, SORT_NSLOTS, slots);
+
+  return sort_step(mrb, small ? SORT_PC_INS_STEP : SORT_PC_SIFT, FALSE);
+}
+
 /*
  *  call-seq:
  *    array.sort! -> self
@@ -2658,6 +2924,9 @@ mrb_ary_sort_bang(mrb_state *mrb, mrb_value ary)
   }
 
   /* General path */
+  if (!mrb_nil_p(blk)) {
+    return sort_by_block(mrb, ary, blk, n);
+  }
   if (n <= SMALL_ARRAY_SORT_THRESHOLD) {
     /* Use insertion sort for small arrays */
     insertion_sort(mrb, ary, a, n, blk);
