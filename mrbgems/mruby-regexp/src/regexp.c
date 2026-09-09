@@ -2488,7 +2488,16 @@ str_aset(mrb_state *mrb, mrb_value str)
   mrb_get_args(mrb, "*", &argv, &argc);
 
   if (argc < 1 || !regexp_arg_p(mrb, argv[0])) {
-    if (argc >= 3 && !mrb_nil_p(argv[2])) mrb_ensure_string_type(mrb, argv[2]);
+    if (argc >= 3 && !mrb_nil_p(argv[2])) {
+      /* The three-argument form leaves the replacement last, which is the
+         one shape of `[]=` a restart can answer: `str[i] = x` is OP_SETIDX,
+         whose block register the trampoline's frame would lie over.  Core's
+         `S~!` says the same for a build without this gem. */
+      if (mrb_unlikely(!mrb_string_p(argv[2]))) {
+        mrb_convert_arg(mrb, 2, MRB_CONV_TO_STR);
+      }
+      mrb_ensure_string_type(mrb, argv[2]);
+    }
     if (argc < 2 || argc > 3) mrb_argnum_error(mrb, argc, 2, 3);
     mrb_value replace = argv[argc-1];
     mrb_str_aset(mrb, str, argv[0], argc == 2 ? mrb_undef_value() : argv[1], replace);

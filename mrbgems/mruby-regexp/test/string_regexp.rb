@@ -1424,4 +1424,11 @@ assert("a pattern that is not the last argument keeps the type error") do
   assert_raise(TypeError) { "abc".sub(o, "x") }
   assert_raise(TypeError) { "abc".gsub(o, "x") }
   assert_raise(TypeError) { "abc".index(o, 0) }
+
+  # `str[i] = x` is OP_SETIDX, which the restart cannot answer either; the
+  # three-argument form is a plain send and converts.
+  s = "abcdef"
+  s[1, 2] = o
+  assert_equal("abdef", s)
+  assert_raise(TypeError) { "abc"[1] = o }
 end
