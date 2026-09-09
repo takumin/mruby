@@ -2675,7 +2675,7 @@ mrb_init_numeric(mrb_state *mrb)
   MRB_SET_INSTANCE_TT(integer, MRB_TT_INTEGER);
   MRB_UNDEF_ALLOCATOR(integer);
   mrb_undef_class_method_id(mrb, integer, MRB_SYM(new));
-  MRB_MT_INIT_ROM(mrb, integer, integer_rom_entries);
+  MRB_MT_INIT_ROM_CONV(mrb, integer, integer_rom_entries, MRB_CONV_TO_INT);
   mrb_define_class_method_id(mrb, integer, MRB_SYM(__ensure), int_s_ensure, MRB_ARGS_REQ(1));
 
   /* Fixnum Class for compatibility */

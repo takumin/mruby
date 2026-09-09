@@ -3139,15 +3139,18 @@ mrb_vm_interrupt(mrb_state *mrb)
 
    `Array.__ensure` is a check ON its argument, so a `to_ary` that gives
    back something else raises here instead of letting the restart trap a
-   second time.  That is what removes the need for an "already tried" mark. */
+   second time.  That is what removes the need for an "already tried" mark.
+   It is handed the object that was asked as well, so that the error names
+   that object the way CRuby's does rather than naming only the type the
+   conversion produced. */
 static const mrb_code coerce_ary_iseq[] = {
   OP_ENTER, 0x04, 0x00, 0x00,   /* 1:0:0:0:0:0:0 */
-  OP_MOVE, 2, 0,                /* R2 = self */
-  OP_SEND, 2, 0, 0,             /* R2 = R2.to_ary */
-  OP_MOVE, 3, 1,                /* R3 = Array */
-  OP_MOVE, 4, 2,
-  OP_SEND, 3, 1, 1,             /* R3 = R3.__ensure(R4) */
-  OP_RETURN, 3,
+  OP_MOVE, 3, 0,                /* R3 = self */
+  OP_SEND, 3, 0, 0,             /* R3 = R3.to_ary */
+  OP_MOVE, 2, 1,                /* R2 = Array */
+  OP_MOVE, 4, 0,                /* R4 = the object that was asked */
+  OP_SEND, 2, 1, 2,             /* R2 = R2.__ensure(R3, R4) */
+  OP_RETURN, 2,
 };
 
 MRB_PRESYM_DEFINE_VAR_AND_INITER(coerce_ary_syms, 2, MRB_SYM(to_ary), MRB_SYM(__ensure))

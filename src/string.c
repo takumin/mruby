@@ -4523,7 +4523,7 @@ mrb_init_string(mrb_state *mrb)
   mrb->string_class = s = mrb_define_class_id(mrb, MRB_SYM(String), mrb->object_class);             /* 15.2.10 */
   MRB_SET_INSTANCE_TT(s, MRB_TT_STRING);
 
-  MRB_MT_INIT_ROM(mrb, s, string_rom_entries);
+  MRB_MT_INIT_ROM_CONV(mrb, s, string_rom_entries, MRB_CONV_TO_STR);
 
   mrb_define_method_id(mrb, mrb->kernel_module, MRB_SYM(__ENCODING__), mrb_encoding, MRB_ARGS_NONE());
 }

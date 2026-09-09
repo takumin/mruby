@@ -3111,8 +3111,10 @@ assert('multiple assignment converts the right-hand side with to_ary') do
   assert_same o, x
   assert_nil y
 
-  # to_ary that gives back something else is a TypeError, raised on the result
-  assert_raise_with_message(TypeError, "Integer cannot be converted to Array") do
+  # to_ary that gives back something else is a TypeError, and the message
+  # names the object that was asked, not just what came back
+  assert_raise_with_message(TypeError,
+      "can't convert MasgnBadToAry to Array (MasgnBadToAry#to_ary gives Integer)") do
     x, y = MasgnBadToAry.new
   end
   assert_raise(TypeError) do

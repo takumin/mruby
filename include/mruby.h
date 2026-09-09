@@ -517,10 +517,12 @@ struct mrb_state {
   uint32_t bop_redefined;
 
   /* One bit per implicit conversion protocol, set the first time a method of
-     that name is installed anywhere.  Nothing in the core defines one, so a
-     program that never writes `to_ary` and friends lets the coercion trap
-     answer from this word instead of walking an ancestor chain for a name
-     that is not there.  Conservative: never cleared by `undef`. */
+     that name is installed anywhere.  The core defines `to_str`, `to_int`
+     and `to_hash` on String, Integer and Hash, so those three bits stand
+     from boot; nothing in it defines `to_ary`, so a program that never
+     writes one lets the coercion trap answer from this word instead of
+     walking an ancestor chain for a name that is not there.  Conservative:
+     never cleared by `undef`. */
   uint8_t conv_defined;
   mrb_method_t bop_builtin[MRB_BOP_SLOT_COUNT];
 

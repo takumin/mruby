@@ -73,7 +73,10 @@ mt_put(mrb_state *mrb, mrb_mt_tbl *t, mrb_sym sym, uint32_t flags, union mrb_mt_
 {
   mrb_mt_entry *entries = t->ptr;
 
-  mrb->conv_defined |= conv_bit(sym);
+  uint8_t conv = conv_bit(sym);
+  if (mrb_unlikely(conv != 0)) {
+    mrb->conv_defined |= conv;
+  }
 
   /* Linear scan for existing key */
   for (int i = 0; i < t->size; i++) {
@@ -197,11 +200,18 @@ mt_free(mrb_state *mrb, mrb_mt_tbl *t)
    freed by mt_free during normal GC. */
 void
 mrb_mt_init_rom(mrb_state *mrb, struct RClass *c,
-                const mrb_mt_entry *entries, int size)
+                const mrb_mt_entry *entries, int size, uint8_t conv)
 {
-  for (int i = 0; i < size; i++) {
-    mrb->conv_defined |= conv_bit(entries[i].key);
+#ifdef MRB_DEBUG
+  {
+    uint8_t scanned = 0;
+    for (int i = 0; i < size; i++) {
+      scanned |= conv_bit(entries[i].key);
+    }
+    mrb_assert(scanned == conv);
   }
+#endif
+  mrb->conv_defined |= conv;
 
   mrb_mt_tbl *rom = (mrb_mt_tbl*)mrb_malloc(mrb, sizeof(mrb_mt_tbl));
   rom->size = size;

@@ -158,12 +158,21 @@ struct mrb_mt_rom_list {
 };
 
 /* Allocate a per-state ROM layer wrapping the const entries array,
-   and push it onto the class's method table chain. */
+   and push it onto the class's method table chain.
+
+   `conv` is the OR of the `MRB_CONV_*` bits for the conversion methods the
+   table defines, stated by the caller rather than found by reading every
+   key at boot: three of the tables in the tree carry one of those four
+   names and the rest carry none, so the scan spent its whole cost proving
+   a constant.  A debug build reads the keys and checks the claim. */
 void mrb_mt_init_rom(mrb_state *mrb, struct RClass *c,
-                     const mrb_mt_entry *entries, int size);
-#define MRB_MT_INIT_ROM(mrb, cls, entries) \
+                     const mrb_mt_entry *entries, int size, uint8_t conv);
+#define MRB_MT_INIT_ROM_CONV(mrb, cls, entries, conv) \
   mrb_mt_init_rom(mrb, cls, entries, \
-                  (int)(sizeof(entries)/sizeof(entries[0])))
+                  (int)(sizeof(entries)/sizeof(entries[0])), (conv))
+/* For a table that defines none of `to_ary`, `to_str`, `to_int`, `to_hash`. */
+#define MRB_MT_INIT_ROM(mrb, cls, entries) \
+  MRB_MT_INIT_ROM_CONV(mrb, cls, entries, 0)
 
 MRB_END_DECL
 

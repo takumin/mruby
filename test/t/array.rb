@@ -790,3 +790,30 @@ assert('Array#== and #eql? with recursive elements') do
   g = [1]; h = [1]; g << h; h << g
   assert_true e == g
 end
+
+class ArrayEnsureBadToAry
+  def to_ary; 7; end
+end
+
+class ArrayEnsureHasToAry
+  def to_ary; [1]; end
+end
+
+assert('Array.__ensure checks its argument and names the object that was asked') do
+  # The coercion trampoline in the VM calls this on what `to_ary` gave back,
+  # passing the object it asked: the class of the result on its own would not
+  # say where the result came from.
+  bad = ArrayEnsureBadToAry.new
+
+  assert_equal [1, 2], Array.__ensure([1, 2], bad)
+  assert_raise_with_message(TypeError,
+      "can't convert ArrayEnsureBadToAry to Array " \
+      "(ArrayEnsureBadToAry#to_ary gives Integer)") do
+    Array.__ensure(7, bad)
+  end
+  # a check ON the argument, never a dispatch TO it
+  assert_raise(TypeError) { Array.__ensure(ArrayEnsureHasToAry.new, bad) }
+
+  assert_raise(ArgumentError) { Array.__ensure([1]) }
+  assert_raise(ArgumentError) { Array.__ensure([1], bad, bad) }
+end

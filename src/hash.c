@@ -2430,6 +2430,6 @@ mrb_init_hash(mrb_state *mrb)
   mrb->hash_class = h = mrb_define_class_id(mrb, MRB_SYM(Hash), mrb->object_class);              /* 15.2.13 */
   MRB_SET_INSTANCE_TT(h, MRB_TT_HASH);
 
-  MRB_MT_INIT_ROM(mrb, h, hash_rom_entries);
+  MRB_MT_INIT_ROM_CONV(mrb, h, hash_rom_entries, MRB_CONV_TO_HASH);
 }
 #undef lesser
