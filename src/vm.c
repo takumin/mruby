@@ -2298,6 +2298,8 @@ mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
   struct RClass *tc;
   mrb_method_t m;
   const struct RProc *p;
+  mrb_func_t f;
+  const struct RProc *cp;
 
   /* Two things have to hold for the call to be handed over. The frame this
      method runs on has to be one this mrb_vm_exec() will return through: a
@@ -2307,13 +2309,23 @@ mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
   if (ci->cci != CINFO_NONE) goto nested;
   tc = mrb_class(mrb, recv);
   m = mrb_vm_find_method(mrb, tc, &tc, mid);
-  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_CFUNC_P(m)) goto nested;
+  if (MRB_METHOD_UNDEF_P(m)) goto nested;
+  if (MRB_METHOD_CFUNC_P(m)) {
+    f = MRB_METHOD_CFUNC(m);
+    cp = MRB_METHOD_PROC_P(m) ? MRB_METHOD_PROC(m) : NULL;
+    goto direct;
+  }
   p = MRB_METHOD_PROC(m);
   if (MRB_PROC_ALIAS_P(p)) {
     mid = p->body.mid;
     p = p->upper;
   }
-  if (MRB_PROC_CFUNC_P(p) || p->body.irep == NULL) goto nested;
+  if (MRB_PROC_CFUNC_P(p)) {
+    f = MRB_PROC_CFUNC(p);
+    cp = p;
+    goto direct;
+  }
+  if (p->body.irep == NULL) goto nested;
 
   {
     ptrdiff_t idx = ci - mrb->c->cibase;
@@ -2328,6 +2340,33 @@ mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
     cipush(mrb, 0, 0, NULL, NULL, NULL, 0, 0);
     return recv;
   }
+
+direct:
+  /* A C method enters no VM, so there is nothing to hand over and nothing for
+     a Fiber to suspend inside. It is called here rather than through
+     mrb_funcall_argv(), which would look the method up a second time: a walk
+     that asks every element pays for that on every one of them. What that
+     function does around the call -- the frame, the arena, the exception --
+     is done the same way here. */
+  if (mrb->jmp) {
+    mrb_callinfo *ci2;
+    mrb_value v;
+    int ai = mrb_gc_arena_save(mrb);
+
+    ci2 = cipush(mrb, mrb_ci_nregs(ci), CINFO_DIRECT, tc, cp, NULL, mid, 0);
+    cont_frame_setup(mrb, ci2, recv, argc, argv, 0);
+    mrb->exc = NULL;
+    v = f(mrb, recv);
+    cipop(mrb);
+    if (mrb->exc) {
+      mrb_exc_raise(mrb, mrb_obj_value(mrb->exc));
+    }
+    mrb_gc_arena_restore(mrb, ai);
+    mrb_gc_protect(mrb, v);
+    return k(mrb, v, state);
+  }
+  /* Without a jump buffer there is no one to catch what the call raises, and
+     mrb_funcall_argv() is where that buffer is set up. */
 
 nested:
   {
