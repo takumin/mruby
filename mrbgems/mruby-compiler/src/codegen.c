@@ -411,6 +411,21 @@ pop_n_(mrc_codegen_scope *s, int n)
 #define pop_n(n) pop_n_(s,n)
 #define cursp() (s->sp)
 
+/* A constant read that finds no name hands it to `const_missing` as a real
+   send, which the VM builds in dst+1 and dst+2.  Neither register belongs to
+   the read itself, so the frame's high-water mark is raised to cover them.
+   Nothing is emitted for either, and a read whose registers do not fit falls
+   back to calling the hook on a nested VM. */
+static void
+genop_var_get(mrc_codegen_scope *s, mrc_code op, uint16_t dst, uint16_t sym)
+{
+  genop_2(s, op, dst, sym);
+  if (op == OP_GETCONST || op == OP_GETMCNST) {
+    int high = (int)dst + 3;
+    if (high <= 0xffff && (int)s->nregs < high) s->nregs = (uint16_t)high;
+  }
+}
+
 static mrc_irep*
 mrc_add_irep(mrc_ccontext *c)
 {
@@ -4154,7 +4169,7 @@ gen_rescue(mrc_codegen_scope *s, mrc_node *tree, uint32_t *pos1, int *exc, uint3
 
   /* handle classes */
   if (rescue->exceptions.size == 0) {
-    genop_2(s, OP_GETCONST, cursp(), new_sym(s, MRC_SYM_1(StandardError)));
+    genop_var_get(s, OP_GETCONST, cursp(), new_sym(s, MRC_SYM_1(StandardError)));
     push();
     pop();
     genop_2(s, OP_RESCUE, *exc, cursp());
@@ -4233,7 +4248,7 @@ gen_ensure(mrc_codegen_scope *s, mrc_node *tree, uint32_t catch_entry, uint32_t 
   /* `::Exception` rather than the lexical name, which a library that keeps
      an `Exception` of its own would shadow. */
   genop_1(s, OP_OCLASS, cursp());
-  genop_2(s, OP_GETMCNST, cursp(), new_sym(s, MRC_SYM_1(Exception)));
+  genop_var_get(s, OP_GETMCNST, cursp(), new_sym(s, MRC_SYM_1(Exception)));
   push();
   pop();
   genop_2(s, OP_RESCUE, idx, cursp());
@@ -4682,7 +4697,7 @@ gen_defined_recv(mrc_codegen_scope *s, mrc_node *value, uint32_t *nil_jmps)
   *nil_jmps = genjmp2(s, OP_JMPNOT, cursp(), *nil_jmps, NOVAL);
   if (a.path_len > 0) {
     for (int i = 0; i < a.path_len; i++) {
-      genop_2(s, OP_GETMCNST, cursp() - 1, new_sym(s, a.path[i]));
+      genop_var_get(s, OP_GETMCNST, cursp() - 1, new_sym(s, a.path[i]));
     }
   }
   else {
@@ -4950,7 +4965,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
     {
       CAST(constant_read);
       int sym = new_sym(s, cast->name);
-      genop_2(s, OP_GETCONST, cursp(), sym);
+      genop_var_get(s, OP_GETCONST, cursp(), sym);
       if (val) push();
       break;
     }
@@ -5126,7 +5141,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE:
         case PM_CLASS_VARIABLE_OPERATOR_WRITE_NODE:
         case PM_CONSTANT_OPERATOR_WRITE_NODE:
-          genop_2(s, op_get, cursp(), new_sym(s, name));
+          genop_var_get(s, op_get, cursp(), new_sym(s, name));
           push();
           break;
         default: codegen_error(s, "Not implemented (#6)");
@@ -5406,7 +5421,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         case PM_INSTANCE_VARIABLE_AND_WRITE_NODE:
         case PM_CLASS_VARIABLE_AND_WRITE_NODE:
         case PM_CONSTANT_AND_WRITE_NODE:
-          genop_2(s, op_get, cursp(), new_sym(s, name));
+          genop_var_get(s, op_get, cursp(), new_sym(s, name));
           push();
           break;
         case PM_CLASS_VARIABLE_OR_WRITE_NODE:
@@ -5421,7 +5436,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
             catch_entry = catch_handler_new(s);
             begin = s->pc;
             exc = cursp();
-            genop_2(s, op_get, cursp(), new_sym(s, name));
+            genop_var_get(s, op_get, cursp(), new_sym(s, name));
             push();
             end = s->pc;
             noexc = genjmp_0(s, OP_JMP);
@@ -5637,7 +5652,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         int argc = 1;
 
         genop_1(s, OP_OCLASS, cursp());
-        genop_2(s, OP_GETMCNST, cursp(), sym);
+        genop_var_get(s, OP_GETMCNST, cursp(), sym);
         push();
         genop_2(s, OP_STRING, cursp(), off);
         push();
@@ -5674,7 +5689,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         int argc = 1;
 
         genop_1(s, OP_OCLASS, cursp());
-        genop_2(s, OP_GETMCNST, cursp(), sym);
+        genop_var_get(s, OP_GETMCNST, cursp(), sym);
         push();
 
         mrc_bool str_begin = FALSE;
@@ -6452,7 +6467,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
       else { /* NODE_COLON3 */
         genop_1(s, OP_OCLASS, cursp());
       }
-      genop_2(s, OP_GETMCNST, cursp(), sym);
+      genop_var_get(s, OP_GETMCNST, cursp(), sym);
       if (val) push();
       break;
     }
@@ -6947,7 +6962,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
       genop_1(s, OP_EXCEPT, exc);
       push();
       /* check if exception is StandardError */
-      genop_2(s, OP_GETCONST, cursp(), new_sym(s, MRC_SYM_1(StandardError)));
+      genop_var_get(s, OP_GETCONST, cursp(), new_sym(s, MRC_SYM_1(StandardError)));
       push();
       pop();
       genop_2(s, OP_RESCUE, exc, cursp());
