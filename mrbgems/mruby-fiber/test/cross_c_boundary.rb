@@ -32,7 +32,10 @@ assert_cross(:ng, 'Array#sort! with a block')  { [3, 1, 2].sort! { |a, b| Fiber.
 assert_cross(:ng, 'Array.new with a block')    { Array.new(2) { Fiber.yield; 0 } }
 assert_cross(:ng, 'Class.new with a block')    { Class.new { Fiber.yield } }
 assert_cross(:ng, 'Module.new with a block')   { Module.new { Fiber.yield } }
-assert_cross(:ng, "a Hash's default proc")     { h = Hash.new { Fiber.yield; 1 }; h[:x] }
+
+# --- blocks a C method hands its own frame to ------------------------------
+assert_cross(:ok, "a Hash's default proc")     { h = Hash.new { Fiber.yield; 1 }; h[:x] }
+assert_cross(:ok, 'Hash#default with a proc')  { Hash.new { Fiber.yield; 1 }.default(:x) }
 
 # --- protocol methods a C method sends -------------------------------------
 class CrossEq
