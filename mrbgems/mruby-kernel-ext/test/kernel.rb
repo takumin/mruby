@@ -149,3 +149,14 @@ assert('Kernel.<conversion> module functions') do
   assert_raise(NoMethodError) { obj.Integer("3") }
   assert_raise(NoMethodError) { obj.fail "boom" }
 end
+
+assert('Kernel#Hash takes an implicit conversion') do
+  # nil and an empty Array answer ahead of the type, so the format reads `o`
+  # and the method asks for `to_hash` itself.
+  o = Class.new { def to_hash; {a: 1}; end }.new
+  assert_equal({a: 1}, Hash(o))
+  assert_equal({b: 2}, Hash({b: 2}))
+  assert_equal({}, Hash(nil))
+  assert_equal({}, Hash([]))
+  assert_raise(TypeError) { Hash(Object.new) }
+end

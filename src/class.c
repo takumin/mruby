@@ -1545,14 +1545,14 @@ fast_fmt_ok(char c)
 
 /*
  * An argument met the wrong type where an implicit conversion could answer.
- * `mrb_vm_coerce_arg()` arranges for the dispatch loop to run the conversion
+ * `mrb_convert_arg()` arranges for the dispatch loop to run the conversion
  * and take the send from the top again, and does not return when it can;
  * where it cannot, the `TypeError` is raised here as it always was.
  */
 static void
 arg_conv(mrb_state *mrb, const mrb_value *argv, mrb_int i, uint8_t conv)
 {
-  mrb_vm_coerce_arg(mrb, i, conv);
+  mrb_convert_arg(mrb, i, conv);
   switch (conv) {
   case MRB_CONV_TO_STR:  mrb_ensure_string_type(mrb, argv[i]); break;
   case MRB_CONV_TO_ARY:  mrb_ensure_array_type(mrb, argv[i]); break;

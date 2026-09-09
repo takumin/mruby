@@ -561,7 +561,12 @@ mrb_ary_concat_m(mrb_state *mrb, mrb_value self)
 
   mrb_get_args(mrb, "*!", &args, &len);
   for (int i=0; i<len; i++) {
-    mrb_ensure_array_type(mrb, args[i]);
+    if (mrb_unlikely(!mrb_array_p(args[i]))) {
+      /* Every argument is read before any of them is appended, so the send
+         may still be taken from the top again with one of them converted. */
+      mrb_convert_arg(mrb, i, MRB_CONV_TO_ARY);
+      mrb_ensure_array_type(mrb, args[i]);
+    }
   }
   for (int i=0; i<len; i++) {
     mrb_ary_concat(mrb, self, args[i]);

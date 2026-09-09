@@ -71,13 +71,6 @@ size_t mrb_class_mt_memsize(mrb_state*, struct RClass*);
 mrb_value mrb_obj_extend(mrb_state*, mrb_value obj);
 #endif
 
-/* An argument of a C method met the wrong type where an implicit conversion
-   could answer (vm.c).  Returns FALSE when the conversion cannot be
-   arranged, and then the caller raises `TypeError` as it always did;
-   otherwise it does not return, throwing to the dispatch loop, which runs
-   the conversion and takes the send from the top again. */
-mrb_bool mrb_vm_coerce_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv);
-
 /* builtin operator guards (class.c); see `idx_class` and `bop_redefined` in
    `struct mrb_state` */
 void mrb_builtin_op_init(mrb_state *mrb);

@@ -166,10 +166,19 @@ str_concat(mrb_state *mrb, mrb_value self, mrb_value str, mrb_bool binary)
 }
 
 static mrb_value
-str_concat0(mrb_state *mrb, mrb_value self, mrb_bool binary)
+str_concat0(mrb_state *mrb, mrb_value self, mrb_bool binary, mrb_bool conv)
 {
   if (mrb_get_argc(mrb) == 1) {
-    str_concat(mrb, self, mrb_get_arg1(mrb), binary);
+    mrb_value arg = mrb_get_arg1(mrb);
+    /* An Integer or a Float is a codepoint here, so the format cannot name
+       String and the request for `to_str` is made by hand.  It comes before
+       the append, which a restarted send would otherwise make twice; the
+       arguments after the first are out of reach for the same reason. */
+    if (conv && mrb_unlikely(!mrb_string_p(arg) &&
+                             !mrb_integer_p(arg) && !mrb_float_p(arg))) {
+      mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
+    }
+    str_concat(mrb, self, arg, binary);
     return self;
   }
 
@@ -203,7 +212,7 @@ static mrb_value
 str_concat_m(mrb_state *mrb, mrb_value self)
 {
   mrb_bool binary = RSTR_BINARY_P(mrb_str_ptr(self));
-  return str_concat0(mrb, self, binary);
+  return str_concat0(mrb, self, binary, TRUE);
 }
 
 /*
@@ -216,7 +225,9 @@ str_concat_m(mrb_state *mrb, mrb_value self)
 static mrb_value
 str_append_as_bytes(mrb_state *mrb, mrb_value self)
 {
-  return str_concat0(mrb, self, TRUE);
+  /* CRuby's `append_as_bytes` names String and Integer and takes nothing
+     else, so this one asks for no conversion either. */
+  return str_concat0(mrb, self, TRUE, FALSE);
 }
 
 /*
@@ -242,7 +253,12 @@ str_start_with(mrb_state *mrb, mrb_value self)
   for (mrb_int i = 0; i < argc; i++) {
     int ai = mrb_gc_arena_save(mrb);
     mrb_value sub = argv[i];
-    mrb_ensure_string_type(mrb, sub);
+    if (mrb_unlikely(!mrb_string_p(sub))) {
+      /* No answer is given before the arguments up to this one have been
+         read, so the send may still be taken from the top again. */
+      mrb_convert_arg(mrb, i, MRB_CONV_TO_STR);
+      mrb_ensure_string_type(mrb, sub);
+    }
     mrb_gc_arena_restore(mrb, ai);
     size_t len_l = RSTRING_LEN(self);
     size_t len_r = RSTRING_LEN(sub);
@@ -271,7 +287,12 @@ str_end_with(mrb_state *mrb, mrb_value self)
   for (mrb_int i = 0; i < argc; i++) {
     int ai = mrb_gc_arena_save(mrb);
     mrb_value sub = argv[i];
-    mrb_ensure_string_type(mrb, sub);
+    if (mrb_unlikely(!mrb_string_p(sub))) {
+      /* No answer is given before the arguments up to this one have been
+         read, so the send may still be taken from the top again. */
+      mrb_convert_arg(mrb, i, MRB_CONV_TO_STR);
+      mrb_ensure_string_type(mrb, sub);
+    }
     mrb_gc_arena_restore(mrb, ai);
     /* A suffix whose bytes are not the encoding it is taken to be in ends
        nothing, the way one is found nowhere by String#index. */

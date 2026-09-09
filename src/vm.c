@@ -3531,8 +3531,8 @@ vm_send_insn_start(const mrb_irep *irep, const mrb_code *end, uint16_t a,
    arranged, and then the caller raises `TypeError` as before; otherwise it
    does not return, throwing to the dispatch loop with the trampoline
    already pushed. */
-mrb_bool
-mrb_vm_coerce_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv)
+MRB_API mrb_bool
+mrb_convert_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv)
 {
   mrb_callinfo *ci = mrb->c->ci;
   const struct RProc *tramp;
@@ -3631,7 +3631,7 @@ RETRY_TRY_BLOCK:
   MRB_TRY(&c_jmp) {
 
   if (mrb_unlikely(mrb->conv_signal)) {
-    /* An argument of a C method needs converting.  `mrb_vm_coerce_arg()`
+    /* An argument of a C method needs converting.  `mrb_convert_arg()`
        has rewound the send and pushed the trampoline over the argument's
        register already, so there is nothing to do but run it: the send is
        taken from the top once the frame returns. */

@@ -1287,6 +1287,41 @@ MRB_API const mrb_value *mrb_get_argv(mrb_state *mrb);
 MRB_API mrb_value mrb_get_arg1(mrb_state *mrb);
 
 /**
+ * Ask an argument of the running C method for an implicit conversion.
+ *
+ * The method has read its arguments and found one of the wrong type where
+ * a conversion could answer, and asks for it here.  `conv` is one of
+ * `MRB_CONV_TO_STR`, `MRB_CONV_TO_ARY` and `MRB_CONV_TO_HASH`, and `argidx`
+ * numbers the argument from zero.
+ *
+ * On success the call does not return: the send that reached this method is
+ * taken from the top again with the argument converted, so the method runs
+ * once more and reads a value of the right type.  Anything the method did
+ * before the call happens twice, which is why the call belongs before the
+ * work.
+ *
+ * It returns `FALSE` when the conversion cannot be arranged (the protocol is
+ * defined nowhere, the argument does not answer it, or the send cannot be
+ * restarted), and then the caller raises `TypeError` as it always did.
+ *
+ *     if (!mrb_string_p(arg)) {
+ *       mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
+ *       mrb_ensure_string_type(mrb, arg);
+ *     }
+ *
+ * A `~` in the argument format asks for the same thing where the format can
+ * name the type; this entry is for the methods that read `o` and decide the
+ * type themselves.
+ *
+ * @param mrb The current mruby state.
+ * @param argidx The argument's position, counted from zero.
+ * @param conv The conversion to ask for.
+ * @return FALSE, when it returns at all.
+ * @see mrb_args_format
+ */
+MRB_API mrb_bool mrb_convert_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv);
+
+/**
  * Check if a block argument is given from mrb_state.
  */
 MRB_API mrb_bool mrb_block_given_p(mrb_state *mrb);

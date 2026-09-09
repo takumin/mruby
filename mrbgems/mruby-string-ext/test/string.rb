@@ -1586,3 +1586,22 @@ assert('String#chars of a multibyte receiver longer than the GC arena') do
   assert_equal 300, ("\u3042" * 300).chars.size
   assert_equal "\u3042", ("\u3042" * 300).chars.last
 end if UTF8STRING
+
+assert('String#<< takes an implicit conversion') do
+  # An Integer is a codepoint here, so the format names no type and the
+  # method asks for `to_str` itself.
+  asked = 0
+  o = Class.new { define_method(:to_str) { asked += 1; "b" } }.new
+  assert_equal("ab", "a" << o)
+  assert_equal(1, asked)
+  assert_equal("ab", "a".concat(o))
+  assert_equal("a", "" << 97)
+  assert_raise(TypeError) { "a" << Object.new }
+end
+
+assert('String#end_with? takes an implicit conversion') do
+  o = Class.new { def to_str; "b"; end }.new
+  assert_true("ab".end_with?(o))
+  assert_false("ac".end_with?(o))
+  assert_raise(TypeError) { "ab".end_with?(Object.new) }
+end

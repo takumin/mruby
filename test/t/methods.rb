@@ -362,3 +362,10 @@ assert('an argument that is not the last one keeps the type error') do
   assert_raise(TypeError) { TestArgFormat.conv_first(ArgConvToStr.new, 1) }
   assert_equal("x", TestArgFormat.conv_first("x", 1))
 end
+
+assert('a method that decides the type itself asks for the conversion by hand') do
+  # `Array#concat` reads its arguments with `*`, which names no type, so the
+  # request is made from the method rather than by a `~` in the format.
+  assert_equal([0, 1, 2], [0].concat(ArgConvToAry.new))
+  assert_raise(TypeError) { [0].concat(Object.new) }
+end

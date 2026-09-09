@@ -283,7 +283,12 @@ mrb_f_hash(mrb_state *mrb, mrb_value self)
   if (mrb_nil_p(arg) || (mrb_array_p(arg) && RARRAY_LEN(arg) == 0)) {
     return mrb_hash_new(mrb);
   }
-  mrb_ensure_hash_type(mrb, arg);
+  /* `nil` and `[]` answer ahead of the type, so the format reads `o` and
+     the request for `to_hash` is made here. */
+  if (mrb_unlikely(!mrb_hash_p(arg))) {
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_HASH);
+    mrb_ensure_hash_type(mrb, arg);
+  }
   return arg;
 }
 

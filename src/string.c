@@ -3334,6 +3334,10 @@ mrb_str_split_m(mrb_state *mrb, mrb_value str)
     split_type = awk;
   }
   else if (!mrb_string_p(spat)) {
+    /* The separator may also be a pattern where the regexp gem is in, so the
+       format reads `o` and the type is decided here; asking for `to_str` is
+       the same request a `S~` would have made. */
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
     mrb_raise(mrb, E_TYPE_ERROR, "expected String");
   }
   else if (RSTRING_LEN(spat) == 1 && RSTRING_PTR(spat)[0] == ' ') {
