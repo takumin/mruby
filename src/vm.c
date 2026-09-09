@@ -3342,6 +3342,62 @@ getidx0_fallback:
   return VM_SEND_SYM;
 }
 
+/* Whether a constant read hands `const_missing` to the VM rather than calling
+   it from C.  The built-in hook only raises, so nothing is gained by sending
+   it, and a hook the program declares private or protected keeps the nested
+   call it had, which dispatched it however it was declared. */
+static mrb_bool
+const_missing_send_p(mrb_state *mrb, mrb_value mod)
+{
+  struct RClass *c = mrb_class(mrb, mod);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(const_missing));
+
+  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_NOTIMPL_P(m)) return FALSE;
+  if (MRB_METHOD_VISIBILITY(m) != 0) return FALSE;
+  if (MRB_METHOD_FUNC_P(m)) return MRB_METHOD_FUNC(m) != mrb_mod_const_missing;
+  {
+    const struct RProc *p = MRB_METHOD_PROC(m);
+    if (MRB_PROC_CFUNC_P(p) && MRB_PROC_CFUNC(p) == mrb_mod_const_missing) return FALSE;
+  }
+  return TRUE;
+}
+
+/* OP_GETMCNST: the constant `Mod::NAME` names.  A name the module does not
+   hold goes to `const_missing` as a real send, so a `Fiber.yield` written in
+   the hook can suspend.  The receiver already sits in regs[a], which is where
+   the read's own result belongs, and `room` says the compiler reserved
+   regs[a+1] and regs[a+2] for the call.  A read whose registers an older
+   compiler did not reserve takes the nested path below, and so does one whose
+   hook const_missing_send_p() leaves in C. */
+static int
+vm_op_getmcnst(mrb_state *mrb, uint32_t a, mrb_sym sym, mrb_bool room, mrb_sym *midp)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value recv = regs[a];
+  enum mrb_vtype tt = mrb_type(recv);
+
+  if (tt == MRB_TT_CLASS || tt == MRB_TT_MODULE || tt == MRB_TT_SCLASS) {
+    mrb_value v = mrb_const_get_noraise(mrb, mrb_class_ptr(recv), sym);
+    if (!mrb_undef_p(v)) {
+      regs[a] = v;
+      return VM_NEXT;
+    }
+    if (room && const_missing_send_p(mrb, recv)) {
+      SET_SYM_VALUE(regs[a+1], sym);
+      *midp = MRB_SYM(const_missing);
+      return VM_SEND_SYM;
+    }
+  }
+  {
+    /* a receiver that is no class or module raises here, and so does a name
+       the built-in hook is left to answer */
+    mrb_value v = mrb_const_get(mrb, recv, sym);
+    ci = mrb->c->ci;
+    regs[a] = v;
+  }
+  return VM_NEXT;
+}
+
 static int
 vm_op_setidx(mrb_state *mrb, uint32_t a, mrb_sym *midp)
 {
@@ -3902,9 +3958,9 @@ RETRY_TRY_BLOCK:
     }
 
     CASE(OP_GETMCNST, BB) {
-      mrb_value v = mrb_const_get(mrb, regs[a], irep->syms[b]);
+      int r = vm_op_getmcnst(mrb, a, irep->syms[b], a+2 < irep->nregs, &mid);
       ci = mrb->c->ci;
-      regs[a] = v;
+      if (r == VM_SEND_SYM) goto L_SEND_SYM;
       NEXT;
     }
 
