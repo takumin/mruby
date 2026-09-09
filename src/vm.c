@@ -252,7 +252,9 @@ mrb_stack_extend(mrb_state *mrb, mrb_int room)
   stack_extend(mrb, room);
 }
 
-static void
+/* Inline: the check is two compares, and every call the VM is handed by a C
+   method goes through it. */
+static inline void
 stack_extend_adjust(mrb_state *mrb, mrb_int room, const mrb_value **argp)
 {
   const struct mrb_context *c = mrb->c;
