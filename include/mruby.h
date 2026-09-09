@@ -376,6 +376,12 @@ typedef struct mrb_task_state {
 } mrb_task_state;
 #endif
 
+/* bits of mrb_state.conv_defined */
+#define MRB_CONV_TO_ARY  1
+#define MRB_CONV_TO_STR  2
+#define MRB_CONV_TO_INT  4
+#define MRB_CONV_TO_HASH 8
+
 struct mrb_state {
   struct mrb_jmpbuf *jmp;
 
@@ -509,6 +515,13 @@ struct mrb_state {
      `MRB_BOP_NIL_TRUE_FALSE_EQ`, mirrors a class flag instead of a builtin
      and indexes nothing. */
   uint32_t bop_redefined;
+
+  /* One bit per implicit conversion protocol, set the first time a method of
+     that name is installed anywhere.  Nothing in the core defines one, so a
+     program that never writes `to_ary` and friends lets the coercion trap
+     answer from this word instead of walking an ancestor chain for a name
+     that is not there.  Conservative: never cleared by `undef`. */
+  uint8_t conv_defined;
   mrb_method_t bop_builtin[MRB_BOP_SLOT_COUNT];
 
 #ifdef MRB_USE_TASK_SCHEDULER

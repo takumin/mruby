@@ -3130,6 +3130,65 @@ mrb_vm_interrupt(mrb_state *mrb)
  *       when not using switch-based dispatch. It also manages the callinfo
  *       stack (`ci`) for tracking method/block calls.
  */
+/* ---- implicit conversion trampoline (PROTOTYPE) -------------------------
+   An instruction that meets the wrong type does not convert it in C: it
+   rewinds its own pc, pushes this frame over the offending register, and
+   lets the dispatch loop run the conversion as ordinary bytecode.  The
+   frame returns into the register it was pushed over, so the restarted
+   instruction reads the converted value with nothing recorded anywhere.
+
+   `Array.__ensure` is a check ON its argument, so a `to_ary` that gives
+   back something else raises here instead of letting the restart trap a
+   second time.  That is what removes the need for an "already tried" mark. */
+static const mrb_code coerce_ary_iseq[] = {
+  OP_ENTER, 0x04, 0x00, 0x00,   /* 1:0:0:0:0:0:0 */
+  OP_MOVE, 2, 0,                /* R2 = self */
+  OP_SEND, 2, 0, 0,             /* R2 = R2.to_ary */
+  OP_MOVE, 3, 1,                /* R3 = Array */
+  OP_MOVE, 4, 2,
+  OP_SEND, 3, 1, 1,             /* R3 = R3.__ensure(R4) */
+  OP_RETURN, 3,
+};
+
+MRB_PRESYM_DEFINE_VAR_AND_INITER(coerce_ary_syms, 2, MRB_SYM(to_ary), MRB_SYM(__ensure))
+
+static const mrb_irep coerce_ary_irep = {
+  2, 6, 0, MRB_IREP_STATIC,
+  coerce_ary_iseq, NULL, coerce_ary_syms, NULL, NULL, NULL,
+  sizeof(coerce_ary_iseq), 0, 2, 0, 0,
+};
+
+mrb_alignas(8)
+static const struct RProc coerce_ary_proc = {
+  NULL, MRB_TT_PROC, MRB_GC_RED, MRB_OBJ_IS_FROZEN, MRB_PROC_SCOPE | MRB_PROC_STRICT,
+  { &coerce_ary_irep }, NULL, { NULL }
+};
+
+static mrb_bool
+vm_coerce_ary(mrb_state *mrb, mrb_code op, int opnd)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  /* PROTOTYPE: an unprefixed BBB instruction is 4 bytes.  The real one
+     recovers the start with the instruction-length table so that an
+     OP_EXT1/2/3 prefix is handled. */
+  const mrb_irep *cirep = ci->proc->body.irep;
+  const mrb_code *start = ci->pc - 4;
+  if (start < cirep->iseq || *start != op) return FALSE;
+
+  uint32_t reg = start[opnd];
+  mrb_value v = ci->stack[reg];
+  struct RClass *c = mrb_class(mrb, v);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(to_ary));
+  if (MRB_METHOD_UNDEF_P(m)) return FALSE;
+
+  ci->pc = start;
+  ci = cipush(mrb, reg, CINFO_NONE, mrb->array_class, &coerce_ary_proc, NULL,
+              MRB_SYM(to_ary), 1);
+  stack_extend(mrb, coerce_ary_irep.nregs);
+  ci->stack[1] = mrb_obj_value(mrb->array_class);
+  return TRUE;
+}
+
 MRB_FLATTEN MRB_API mrb_value
 mrb_vm_exec(mrb_state *mrb, const struct RProc *begin_proc, const mrb_code *iseq)
 {
@@ -4471,17 +4530,23 @@ RETRY_TRY_BLOCK:
     CASE(OP_AREF, BBB) {
       mrb_value v = regs[b];
 
-      if (!mrb_array_p(v)) {
+      if (mrb_likely(mrb_array_p(v))) {
+        v = mrb_ary_ref(mrb, v, c);
+        regs[a] = v;
+      }
+      else {
+        if (mrb_unlikely(mrb->conv_defined & MRB_CONV_TO_ARY) &&
+            vm_coerce_ary(mrb, OP_AREF, 2)) {
+          irep = &coerce_ary_irep;
+          ci = mrb->c->ci;
+          JUMP;
+        }
         if (c == 0) {
           regs[a] = v;
         }
         else {
           SET_NIL_VALUE(regs[a]);
         }
-      }
-      else {
-        v = mrb_ary_ref(mrb, v, c);
-        regs[a] = v;
       }
       NEXT;
     }
@@ -4497,7 +4562,13 @@ RETRY_TRY_BLOCK:
       int pre  = b;
       int post = c;
 
-      if (!mrb_array_p(v)) {
+      if (mrb_unlikely(!mrb_array_p(v))) {
+        if (mrb_unlikely(mrb->conv_defined & MRB_CONV_TO_ARY) &&
+            vm_coerce_ary(mrb, OP_APOST, 1)) {
+          irep = &coerce_ary_irep;
+          ci = mrb->c->ci;
+          JUMP;
+        }
         v = ary_new_from_regs(mrb, 1, a);
       }
       struct RArray *ary = mrb_ary_ptr(v);

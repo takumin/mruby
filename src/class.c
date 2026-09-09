@@ -52,11 +52,28 @@ mt_new(mrb_state *mrb)
   return t;
 }
 
+/* The bit `mrb_state.conv_defined` gives a conversion method name, or 0 for
+   a name that is not one.  Read where a method is installed, so that the
+   coercion trap in the VM can answer "nobody has one" without a lookup. */
+static uint8_t
+conv_bit(mrb_sym sym)
+{
+  switch (sym) {
+  case MRB_SYM(to_ary):  return MRB_CONV_TO_ARY;
+  case MRB_SYM(to_str):  return MRB_CONV_TO_STR;
+  case MRB_SYM(to_int):  return MRB_CONV_TO_INT;
+  case MRB_SYM(to_hash): return MRB_CONV_TO_HASH;
+  default: return 0;
+  }
+}
+
 /* Inserts or updates an entry in the method table (linear scan) */
 static void
 mt_put(mrb_state *mrb, mrb_mt_tbl *t, mrb_sym sym, uint32_t flags, union mrb_mt_ptr ptrval)
 {
   mrb_mt_entry *entries = t->ptr;
+
+  mrb->conv_defined |= conv_bit(sym);
 
   /* Linear scan for existing key */
   for (int i = 0; i < t->size; i++) {
@@ -182,6 +199,10 @@ void
 mrb_mt_init_rom(mrb_state *mrb, struct RClass *c,
                 const mrb_mt_entry *entries, int size)
 {
+  for (int i = 0; i < size; i++) {
+    mrb->conv_defined |= conv_bit(entries[i].key);
+  }
+
   mrb_mt_tbl *rom = (mrb_mt_tbl*)mrb_malloc(mrb, sizeof(mrb_mt_tbl));
   rom->size = size;
   rom->alloc = size | MRB_MT_READONLY_BIT;

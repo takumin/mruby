@@ -2659,6 +2659,24 @@ static const mrb_mt_entry array_rom_entries[] = {
   MRB_MT_ENTRY(mrb_ary_svalue_eq,    MRB_SYM(__svalue_eq),     MRB_ARGS_REQ(1)),
 };
 
+/*
+ * Array.__ensure(val) -> Array
+ *
+ * Internal. Checks that `val` is an Array, as a check ON its argument rather
+ * than a dispatch TO it, the way `Integer.__ensure` does. The coercion
+ * trampoline in the VM calls it on what `to_ary` gave back.
+ */
+static mrb_value
+ary_s_ensure(mrb_state *mrb, mrb_value self)
+{
+  mrb_value val;
+  mrb_get_args(mrb, "o", &val);
+  if (!mrb_array_p(val)) {
+    mrb_raisef(mrb, E_TYPE_ERROR, "%Y cannot be converted to Array", val);
+  }
+  return val;
+}
+
 void
 mrb_init_array(mrb_state *mrb)
 {
@@ -2668,6 +2686,7 @@ mrb_init_array(mrb_state *mrb)
   MRB_SET_INSTANCE_TT(a, MRB_TT_ARRAY);
 
   mrb_define_class_method_id(mrb, a, MRB_OPSYM(aref),    mrb_ary_s_create,     MRB_ARGS_ANY());    /* 15.2.12.4.1 */
+  mrb_define_class_method_id(mrb, a, MRB_SYM(__ensure),  ary_s_ensure,         MRB_ARGS_REQ(1));
 
   MRB_MT_INIT_ROM(mrb, a, array_rom_entries);
 }
