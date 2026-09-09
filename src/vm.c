@@ -2852,6 +2852,16 @@ vm_op_getidx(mrb_state *mrb, uint32_t a, mrb_sym *midp)
   else if (tt == MRB_TT_HASH) {
     /* optimize only for Hash itself; see the Array branch above */
     if (mrb_obj_ptr(va)->c != mrb->idx_class[MRB_IDX_OP_HASH_AREF]) goto getidx_fallback;
+    /* A miss on a hash whose default is a proc runs Ruby code. Sending
+       `Hash#[]` instead of reading the value here gives that call a frame of
+       its own to take over, which `mrb_hash_get()` called from this opcode
+       has no way to offer. Only a miss pays the send. */
+    if (mrb_unlikely(MRB_RHASH_PROCDEFAULT_P(va) != 0)) {
+      mrb_value v = mrb_hash_fetch(mrb, va, vb, mrb_undef_value());
+      if (mrb_undef_p(v)) goto getidx_fallback;
+      regs[a] = v;
+      return VM_NEXT;
+    }
     int ai = mrb_gc_arena_save(mrb);
     va = mrb_hash_get(mrb, va, vb);
     ci = mrb->c->ci;

@@ -1579,6 +1579,28 @@ static mrb_value
 mrb_hash_aget(mrb_state *mrb, mrb_value self)
 {
   mrb_value key = mrb_get_arg1(mrb);
+  mrb_value val;
+
+  if (h_get(mrb, mrb_hash_ptr(self), key, &val)) {
+    return val;
+  }
+
+  /* The default proc's result is this method's result, so the proc takes this
+     frame instead of running on a nested `mrb_vm_exec()`. That is what lets a
+     `Fiber.yield` written in the proc cross `Hash#[]`, and it drops the cost
+     of the re-entry. `mrb_hash_get()` keeps the old path: it is MRB_API and
+     its callers are C code holding the value it returns. */
+  if (MRB_RHASH_DEFAULT_P(self) && MRB_RHASH_PROCDEFAULT_P(self) &&
+      mrb_func_basic_p(mrb, self, MRB_SYM(default), mrb_hash_default)) {
+    mrb_value blk = RHASH_PROCDEFAULT(self);
+    struct RClass *tc;
+    mrb_value bself = mrb_proc_get_self(mrb, mrb_proc_ptr(blk), &tc);
+    mrb_value args[2];
+
+    args[0] = self;
+    args[1] = key;
+    return mrb_yield_cont(mrb, blk, bself, 2, args);
+  }
 
   return mrb_hash_get(mrb, self, key);
 }
