@@ -2093,6 +2093,16 @@ mrb_yield_cont(mrb_state *mrb, mrb_value b, mrb_value self, mrb_int argc, const 
   const struct RProc *p = mrb_proc_ptr(b);
   mrb_callinfo *ci = mrb->c->ci;
 
+  /* The frame this replaces has to be one this `mrb_vm_exec()` will return
+     through. A frame carrying another `cci` was pushed by a C caller that is
+     waiting for it on the C stack, and replacing it drops that caller's
+     return: the block runs on a nested VM there instead. */
+  if (ci->cci != CINFO_NONE) {
+    struct RClass *tc;
+    mrb_proc_get_self(mrb, p, &tc);
+    return yield_with_attr(mrb, b, argc, argv, self, tc, FALSE);
+  }
+
   stack_extend_adjust(mrb, 4, &argv);
   mrb->c->ci->stack[1] = mrb_ary_new_from_values(mrb, argc, argv);
   mrb->c->ci->stack[2] = mrb_nil_value();
