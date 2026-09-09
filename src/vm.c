@@ -822,6 +822,15 @@ mrb_vm_svar_set(mrb_state *mrb, enum mrb_svar_index key, mrb_value v)
 /* CINFO_*, MRB_CI_PINS_C_FRAME_P() and MRB_CI_RETURN_CLAIMED_P() are in
    mruby.h */
 
+/* What keeps a scope's special variables beside the frames rather than in
+   them: a frame has nothing spare. Pinned here so that a field added to it
+   has to be argued for against the eight bytes it would cost every frame of
+   every call stack. A 32-bit build packs the same fields into less, so the
+   size is asserted for the layout the claim was measured on. */
+#ifdef MRB_64BIT
+mrb_static_assert(sizeof(mrb_callinfo) == 48);
+#endif
+
 #define BLK_PTR(b) ((mrb_proc_p(b)) ? mrb_proc_ptr(b) : NULL)
 
 /* See mrb_ci_svar() in internal.h for why these live beside the frames. */
