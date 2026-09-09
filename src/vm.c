@@ -2290,9 +2290,9 @@ cont_resume(mrb_state *mrb, mrb_value *vp, ptrdiff_t idx)
   return (mrb->c->ci - mrb->c->cibase != idx) ? 1 : 0;
 }
 
-MRB_API mrb_value
-mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
-                 mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+static inline mrb_bool
+funcall_cont_attr(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                  mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv)
 {
   mrb_callinfo *ci = mrb->c->ci;
   struct RClass *tc;
@@ -2338,16 +2338,17 @@ mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
        NULL `u` is what tells that epilogue to reload `irep` from the callee
        below it, the same signal exec_irep() leaves. */
     cipush(mrb, 0, 0, NULL, NULL, NULL, 0, 0);
-    return recv;
+    *vp = recv;
+    return TRUE;
   }
 
 direct:
   /* A C method enters no VM, so there is nothing to hand over and nothing for
      a Fiber to suspend inside. It is called here rather than through
      mrb_funcall_argv(), which would look the method up a second time: a walk
-     that asks every element pays for that on every one of them. What that
-     function does around the call -- the frame, the arena, the exception --
-     is done the same way here. */
+     that asks every element pays for that on every one of them. What it does
+     around the call -- the frame, the arena, the exception -- is done the
+     same way here. */
   if (mrb->jmp) {
     mrb_callinfo *ci2;
     mrb_value v;
@@ -2363,23 +2364,39 @@ direct:
     }
     mrb_gc_arena_restore(mrb, ai);
     mrb_gc_protect(mrb, v);
-    return k(mrb, v, state);
+    *vp = v;
+    return FALSE;
   }
   /* Without a jump buffer there is no one to catch what the call raises, and
      mrb_funcall_argv() is where that buffer is set up. */
 
 nested:
-  {
-    mrb_value v = mrb_funcall_argv(mrb, recv, mid, argc, argv);
-    return k(mrb, v, state);
-  }
+  *vp = mrb_funcall_argv(mrb, recv, mid, argc, argv);
+  return FALSE;
+}
+
+MRB_API mrb_bool
+mrb_funcall_cont_p(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                   mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+{
+  return funcall_cont_attr(mrb, vp, k, state, recv, mid, argc, argv);
+}
+
+MRB_API mrb_value
+mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                 mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+{
+  mrb_value v;
+
+  if (funcall_cont_attr(mrb, &v, k, state, recv, mid, argc, argv)) return v;
+  return k(mrb, v, state);
 }
 
 /* mrb_block_cont() and mrb_block_cont_under() in one. `c` is the class the
    block is to run under, and NULL asks for the one the block was written in,
    which is what an ordinary yield gives it. */
-static inline mrb_value
-block_cont_attr(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+static inline mrb_bool
+block_cont_attr(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
                 mrb_value blk, mrb_int argc, const mrb_value *argv,
                 mrb_value self, struct RClass *c)
 {
@@ -2426,22 +2443,48 @@ block_cont_attr(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
     }
     cont_push(mrb, k, state, idx);
     cipush(mrb, 0, 0, NULL, NULL, NULL, 0, 0);
-    return bself;
+    *vp = bself;
+    return TRUE;
   }
 
 nested:
-  {
-    mrb_value v = c ? mrb_yield_with_class(mrb, blk, argc, argv, self, c)
-                    : mrb_yield_argv(mrb, blk, argc, argv);
-    return k(mrb, v, state);
-  }
+  *vp = c ? mrb_yield_with_class(mrb, blk, argc, argv, self, c)
+          : mrb_yield_argv(mrb, blk, argc, argv);
+  return FALSE;
+}
+
+/* Whether a call of `blk` from here can be handed to the VM at all: the frame
+   has to be one this mrb_vm_exec() will return through, and the block has to
+   be written in Ruby. Neither changes over a walk, so a walk asks once. Where
+   the answer is yes, the ask is the last thing the walk does and costs
+   nothing on the way out; where it is no, every call is made here and the
+   walk keeps its loop rather than a C frame per element. */
+MRB_API mrb_bool
+mrb_block_cont_ready_p(mrb_state *mrb, mrb_value blk)
+{
+  const struct RProc *p;
+
+  if (mrb->c->ci->cci != CINFO_NONE) return FALSE;
+  if (!mrb_proc_p(blk)) return FALSE;
+  p = mrb_proc_ptr(blk);
+  return !MRB_PROC_CFUNC_P(p) && p->body.irep != NULL;
+}
+
+MRB_API mrb_bool
+mrb_block_cont_p(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                 mrb_value blk, mrb_int argc, const mrb_value *argv)
+{
+  return block_cont_attr(mrb, vp, k, state, blk, argc, argv, mrb_nil_value(), NULL);
 }
 
 MRB_API mrb_value
 mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
                mrb_value blk, mrb_int argc, const mrb_value *argv)
 {
-  return block_cont_attr(mrb, k, state, blk, argc, argv, mrb_nil_value(), NULL);
+  mrb_value v;
+
+  if (block_cont_attr(mrb, &v, k, state, blk, argc, argv, mrb_nil_value(), NULL)) return v;
+  return k(mrb, v, state);
 }
 
 MRB_API mrb_value
@@ -2449,8 +2492,11 @@ mrb_block_cont_under(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
                      mrb_value blk, mrb_int argc, const mrb_value *argv,
                      mrb_value self, struct RClass *c)
 {
+  mrb_value v;
+
   mrb_assert(c != NULL);
-  return block_cont_attr(mrb, k, state, blk, argc, argv, self, c);
+  if (block_cont_attr(mrb, &v, k, state, blk, argc, argv, self, c)) return v;
+  return k(mrb, v, state);
 }
 
 #define RBREAK_TAG_FOREACH(f) \

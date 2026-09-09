@@ -1779,6 +1779,22 @@ MRB_API mrb_value mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int sta
                                    mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv);
 
 /**
+ * The same, for a walk that has more than one call to make.
+ *
+ * Answers TRUE when the call was handed to the VM: the C method has nothing
+ * more to do and returns `*vp` at once, and `k` runs later with the result.
+ * Answers FALSE when the call could not be handed over and was made here, in
+ * which case `*vp` holds what it answered and the walk can go on to its next
+ * call without leaving the loop.
+ *
+ * mrb_funcall_cont() is this with the answer passed straight to `k`, which
+ * costs a C frame per call that was not handed over. A walk over a long array
+ * makes that many.
+ */
+MRB_API mrb_bool mrb_funcall_cont_p(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                                    mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv);
+
+/**
  * Hands a block call to the VM and asks to be resumed with its result.
  *
  * What mrb_funcall_cont() does for a method a C method sends, this does for a
@@ -1789,6 +1805,23 @@ MRB_API mrb_value mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int sta
  */
 MRB_API mrb_value mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
                                  mrb_value blk, mrb_int argc, const mrb_value *argv);
+
+/**
+ * The same, for a walk that has more than one call to make: it answers
+ * whether the call was handed over, the way mrb_funcall_cont_p() does.
+ */
+MRB_API mrb_bool mrb_block_cont_p(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                                  mrb_value blk, mrb_int argc, const mrb_value *argv);
+
+/**
+ * Whether a call of `blk` from here can be handed to the VM at all.
+ *
+ * Neither of the two things it asks -- the frame, and whether the block is
+ * written in Ruby -- changes over a walk, so a walk asks once and then knows
+ * which shape to take: mrb_block_cont() as the last thing it does where the
+ * answer is yes, and mrb_block_cont_p() in a loop where it is no.
+ */
+MRB_API mrb_bool mrb_block_cont_ready_p(mrb_state *mrb, mrb_value blk);
 
 /**
  * The same, for a block that runs under a class of its own.
