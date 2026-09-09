@@ -422,6 +422,29 @@ mrb_ary_s_create(mrb_state *mrb, mrb_value klass)
 
 static void ary_replace(mrb_state*, struct RArray*, struct RArray*);
 
+static mrb_value ary_init_resume(mrb_state *mrb, mrb_value val, mrb_int i);
+
+/* Fills the array from the block, resumable from any index. The receiver and
+   the size are read from the frame rather than held in C locals: the fill
+   returns to the VM on every element, and only the frame survives that. */
+static mrb_value
+ary_init_fill(mrb_state *mrb, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  if (i >= mrb_integer(ci->stack[1])) return ci->stack[0];
+
+  mrb_value iv = mrb_int_value(mrb, i);
+  return mrb_block_cont(mrb, ary_init_resume, i, ci->stack[mrb_ci_bidx(ci)], 1, &iv);
+}
+
+static mrb_value
+ary_init_resume(mrb_state *mrb, mrb_value val, mrb_int i)
+{
+  mrb_ary_set(mrb, mrb->c->ci->stack[0], i, val);
+  return ary_init_fill(mrb, i + 1);
+}
+
 /*
  *  call-seq:
  *     Array.new(size=0, default=nil) -> new_array
@@ -486,19 +509,23 @@ mrb_ary_init(mrb_state *mrb, mrb_value ary)
     ary_expand_capa(mrb, a, size);
   }
 
-  int ai = mrb_gc_arena_save(mrb);
-  for (mrb_int i=0; i<size; i++) {
-    mrb_value val;
-    if (mrb_nil_p(blk)) {
-      val = obj;
+  if (mrb_nil_p(blk)) {
+    for (mrb_int i=0; i<size; i++) {
+      mrb_ary_set(mrb, ary, i, obj);
     }
-    else {
-      val = mrb_yield(mrb, blk, mrb_fixnum_value(i));
-    }
-    mrb_ary_set(mrb, ary, i, val);
-    mrb_gc_arena_restore(mrb, ai); // for mrb_funcall
+    return ary;
   }
-  return ary;
+
+  if (size == 0) return ary;
+
+  /* The size is written back over the argument register. The fill reads it
+     there on every resume, and reading the argument itself again would ask a
+     Ruby object for its integer value a second time. The register is free to
+     take it: mrb_get_args() has already read what was in it. */
+  mrb->c->ci->stack[1] = mrb_int_value(mrb, size);
+  /* The block runs through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in it has no C frame to lose. */
+  return ary_init_fill(mrb, 0);
 }
 
 /* Internal helper to concatenate two arrays */

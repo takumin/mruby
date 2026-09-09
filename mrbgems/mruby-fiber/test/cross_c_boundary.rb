@@ -27,7 +27,6 @@ assert_cross(:ok, 'Object#instance_eval') { Object.new.instance_eval { Fiber.yie
 # --- blocks a C method runs by re-entering the VM --------------------------
 assert_cross(:ng, 'Array#sort with a block')   { [3, 1, 2].sort { |a, b| Fiber.yield; a <=> b } }
 assert_cross(:ng, 'Array#sort! with a block')  { [3, 1, 2].sort! { |a, b| Fiber.yield; a <=> b } }
-assert_cross(:ng, 'Array.new with a block')    { Array.new(2) { Fiber.yield; 0 } }
 assert_cross(:ng, 'Class.new with a block')    { Class.new { Fiber.yield } }
 assert_cross(:ng, 'Module.new with a block')   { Module.new { Fiber.yield } }
 
@@ -37,6 +36,7 @@ assert_cross(:ok, 'Hash#default with a proc')  { Hash.new { Fiber.yield; 1 }.def
 assert_cross(:ok, 'Array#delete with a block') { [1].delete(2) { Fiber.yield } }
 assert_cross(:ok, 'Array#index with a block')  { [1, 2].index { Fiber.yield; false } }
 assert_cross(:ok, 'Array#rindex with a block') { [1, 2].rindex { Fiber.yield; false } }
+assert_cross(:ok, 'Array.new with a block')    { Array.new(2) { Fiber.yield; 0 } }
 
 # --- protocol methods a C method sends -------------------------------------
 class CrossEq
