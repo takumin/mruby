@@ -74,6 +74,7 @@ end
 assert_cross(:ok, 'method_missing')             { CrossMissing.new.nosuch }
 assert_cross(:ok, 'Comparable#< sending <=>')   { CrossCmp.new(1) < CrossCmp.new(2) }
 assert_cross(:ok, 'Array#+ sending to_ary')     { [1] + [CrossAry.new] }
+assert_cross(:ok, 'respond_to? sending respond_to_missing?') { CrossMissing.new.respond_to?(:nosuch) }
 
 assert_cross(:ng, 'Array#sort sending <=>')     { [CrossCmp.new(2), CrossCmp.new(1)].sort }
 assert_cross(:ng, 'Array#index sending ==')     { [CrossEq.new].index(CrossEq.new) }
@@ -82,7 +83,6 @@ assert_cross(:ng, 'Hash#[] sending hash')       { ({CrossEq.new => 1})[CrossEq.n
 assert_cross(:ng, 'Array#inspect sending inspect') { [CrossStr.new].inspect }
 assert_cross(:ng, 'Array#join sending to_s')    { [CrossStr.new].join }
 assert_cross(:ng, 'string interpolation sending to_s') { "#{CrossStr.new}" }
-assert_cross(:ng, 'respond_to? sending respond_to_missing?') { CrossMissing.new.respond_to?(:nosuch) }
 assert_cross(:ng, 'const_missing')              { CrossConst::NoSuch }
 assert_cross(:ng, '&obj sending to_proc')       { [1].map(&CrossProc.new) }
 

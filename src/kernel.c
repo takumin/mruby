@@ -629,11 +629,16 @@ mrb_obj_remove_instance_variable(mrb_state *mrb, mrb_value self)
  *  parameter does not reach it, `respond_to_missing?` method is
  *  called and the result is returned.
  */
+/* What the method table alone answers. `ask` says the answer is not there to
+   be had: the name has no method behind it and `respond_to_missing?` is the
+   one to decide it. */
 static mrb_bool
-obj_respond_to_p(mrb_state *mrb, mrb_value self, mrb_sym id, mrb_bool priv)
+respond_to_table_p(mrb_state *mrb, mrb_value self, mrb_sym id, mrb_bool priv, mrb_bool *ask)
 {
   struct RClass *c = mrb_class(mrb, self);
   mrb_method_t m = mrb_method_search_vm(mrb, &c, id);
+
+  *ask = FALSE;
   if (!MRB_METHOD_UNDEF_P(m)) {
     /* A method that is unimplemented on this machine answers a plain false,
        and leaves `respond_to_missing?` nothing to add. */
@@ -648,20 +653,48 @@ obj_respond_to_p(mrb_state *mrb, mrb_value self, mrb_sym id, mrb_bool priv)
      lookup without standing for one, so it is not asked, as in CRuby. */
   mrb_sym rtm_id = MRB_SYM_Q(respond_to_missing);
   if (!mrb_func_basic_p(mrb, self, rtm_id, mrb_false) && mrb_respond_to(mrb, self, rtm_id)) {
-    mrb_value v = mrb_funcall_argv2(mrb, self, rtm_id, mrb_symbol_value(id), mrb_bool_value(priv));
-    return mrb_bool(v);
+    *ask = TRUE;
   }
   return FALSE;
+}
+
+static mrb_bool
+obj_respond_to_p(mrb_state *mrb, mrb_value self, mrb_sym id, mrb_bool priv)
+{
+  mrb_bool ask;
+
+  if (respond_to_table_p(mrb, self, id, priv, &ask)) return TRUE;
+  if (!ask) return FALSE;
+  return mrb_bool(mrb_funcall_argv2(mrb, self, MRB_SYM_Q(respond_to_missing),
+                                    mrb_symbol_value(id), mrb_bool_value(priv)));
+}
+
+/* `respond_to_missing?` answers `respond_to?` itself, whatever it answers
+   with, so the answer is read for truth alone. */
+static mrb_value
+obj_respond_to_resume(mrb_state *mrb, mrb_value result, mrb_int state)
+{
+  return mrb_bool_value(mrb_test(result));
 }
 
 static mrb_value
 obj_respond_to(mrb_state *mrb, mrb_value self)
 {
   mrb_sym id;
-  mrb_bool priv = FALSE;
+  mrb_bool priv = FALSE, ask;
 
   mrb_get_args(mrb, "n|b", &id, &priv);
-  return mrb_bool_value(obj_respond_to_p(mrb, self, id, priv));
+  if (respond_to_table_p(mrb, self, id, priv, &ask)) return mrb_true_value();
+  if (!ask) return mrb_false_value();
+
+  {
+    /* The send runs through the VM rather than on a nested mrb_vm_exec(), so
+       a Fiber.yield written in `respond_to_missing?` has no C frame to
+       lose. */
+    mrb_value args[2] = { mrb_symbol_value(id), mrb_bool_value(priv) };
+    return mrb_funcall_cont(mrb, obj_respond_to_resume, 0, self,
+                            MRB_SYM_Q(respond_to_missing), 2, args);
+  }
 }
 
 static mrb_value
