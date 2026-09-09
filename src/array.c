@@ -1591,6 +1591,32 @@ mrb_ary_last(mrb_state *mrb, mrb_value self)
  *
  * ISO 15.2.12.5.14
  */
+static mrb_value ary_index_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The block walk, resumable from any index. The receiver and the block are
+   read from the frame rather than held in C locals: the walk returns to the
+   VM on every element, and only the frame survives that. */
+static mrb_value
+ary_index_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+
+  /* The block may have grown or shrunk the array under us, so the length and
+     the pointer are read afresh each turn. */
+  if (i >= RARRAY_LEN(self)) return mrb_nil_value();
+
+  mrb_value v = RARRAY_PTR(self)[i];
+  return mrb_block_cont(mrb, ary_index_resume, i, ci->stack[mrb_ci_bidx(ci)], 1, &v);
+}
+
+static mrb_value
+ary_index_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) return mrb_int_value(mrb, i);
+  return ary_index_walk(mrb, i + 1);
+}
+
 static mrb_value
 mrb_ary_index_m(mrb_state *mrb, mrb_value self)
 {
@@ -1606,16 +1632,11 @@ mrb_ary_index_m(mrb_state *mrb, mrb_value self)
         return mrb_int_value(mrb, i);
       }
     }
+    return mrb_nil_value();
   }
-  else {
-    for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-      mrb_value eq = mrb_yield(mrb, blk, RARRAY_PTR(self)[i]);
-      if (mrb_test(eq)) {
-        return mrb_int_value(mrb, i);
-      }
-    }
-  }
-  return mrb_nil_value();
+  /* The block runs through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in it has no C frame to lose. */
+  return ary_index_walk(mrb, 0);
 }
 
 /*

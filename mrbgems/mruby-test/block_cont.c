@@ -26,7 +26,9 @@ block_cont_walk(mrb_state *mrb, mrb_int i)
 
   /* The block may have changed the array's length, so it is read afresh. */
   if (i >= RARRAY_LEN(ary)) return mrb_nil_value();
-  return mrb_block_cont(mrb, block_cont_resume, i, blk, 1, &RARRAY_PTR(ary)[i]);
+
+  mrb_value v = RARRAY_PTR(ary)[i];
+  return mrb_block_cont(mrb, block_cont_resume, i, blk, 1, &v);
 }
 
 static mrb_value
