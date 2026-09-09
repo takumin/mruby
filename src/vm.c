@@ -3179,16 +3179,53 @@ static const mrb_code coerce_iseq[] = {
 COERCE_TRAMPOLINE(ary,  MRB_SYM(to_ary))
 COERCE_TRAMPOLINE(str,  MRB_SYM(to_str))
 COERCE_TRAMPOLINE(hash, MRB_SYM(to_hash))
+
+/* The splat's `to_a` is not one of those protocols and does not share their
+   bytecode.  `[*obj]` accepts a `to_a` that gives back nil, wrapping the
+   object in a one-element array rather than raising, so this one needs a
+   branch; a result that is neither nil nor an Array is refused by the same
+   `__ensure`.  The duplicate the splat owes its caller is not taken here:
+   the instruction takes it when it runs again on the array. */
+MRB_PRESYM_DEFINE_VAR_AND_INITER(coerce_splat_syms, 2,
+                                 MRB_SYM(to_a), MRB_SYM(__ensure))
+static const mrb_code coerce_splat_iseq[] = {
+  OP_ENTER, 0x04, 0x00, 0x00,   /* 1:0:0:0:0:0:0 */
+  OP_MOVE, 3, 0,                /* R3 = self */
+  OP_SEND, 3, 0, 0,             /* R3 = R3.to_a */
+  OP_JMPNIL, 3, 0, 15,          /* nil: wrap instead of raising */
+  OP_MOVE, 2, 1,                /* R2 = Array */
+  OP_MOVE, 4, 0,                /* R4 = the object that was asked */
+  OP_LOADSYM, 5, 0,             /* R5 = :to_a */
+  OP_SEND, 2, 1, 3,             /* R2 = R2.__ensure(R3, R4, R5) */
+  OP_RETURN, 2,
+  OP_MOVE, 2, 0,                /* R2 = self */
+  OP_ARRAY, 2, 1,               /* R2 = [self] */
+  OP_RETURN, 2,
+};
+static const mrb_irep coerce_splat_irep = {
+  2, 7, 0, MRB_IREP_STATIC,
+  coerce_splat_iseq, NULL, coerce_splat_syms, NULL, NULL, NULL,
+  sizeof(coerce_splat_iseq), 0, 2, 0, 0,
+};
+mrb_alignas(8)
+static const struct RProc coerce_splat_proc = {
+  NULL, MRB_TT_PROC, MRB_GC_RED, MRB_OBJ_IS_FROZEN,
+  MRB_PROC_SCOPE | MRB_PROC_STRICT,
+  { &coerce_splat_irep }, NULL, { NULL }
+};
 /* `flatten` on mrb_vm_exec pulls every callee into the dispatch loop.  These
    run only when a conversion is about to happen, and letting them inline
    there costs the whole VM in register pressure: `fib(25)` ran 1.3% more
    instructions before they were kept out of line. */
 #if defined(__clang__) || defined(__GNUC__)
 #define VM_COLD __attribute__((noinline))
+#define VM_FORCE_INLINE inline __attribute__((always_inline))
 #elif defined(_MSC_VER)
 #define VM_COLD __declspec(noinline)
+#define VM_FORCE_INLINE __forceinline
 #else
 #define VM_COLD
+#define VM_FORCE_INLINE inline
 #endif
 
 /* One decoded instruction, an OP_EXT1/2/3 prefix folded in. */
@@ -3287,7 +3324,11 @@ vm_insn_start_scan(const mrb_irep *irep, const mrb_code *end, struct vm_insn *ou
    A lone survivor is the answer.  Two survivors are possible when the bytes
    before the instruction happen to decode as one too, and there the walk from
    the top settles it. */
-static const mrb_code *
+/* Inlined into its callers on purpose.  Both are `VM_COLD`, so this reaches
+   the dispatch loop no more than they do, and leaving it out of line put a
+   call between them and the hints below: 36 instructions on every conversion,
+   for 528 bytes saved. */
+static VM_FORCE_INLINE const mrb_code *
 vm_insn_start(const mrb_irep *irep, const mrb_code *end, mrb_code insn,
               struct vm_insn *out)
 {
@@ -3295,11 +3336,10 @@ vm_insn_start(const mrb_irep *irep, const mrb_code *end, mrb_code insn,
   struct vm_insn d;
   int hits = 0;
 
-  /* Both instructions that trap are a BBB, so the length is 4 with no prefix
-     and 6 or 7 with one.  These are hints, not the answer: a candidate counts
-     only once it decodes back to `insn` and to that very length, and a trap
-     on some other shape matches nothing here and falls through to the walk
-     from the top, which needs no hint. */
+  /* The lengths an instruction of this shape can have.  These are hints, not
+     the answer: a candidate counts only once it decodes back to `insn` and to
+     that very length, and a shape no hint covers matches nothing here and
+     falls through to the walk from the top, which needs none. */
 #define VM_TRY_START(len, pfx) do {                                     \
     const mrb_code *pc = end - (len);                                   \
     if (pc >= irep->iseq &&                                             \
@@ -3310,10 +3350,20 @@ vm_insn_start(const mrb_irep *irep, const mrb_code *end, mrb_code insn,
       hits++;                                                           \
     }                                                                   \
   } while (0)
-  VM_TRY_START(4, 0);
-  VM_TRY_START(6, OP_EXT1);
-  VM_TRY_START(6, OP_EXT2);
-  VM_TRY_START(7, OP_EXT3);
+  switch (vm_insn_shape[insn]) {
+  case VM_SHAPE_BBB:            /* OP_AREF, OP_APOST */
+    VM_TRY_START(4, 0);
+    VM_TRY_START(6, OP_EXT1);
+    VM_TRY_START(6, OP_EXT2);
+    VM_TRY_START(7, OP_EXT3);
+    break;
+  case VM_SHAPE_B:              /* OP_ARYCAT, OP_ARYSPLAT */
+    VM_TRY_START(2, 0);
+    VM_TRY_START(4, OP_EXT1);   /* only the one operand can widen */
+    break;
+  default:
+    break;
+  }
 #undef VM_TRY_START
   if (hits != 1) {
     found = vm_insn_start_scan(irep, end, out);
@@ -3352,6 +3402,54 @@ vm_coerce_ary(mrb_state *mrb, mrb_code op, int which)
   stack_extend(mrb, coerce_ary_irep.nregs);
   ci->stack[1] = mrb_obj_value(mrb->array_class);
   return TRUE;
+}
+
+/* The splat expands the same way: the instruction rewinds, the trampoline is
+   pushed over the register it read, and the instruction runs again with an
+   Array there — which is also where the duplicate a splat owes its caller is
+   taken, since `mrb_ary_splat()` still makes one for an Array.
+
+   `to_a` is not an implicit conversion protocol, so there is no bit in
+   `conv_defined` to answer from and the guard stays a method search.  Its
+   answer is handed back rather than kept, because a splat wraps a value with
+   no `to_a` instead of raising: leaving that to `mrb_ary_splat()` would ask
+   the same question a second time, and a miss on a deep chain of ROM tables
+   is the most expensive search there is — 1,205 instructions on an Integer. */
+enum vm_splat_conv {
+  VM_SPLAT_PUSHED,              /* the conversion is on the stack; run it */
+  VM_SPLAT_WRAP,                /* no `to_a`: the value is its own array */
+  VM_SPLAT_SEND                 /* it has one, but no restart was arranged */
+};
+
+/* `off` says where the value sits relative to the instruction's operand:
+   `OP_ARYSPLAT` reads it, `OP_ARYCAT` the register above the accumulator. */
+static VM_COLD enum vm_splat_conv
+vm_coerce_splat(mrb_state *mrb, mrb_code op, int off, mrb_value v)
+{
+  struct RClass *c = mrb_class(mrb, v);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(to_a));
+  if (MRB_METHOD_UNDEF_P(m)) return VM_SPLAT_WRAP;
+  /* Only a `to_a` written in Ruby needs the dispatch loop to run it.
+     `mrb_funcall_argv()` calls a C one straight, without `mrb_run()`, so it
+     is neither the C recursion that overruns a small stack nor the frame a
+     fiber cannot yield across — the two things this is here to remove.  The
+     core's `to_a` is C every time (NilClass's, Hash's, Range's), and sending
+     those from here cost `[*nil]` 571 instructions for nothing. */
+  if (MRB_METHOD_CFUNC_P(m)) return VM_SPLAT_SEND;
+
+  mrb_callinfo *ci = mrb->c->ci;
+  const mrb_irep *cirep = ci->proc->body.irep;
+  struct vm_insn d;
+  const mrb_code *start = vm_insn_start(cirep, ci->pc, op, &d);
+  if (start == NULL) return VM_SPLAT_SEND;
+
+  uint32_t reg = d.a + off;
+  ci->pc = start;
+  ci = cipush(mrb, reg, CINFO_NONE, mrb->array_class, &coerce_splat_proc, NULL,
+              MRB_SYM(to_a), 1);
+  stack_extend(mrb, coerce_splat_irep.nregs);
+  ci->stack[1] = mrb_obj_value(mrb->array_class);
+  return VM_SPLAT_PUSHED;
 }
 
 /* ---- implicit conversion of a C method's argument ------------------------
@@ -4801,30 +4899,53 @@ RETRY_TRY_BLOCK:
 
     CASE(OP_ARYCAT, B) {
       mrb_value v = regs[a+1];
-      if (mrb_nil_p(regs[a])) {
-        /* becomes the argument accumulator, which OP_ARYPUSH/ARYCAT then
-           append to, so it must be a fresh array independent of v.
-           mrb_ary_splat() can call back into the VM (`to_a`) and move the
-           stack, so take the result first and store it through the refreshed
-           `regs`: the address of regs[a] is otherwise computed before the
-           call and would point into the freed buffer. */
-        mrb_value splat = mrb_ary_splat(mrb, v);
-        ci = mrb->c->ci;
-        regs[a] = splat;
+      if (mrb_unlikely(!mrb_array_p(v))) {
+        /* An Array is what the rest of this wants, so make one first.  A
+           `to_a` written in Ruby runs as bytecode and the instruction is
+           taken from the top; a value with no `to_a` at all stands for a
+           one-element array. */
+        switch (vm_coerce_splat(mrb, OP_ARYCAT, 1, v)) {
+        case VM_SPLAT_PUSHED:
+          irep = &coerce_splat_irep;
+          ci = mrb->c->ci;
+          JUMP;
+        case VM_SPLAT_WRAP:
+          if (mrb_nil_p(regs[a])) {
+            regs[a] = mrb_ary_splat_wrap(mrb, v);
+          }
+          else {
+            /* being appended is that array's only use here, so build none */
+            mrb_ensure_array_type(mrb, regs[a]);
+            mrb_ary_push(mrb, regs[a], v);
+          }
+          mrb_gc_arena_restore(mrb, ai);
+          NEXT;
+        default:
+          /* sending `to_a` from here can call back into the VM and move the
+             stack, so refresh `ci` before `regs` is read again */
+          v = mrb_ary_splat_to_a(mrb, v);
+          ci = mrb->c->ci;
+          break;
+        }
+        if (mrb_nil_p(regs[a])) {
+          regs[a] = v;
+        }
+        else {
+          mrb_ensure_array_type(mrb, regs[a]);
+          mrb_ary_concat(mrb, regs[a], v);
+        }
       }
-      else if (mrb_array_p(v)) {
+      else if (mrb_nil_p(regs[a])) {
+        /* becomes the argument accumulator, which OP_ARYPUSH/ARYCAT then
+           append to, so it must be a fresh array independent of v */
+        regs[a] = mrb_ary_splat(mrb, v);
+      }
+      else {
         /* concat only reads v, so splat here would just dup v and copy it
            twice; concatenate straight from v (ary_concat handles v aliasing
            regs[a]) */
         mrb_ensure_array_type(mrb, regs[a]);
         mrb_ary_concat(mrb, regs[a], v);
-      }
-      else {
-        /* non-array: to_a already yields a fresh array, no extra dup needed */
-        mrb_value splat = mrb_ary_splat(mrb, v);
-        ci = mrb->c->ci;
-        mrb_ensure_array_type(mrb, regs[a]);
-        mrb_ary_concat(mrb, regs[a], splat);
       }
       mrb_gc_arena_restore(mrb, ai);
       NEXT;
@@ -4839,9 +4960,26 @@ RETRY_TRY_BLOCK:
     }
 
     CASE(OP_ARYSPLAT, B) {
-      mrb_value ary = mrb_ary_splat(mrb, regs[a]);
-      ci = mrb->c->ci;
-      regs[a] = ary;
+      mrb_value v = regs[a];
+      if (mrb_unlikely(!mrb_array_p(v))) {
+        switch (vm_coerce_splat(mrb, OP_ARYSPLAT, 0, v)) {
+        case VM_SPLAT_PUSHED:
+          irep = &coerce_splat_irep;
+          ci = mrb->c->ci;
+          JUMP;
+        case VM_SPLAT_WRAP:
+          regs[a] = mrb_ary_splat_wrap(mrb, v);
+          break;
+        default:
+          v = mrb_ary_splat_to_a(mrb, v);
+          ci = mrb->c->ci;
+          regs[a] = v;
+          break;
+        }
+      }
+      else {
+        regs[a] = mrb_ary_splat(mrb, v);
+      }
       mrb_gc_arena_restore(mrb, ai);
       NEXT;
     }

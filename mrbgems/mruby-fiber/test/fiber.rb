@@ -238,3 +238,14 @@ assert('a conversion of a C method argument can yield out of a fiber') do
   assert_equal(:asked, f.resume)
   assert_true(f.resume)
 end
+
+assert('a splat expansion can yield out of a fiber') do
+  # The splat sends `to_a` from the dispatch loop rather than from C, so this
+  # crosses no C function boundary either.
+  cls = Class.new do
+    def to_a; Fiber.yield(:asked); [1, 2]; end
+  end
+  f = Fiber.new { [0, *cls.new] }
+  assert_equal(:asked, f.resume)
+  assert_equal([0, 1, 2], f.resume)
+end

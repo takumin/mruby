@@ -3177,3 +3177,76 @@ assert('a multiple assignment used as an expression is the right-hand side') do
   assert_equal [1, 2], [y, z]
   assert_equal [1, o], u
 end
+
+class SplatToA
+  def initialize; @count = 0; end
+  attr_reader :count
+  def to_a; @count += 1; [1, 2]; end
+  def inspect; "#<SplatToA>"; end
+end
+
+class SplatBadToA
+  def to_a; 7; end
+end
+
+class SplatNilToA
+  def to_a; nil; end
+  def inspect; "#<SplatNilToA>"; end
+end
+
+class SplatRaisingToA
+  def to_a; raise ArgumentError, "from to_a"; end
+end
+
+class SplatNoToA
+  def inspect; "#<SplatNoToA>"; end
+end
+
+class SplatSharedToA
+  def initialize; @shared = [1, 2]; end
+  attr_reader :shared
+  def to_a; @shared; end
+end
+
+assert('a splat expands its operand with to_a') do
+  o = SplatToA.new
+  assert_equal [0, 1, 2, 9], [0, *o, 9]
+  assert_equal [1, 2], [*o]
+
+  def splat_tail(q); return *q; end
+  assert_equal [1, 2], splat_tail(SplatToA.new)
+
+  # to_a that gives back nil wraps the object rather than raising
+  o = SplatNilToA.new
+  assert_equal [o], [*o]
+
+  # and so does a value with no to_a at all
+  o = SplatNoToA.new
+  assert_equal [0, o], [0, *o]
+  assert_equal [o], splat_tail(o)
+
+  # to_a that gives back something else is a TypeError, and the message names
+  # the object that was asked
+  assert_raise_with_message(TypeError,
+      "can't convert SplatBadToA to Array (SplatBadToA#to_a gives Integer)") do
+    [0, *SplatBadToA.new]
+  end
+  assert_raise(TypeError) { splat_tail(SplatBadToA.new) }
+
+  # an exception from to_a passes through rather than turning into TypeError
+  assert_raise_with_message(ArgumentError, "from to_a") do
+    [*SplatRaisingToA.new]
+  end
+end
+
+assert('a splat sends to_a once and copies what it gets') do
+  o = SplatToA.new
+  assert_equal [0, 1, 2], [0, *o]
+  assert_equal 1, o.count
+
+  # the expansion is the caller's own array: what to_a returned stays as it was
+  src = SplatSharedToA.new
+  got = [*src]
+  got << 3
+  assert_equal [1, 2], src.shared
+end

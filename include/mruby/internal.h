@@ -10,6 +10,11 @@
 #ifdef MRUBY_ARRAY_H
 void mrb_ary_decref(mrb_state*, mrb_shared_array*);
 mrb_value mrb_ary_subseq(mrb_state *mrb, mrb_value ary, mrb_int beg, mrb_int len);
+/* mrb_ary_splat() split at the `to_a` question, for the VM, which has asked
+   it already: _wrap makes the one-element array a value without `to_a`
+   stands for, _to_a sends it and normalizes what comes back. */
+mrb_value mrb_ary_splat_wrap(mrb_state *mrb, mrb_value v);
+mrb_value mrb_ary_splat_to_a(mrb_state *mrb, mrb_value v);
 #endif
 
 /* What frame `ci` of context `c` carries as special variables, or NULL.
