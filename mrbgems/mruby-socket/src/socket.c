@@ -747,7 +747,7 @@ mrb_basicsocket_send(mrb_state *mrb, mrb_value self)
   mrb_value mesg;
   mrb_value dest = mrb_nil_value();
 
-  mrb_get_args(mrb, "Si|S", &mesg, &flags, &dest);
+  mrb_get_args(mrb, "S~i|S~", &mesg, &flags, &dest);
 
   ssize_t n;
   if (mrb_nil_p(dest)) {
@@ -1166,7 +1166,7 @@ mrb_socket_sockaddr_un(mrb_state *mrb, mrb_value klass)
 {
   mrb_value path;
 
-  mrb_get_args(mrb, "S", &path);
+  mrb_get_args(mrb, "S~", &path);
   return mrb_hal_socket_sockaddr_un(mrb, RSTRING_PTR(path), (size_t)RSTRING_LEN(path));
 }
 #else
@@ -1256,7 +1256,7 @@ mrb_basicsocket_recv_sysread(mrb_state *mrb, mrb_value self)
   mrb_value buf = mrb_nil_value();
   mrb_int maxlen;
 
-  mrb_get_args(mrb, "i|S", &maxlen, &buf);
+  mrb_get_args(mrb, "i|S~", &maxlen, &buf);
   if (maxlen < 0) {
     return mrb_nil_value();
   }
@@ -1305,7 +1305,7 @@ mrb_basicsocket_send_syswrite(mrb_state *mrb, mrb_value self)
   mrb_value str;
   int sd = socket_fd(mrb, self);
 
-  mrb_get_args(mrb, "S", &str);
+  mrb_get_args(mrb, "S~", &str);
 
   int n = send(sd, RSTRING_PTR(str), (int)RSTRING_LEN(str), 0);
   if (n == -1)

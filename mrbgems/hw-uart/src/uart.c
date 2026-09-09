@@ -96,7 +96,7 @@ static mrb_value
 mrb_uart_m_write(mrb_state *mrb, mrb_value self)
 {
   mrb_value str;
-  mrb_get_args(mrb, "S", &str);
+  mrb_get_args(mrb, "S~", &str);
   mrb_int unit = mrb_integer(mrb_iv_get(mrb, self, MRB_IVSYM(unit_num)));
   size_t len = RSTRING_LEN(str);
   mrb_uart_write((int)unit, (const uint8_t*)RSTRING_PTR(str), len);

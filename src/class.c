@@ -1516,7 +1516,10 @@ mrb_block_given_p(mrb_state *mrb)
  * that the file can be compiled as C++ (array-index designators are a
  * C99-only feature).  Modern compilers typically lower this to a jump
  * table, giving the same effective O(1) behavior as the original table.
- * Returns 1 for a valid arg specifier, 2 for the separator, 0 otherwise.
+ * Returns 1 for a valid arg specifier, 4 for one that may carry the
+ * conversion modifier, 2 for the separator, 3 for the modifier itself
+ * (which is read by the specifier it follows, so meeting one here is a
+ * malformed format), 0 otherwise.
  */
 static inline uint8_t
 fast_fmt_ok(char c)
@@ -1526,11 +1529,15 @@ fast_fmt_ok(char c)
   case 'f':
     return 1;
 #endif
-  case 'o': case 'S': case 'A': case 'H': case 'i': case 'b':
+  case 'o': case 'i': case 'b':
   case 'n': case 'z': case 'c': case 's': case 'a':
     return 1;
+  case 'S': case 'A': case 'H':
+    return 4;
   case '|':
     return 2;
+  case '~':
+    return 3;
   default:
     return 0;
   }
@@ -1579,10 +1586,18 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
   mrb_bool in_opt = FALSE;
   while (*p) {
     uint8_t v = fast_fmt_ok(*p);
-    if (v == 0) return -1;  /* unsupported specifier */
+    if (v == 1) { if (in_opt) opt++; else req++; p++; continue; }
+    if (v == 4) {
+      /* a specifier that names a type reads a `~` of its own, so the count
+         stays one either way */
+      if (in_opt) opt++; else req++;
+      p += (p[1] == '~') ? 2 : 1;
+      continue;
+    }
     if (v == 2) { in_opt = TRUE; p++; continue; }
-    if (in_opt) opt++; else req++;
-    p++;
+    /* unsupported specifier, or a `~` where no specifier claims it: the
+       general path words the error */
+    return -1;
   }
   if (argc < req || argc > req + opt) {
     mrb_argnum_error(mrb, argc, req, req + opt);
@@ -1596,6 +1611,10 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     if (i >= argc) {
       /* skip remaining optional args (just consume GET_ARG pointers) */
       switch (c) {
+      case 'S': case 'A': case 'H':
+        (void)GET_ARG(void*);
+        if (*p == '~') p++;
+        break;
       case 's': case 'a':
         (void)GET_ARG(void*);
         (void)GET_ARG(void*);
@@ -1614,19 +1633,34 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     }
     case 'S': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      if (mrb_unlikely(!mrb_string_p(argv[i]))) arg_conv(mrb, argv, i, MRB_CONV_TO_STR);
+      mrb_bool conv = (*p == '~');
+      if (conv) p++;
+      if (mrb_unlikely(!mrb_string_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_STR);
+        else mrb_ensure_string_type(mrb, argv[i]);
+      }
       *vp = argv[i++];
       break;
     }
     case 'A': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      if (mrb_unlikely(!mrb_array_p(argv[i]))) arg_conv(mrb, argv, i, MRB_CONV_TO_ARY);
+      mrb_bool conv = (*p == '~');
+      if (conv) p++;
+      if (mrb_unlikely(!mrb_array_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_ARY);
+        else mrb_ensure_array_type(mrb, argv[i]);
+      }
       *vp = argv[i++];
       break;
     }
     case 'H': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      if (mrb_unlikely(!mrb_hash_p(argv[i]))) arg_conv(mrb, argv, i, MRB_CONV_TO_HASH);
+      mrb_bool conv = (*p == '~');
+      if (conv) p++;
+      if (mrb_unlikely(!mrb_hash_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_HASH);
+        else mrb_ensure_hash_type(mrb, argv[i]);
+      }
       *vp = argv[i++];
       break;
     }
@@ -1723,6 +1757,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
       goto check_exit;
     case '!':
     case '+':
+    case '~':
       break;
     case ':':
       reqkarg = TRUE;
@@ -1779,6 +1814,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
   while ((c = *format++)) {
     mrb_bool altmode = FALSE;
     mrb_bool needmodify = FALSE;
+    mrb_bool convmode = FALSE;
 
     for (; *format; format++) {
       switch (*format) {
@@ -1789,6 +1825,15 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
       case '+':
         if (needmodify) goto modifier_exit; /* not accept for multiple '+' */
         needmodify = TRUE;
+        break;
+      case '~':
+        if (convmode) goto modifier_exit; /* not accept for multiple '~' */
+        /* only the specifiers that name a type to convert to take `~`; the
+           test sits here so that a format without one pays nothing for it */
+        if (c != 'S' && c != 'A' && c != 'H') {
+          mrb_raisef(mrb, E_ARGUMENT_ERROR, "wrong `%c~` modified specifier", c);
+        }
+        convmode = TRUE;
         break;
       default:
         goto modifier_exit;
@@ -1836,13 +1881,22 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
             switch (c) {
             case 'C': ensure_class_type(mrb, *pickarg); break;
             case 'S':
-              if (!mrb_string_p(*pickarg)) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+              if (!mrb_string_p(*pickarg)) {
+                if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+                else mrb_ensure_string_type(mrb, *pickarg);
+              }
               break;
             case 'A':
-              if (!mrb_array_p(*pickarg)) arg_conv(mrb, argv, i-1, MRB_CONV_TO_ARY);
+              if (!mrb_array_p(*pickarg)) {
+                if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_ARY);
+                else mrb_ensure_array_type(mrb, *pickarg);
+              }
               break;
             case 'H':
-              if (!mrb_hash_p(*pickarg)) arg_conv(mrb, argv, i-1, MRB_CONV_TO_HASH);
+              if (!mrb_hash_p(*pickarg)) {
+                if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_HASH);
+                else mrb_ensure_hash_type(mrb, *pickarg);
+              }
               break;
             }
           }

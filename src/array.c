@@ -685,7 +685,7 @@ mrb_ary_replace_m(mrb_state *mrb, mrb_value self)
 {
   mrb_value other;
 
-  mrb_get_args(mrb, "A", &other);
+  mrb_get_args(mrb, "A~", &other);
   mrb_ary_replace(mrb, self, other);
 
   return self;
@@ -1926,7 +1926,7 @@ mrb_ary_join_m(mrb_state *mrb, mrb_value ary)
 {
   mrb_value sep = mrb_nil_value();
 
-  mrb_get_args(mrb, "|S!", &sep);
+  mrb_get_args(mrb, "|S~!", &sep);
   return mrb_ary_join(mrb, ary, sep);
 }
 

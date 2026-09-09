@@ -322,3 +322,43 @@ assert('a conversion nested in a conversion runs out of call frames, not C stack
     end
   end
 end
+
+assert('`~` in a format states that the argument takes an implicit conversion') do
+  o = ArgConvToStr.new
+  assert_equal("b", TestArgFormat.conv_str(o))
+  assert_equal([1, 2], TestArgFormat.conv_ary(ArgConvToAry.new))
+  assert_equal({a: 1}, TestArgFormat.conv_hash(ArgConvToHash.new))
+
+  # a value of the type itself asks for nothing, and the restarted send asks
+  # for the conversion once rather than once per attempt
+  assert_equal("x", TestArgFormat.conv_str("x"))
+  assert_equal(1, o.asked)
+
+  # the same specifier without the modifier keeps the type it always demanded
+  assert_raise_with_message(TypeError, "ArgConvToStr cannot be converted to String") do
+    TestArgFormat.strict_str(ArgConvToStr.new)
+  end
+end
+
+assert('a format modifier is not an argument of its own') do
+  assert_nil(TestArgFormat.conv_opt)
+  assert_equal("b", TestArgFormat.conv_opt(ArgConvToStr.new))
+  assert_raise(ArgumentError) { TestArgFormat.conv_opt("a", "b") }
+end
+
+assert('`~` combines with the modifiers that were already there') do
+  # `!` lets nil through, and nil asks for no conversion
+  assert_nil(TestArgFormat.conv_alt(nil))
+  assert_equal("b", TestArgFormat.conv_alt(ArgConvToStr.new))
+end
+
+assert('`~` on a specifier that names no conversion is a broken format') do
+  assert_raise(ArgumentError) { TestArgFormat.bad_modifier(1) }
+end
+
+assert('an argument that is not the last one keeps the type error') do
+  # The conversion restarts the send, so it can only answer for the argument
+  # the send leaves on top of the stack.
+  assert_raise(TypeError) { TestArgFormat.conv_first(ArgConvToStr.new, 1) }
+  assert_equal("x", TestArgFormat.conv_first("x", 1))
+end

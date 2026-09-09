@@ -1155,7 +1155,7 @@ mrb_task_s_get(mrb_state *mrb, mrb_value self)
 {
   mrb_value name;
 
-  mrb_get_args(mrb, "S", &name);
+  mrb_get_args(mrb, "S~", &name);
 
   /* Search all queues for task with matching name */
   for (int i = 0; i < MRB_NUM_TASK_QUEUE; i++) {

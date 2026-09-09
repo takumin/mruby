@@ -1620,7 +1620,7 @@ mrb_str_plus_m(mrb_state *mrb, mrb_value self)
 {
   mrb_value str;
 
-  mrb_get_args(mrb, "S", &str);
+  mrb_get_args(mrb, "S~", &str);
   return mrb_str_plus(mrb, self, str);
 }
 
@@ -2209,7 +2209,7 @@ mrb_str_aset_m(mrb_state *mrb, mrb_value str)
 {
   mrb_value idx, alen, replace;
 
-  switch (mrb_get_args(mrb, "oo|S!", &idx, &alen, &replace)) {
+  switch (mrb_get_args(mrb, "oo|S~!", &idx, &alen, &replace)) {
     case 2:
       replace = alen;
       alen = mrb_undef_value();
@@ -2477,7 +2477,7 @@ static mrb_value
 mrb_str_chomp_bang(mrb_state *mrb, mrb_value str)
 {
   mrb_value rs;
-  mrb_int argc = mrb_get_args(mrb, "|S", &rs);
+  mrb_int argc = mrb_get_args(mrb, "|S~", &rs);
   struct RString *s = mrb_str_ptr(str);
 
   mrb_str_modify_keep_cr(mrb, s);
@@ -2835,7 +2835,7 @@ mrb_str_include(mrb_state *mrb, mrb_value self)
 {
   mrb_value str2;
 
-  mrb_get_args(mrb, "S", &str2);
+  mrb_get_args(mrb, "S~", &str2);
   if (str_index_str(mrb, self, str2, 0) < 0)
     return mrb_bool_value(FALSE);
   return mrb_bool_value(TRUE);
@@ -2878,7 +2878,7 @@ mrb_str_byteindex_m(mrb_state *mrb, mrb_value str)
   mrb_value sub;
   mrb_int pos;
 
-  if (mrb_get_args(mrb, "S|i", &sub, &pos) == 1) {
+  if (mrb_get_args(mrb, "S~|i", &sub, &pos) == 1) {
     pos = 0;
   }
   else if (pos < 0) {
@@ -2923,7 +2923,7 @@ mrb_str_index_m(mrb_state *mrb, mrb_value str)
   mrb_value sub;
   mrb_int pos;
 
-  if (mrb_get_args(mrb, "S|i", &sub, &pos) == 1) {
+  if (mrb_get_args(mrb, "S~|i", &sub, &pos) == 1) {
     pos = 0;
   }
   else if (pos < 0) {
@@ -2956,7 +2956,7 @@ mrb_str_replace(mrb_state *mrb, mrb_value str)
 {
   mrb_value str2;
 
-  mrb_get_args(mrb, "S", &str2);
+  mrb_get_args(mrb, "S~", &str2);
   return str_replace(mrb, mrb_str_ptr(str), mrb_str_ptr(str2));
 }
 
@@ -2972,7 +2972,7 @@ mrb_str_init(mrb_state *mrb, mrb_value self)
 {
   mrb_value str2;
 
-  if (mrb_get_args(mrb, "|S", &str2) == 0) {
+  if (mrb_get_args(mrb, "|S~", &str2) == 0) {
     str2 = mrb_str_new(mrb, 0, 0);
   }
   str_replace(mrb, mrb_str_ptr(self), mrb_str_ptr(str2));
@@ -3196,7 +3196,7 @@ mrb_str_byterindex_m(mrb_state *mrb, mrb_value str)
   mrb_value sub;
   mrb_int pos;
 
-  if (mrb_get_args(mrb, "S|i", &sub, &pos) == 1) {
+  if (mrb_get_args(mrb, "S~|i", &sub, &pos) == 1) {
     pos = len;
   }
   else {
@@ -3244,7 +3244,7 @@ mrb_str_rindex_m(mrb_state *mrb, mrb_value str)
   mrb_value sub;
   mrb_int pos;
 
-  if (mrb_get_args(mrb, "S|i", &sub, &pos) == 1) {
+  if (mrb_get_args(mrb, "S~|i", &sub, &pos) == 1) {
     pos = RSTRING_LEN(str);
   }
   else if (pos >= 0) {
@@ -4427,7 +4427,7 @@ mrb_str_bytesplice(mrb_state *mrb, mrb_value str)
   case 3:
     mrb_get_args(mrb, "ooo", &range1, &replace, &range2);
     if (mrb_integer_p(range1)) {
-      mrb_get_args(mrb, "iiS", &idx1, &len1, &replace);
+      mrb_get_args(mrb, "iiS~", &idx1, &len1, &replace);
       return str_bytesplice(mrb, str, idx1, len1, replace, 0, RSTRING_LEN(replace));
     }
     mrb_ensure_string_type(mrb, replace);
@@ -4435,10 +4435,10 @@ mrb_str_bytesplice(mrb_state *mrb, mrb_value str)
     if (mrb_range_beg_len(mrb, range2, &idx2, &len2, RSTRING_LEN(replace), FALSE) != MRB_RANGE_OK) break;
     return str_bytesplice(mrb, str, idx1, len1, replace, idx2, len2);
   case 5:
-    mrb_get_args(mrb, "iiSii", &idx1, &len1, &replace, &idx2, &len2);
+    mrb_get_args(mrb, "iiS~ii", &idx1, &len1, &replace, &idx2, &len2);
     return str_bytesplice(mrb, str, idx1, len1, replace, idx2, len2);
   case 2:
-    mrb_get_args(mrb, "oS", &range1, &replace);
+    mrb_get_args(mrb, "oS~", &range1, &replace);
     if (mrb_range_beg_len(mrb, range1, &idx1, &len1, RSTRING_LEN(str), FALSE) == MRB_RANGE_OK) {
       return str_bytesplice(mrb, str, idx1, len1, replace, 0, RSTRING_LEN(replace));
     }

@@ -1151,9 +1151,9 @@ MRB_API struct RClass* mrb_define_module_under_id(mrb_state *mrb, struct RClass 
  * |:----:|----------------|-------------------|----------------------------------------------------|
  * | `o`  | {Object}       | {mrb_value}       | Could be used to retrieve any type of argument     |
  * | `C`  | {Class}/{Module} | {mrb_value}     | when `!` follows, the value may be `nil`           |
- * | `S`  | {String}       | {mrb_value}       | when `!` follows, the value may be `nil`           |
- * | `A`  | {Array}        | {mrb_value}       | when `!` follows, the value may be `nil`           |
- * | `H`  | {Hash}         | {mrb_value}       | when `!` follows, the value may be `nil`           |
+ * | `S`  | {String}       | {mrb_value}       | when `!` follows, the value may be `nil`; when `~` follows, `to_str` is asked for |
+ * | `A`  | {Array}        | {mrb_value}       | when `!` follows, the value may be `nil`; when `~` follows, `to_ary` is asked for |
+ * | `H`  | {Hash}         | {mrb_value}       | when `!` follows, the value may be `nil`; when `~` follows, `to_hash` is asked for |
  * | `s`  | {String}       | const char *, {mrb_int} | Receive two arguments; `s!` gives (`NULL`,`0`) for `nil` |
  * | `z`  | {String}       | const char *      | `NULL` terminated string; `z!` gives `NULL` for `nil` |
  * | `a`  | {Array}        | const {mrb_value} *, {mrb_int} | Receive two arguments; `a!` gives (`NULL`,`0`) for `nil` |
@@ -1178,6 +1178,7 @@ MRB_API struct RClass* mrb_define_module_under_id(mrb_state *mrb, struct RClass 
  * |:----:|-----------------------------------------------------------------------------------------|
  * | `!`  | Switch to the alternate mode; The behaviour changes depending on the format specifier   |
  * | `+`  | Request a not frozen object; However, except nil value                                  |
+ * | `~`  | Only for `S`, `A` and `H`: take an implicit conversion (`to_str`, `to_ary`, `to_hash`) |
  */
 typedef const char *mrb_args_format;
 

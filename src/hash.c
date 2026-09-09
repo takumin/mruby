@@ -1369,7 +1369,7 @@ static mrb_value
 mrb_hash_init_copy(mrb_state *mrb, mrb_value self)
 {
   mrb_value orig;
-  mrb_get_args(mrb, "H", &orig);
+  mrb_get_args(mrb, "H~", &orig);
   hash_modify(mrb, self);
   if (mrb_hash_ptr(self) != mrb_hash_ptr(orig)) hash_replace(mrb, self, orig);
   return self;

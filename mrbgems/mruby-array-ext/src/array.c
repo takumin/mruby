@@ -708,7 +708,7 @@ static mrb_value
 ary_sub(mrb_state *mrb, mrb_value self)
 {
   mrb_value other;
-  mrb_get_args(mrb, "A", &other);
+  mrb_get_args(mrb, "A~", &other);
   return ary_subtract_internal(mrb, self, 1, &other);
 }
 
@@ -803,7 +803,7 @@ static mrb_value
 ary_union(mrb_state *mrb, mrb_value self)
 {
   mrb_value other;
-  mrb_get_args(mrb, "A", &other);
+  mrb_get_args(mrb, "A~", &other);
   return ary_union_internal(mrb, self, 1, &other);
 }
 
@@ -923,7 +923,7 @@ static mrb_value
 ary_intersection(mrb_state *mrb, mrb_value self)
 {
   mrb_value other;
-  mrb_get_args(mrb, "A", &other);
+  mrb_get_args(mrb, "A~", &other);
   return ary_intersection_internal(mrb, self, 1, &other);
 }
 
@@ -992,7 +992,7 @@ static mrb_value
 ary_intersect_p(mrb_state *mrb, mrb_value self)
 {
   mrb_value other;
-  mrb_get_args(mrb, "A", &other);
+  mrb_get_args(mrb, "A~", &other);
 
   mrb_value shorter_ary, longer_ary;
   if (RARRAY_LEN(self) > RARRAY_LEN(other)) {

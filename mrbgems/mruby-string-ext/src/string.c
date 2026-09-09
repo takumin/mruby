@@ -610,7 +610,7 @@ str_tr_m(mrb_state *mrb, mrb_value str)
 {
   mrb_value p1, p2;
 
-  mrb_get_args(mrb, "SS", &p1, &p2);
+  mrb_get_args(mrb, "S~S~", &p1, &p2);
   mrb_value dup = mrb_str_dup(mrb, str);
   str_tr(mrb, dup, p1, p2, FALSE);
   return dup;
@@ -628,7 +628,7 @@ str_tr_bang(mrb_state *mrb, mrb_value str)
 {
   mrb_value p1, p2;
 
-  mrb_get_args(mrb, "SS", &p1, &p2);
+  mrb_get_args(mrb, "S~S~", &p1, &p2);
   if (str_tr(mrb, str, p1, p2, FALSE)) {
     return str;
   }
@@ -651,7 +651,7 @@ str_tr_s(mrb_state *mrb, mrb_value str)
 {
   mrb_value p1, p2;
 
-  mrb_get_args(mrb, "SS", &p1, &p2);
+  mrb_get_args(mrb, "S~S~", &p1, &p2);
   mrb_value dup = mrb_str_dup(mrb, str);
   str_tr(mrb, dup, p1, p2, TRUE);
   return dup;
@@ -669,7 +669,7 @@ str_tr_s_bang(mrb_state *mrb, mrb_value str)
 {
   mrb_value p1, p2;
 
-  mrb_get_args(mrb, "SS", &p1, &p2);
+  mrb_get_args(mrb, "S~S~", &p1, &p2);
   if (str_tr(mrb, str, p1, p2, TRUE)) {
     return str;
   }
@@ -742,7 +742,7 @@ str_squeeze_m(mrb_state *mrb, mrb_value str)
 {
   mrb_value pat = mrb_nil_value();
 
-  mrb_get_args(mrb, "|S", &pat);
+  mrb_get_args(mrb, "|S~", &pat);
   mrb_value dup = mrb_str_dup(mrb, str);
   str_squeeze(mrb, dup, pat);
   return dup;
@@ -760,7 +760,7 @@ str_squeeze_bang(mrb_state *mrb, mrb_value str)
 {
   mrb_value pat = mrb_nil_value();
 
-  mrb_get_args(mrb, "|S", &pat);
+  mrb_get_args(mrb, "|S~", &pat);
   if (str_squeeze(mrb, str, pat)) {
     return str;
   }
@@ -803,7 +803,7 @@ str_delete_m(mrb_state *mrb, mrb_value str)
 {
   mrb_value pat;
 
-  mrb_get_args(mrb, "S", &pat);
+  mrb_get_args(mrb, "S~", &pat);
   mrb_value dup = mrb_str_dup(mrb, str);
   str_delete(mrb, dup, pat);
   return dup;
@@ -815,7 +815,7 @@ str_delete_bang(mrb_state *mrb, mrb_value str)
 {
   mrb_value pat;
 
-  mrb_get_args(mrb, "S", &pat);
+  mrb_get_args(mrb, "S~", &pat);
   if (str_delete(mrb, str, pat)) {
     return str;
   }
@@ -840,7 +840,7 @@ str_count(mrb_state *mrb, mrb_value str)
   struct tr_pattern pat = STATIC_TR_PATTERN;
   uint8_t bitmap[32];
 
-  mrb_get_args(mrb, "S", &v_pat);
+  mrb_get_args(mrb, "S~", &v_pat);
   tr_parse_pattern(mrb, &pat, v_pat, TRUE, NULL);
   tr_compile_pattern(&pat, v_pat, bitmap);
   tr_free_pattern(mrb, &pat);
@@ -903,7 +903,7 @@ int_chr(mrb_state *mrb, mrb_value num)
   mrb_value enc;
   mrb_bool enc_given;
 
-  mrb_get_args(mrb, "|S?", &enc, &enc_given);
+  mrb_get_args(mrb, "|S~?", &enc, &enc_given);
   if (!enc_given ||
       MRB_STR_CASECMP_P(enc, ENC_ASCII_8BIT) ||
       MRB_STR_CASECMP_P(enc, ENC_BINARY)) {
@@ -2132,7 +2132,7 @@ str_ljust_core(mrb_state *mrb, mrb_value self)
   mrb_int width;
   mrb_value padstr = mrb_str_new_lit(mrb, " ");
 
-  mrb_get_args(mrb, "i|S", &width, &padstr);
+  mrb_get_args(mrb, "i|S~", &width, &padstr);
 
   if (RSTRING_LEN(padstr) == 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "zero width padding");
@@ -2182,7 +2182,7 @@ str_rjust_core(mrb_state *mrb, mrb_value self)
   mrb_int width;
   mrb_value padstr = mrb_str_new_lit(mrb, " ");
 
-  mrb_get_args(mrb, "i|S", &width, &padstr);
+  mrb_get_args(mrb, "i|S~", &width, &padstr);
 
   if (RSTRING_LEN(padstr) == 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "zero width padding");
@@ -2238,7 +2238,7 @@ str_center_core(mrb_state *mrb, mrb_value self)
   mrb_int width;
   mrb_value padstr = mrb_str_new_lit(mrb, " ");
 
-  mrb_get_args(mrb, "i|S", &width, &padstr);
+  mrb_get_args(mrb, "i|S~", &width, &padstr);
 
   if (RSTRING_LEN(padstr) == 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "zero width padding");
@@ -2424,7 +2424,7 @@ static mrb_value
 str_partition(mrb_state *mrb, mrb_value self)
 {
   mrb_value sep;
-  mrb_get_args(mrb, "S", &sep);
+  mrb_get_args(mrb, "S~", &sep);
 
   mrb_int self_len = RSTRING_LEN(self);
   mrb_int sep_len = RSTRING_LEN(sep);
@@ -2488,7 +2488,7 @@ static mrb_value
 str_rpartition(mrb_state *mrb, mrb_value self)
 {
   mrb_value sep;
-  mrb_get_args(mrb, "S", &sep);
+  mrb_get_args(mrb, "S~", &sep);
 
   mrb_int self_len = RSTRING_LEN(self);
   mrb_int sep_len = RSTRING_LEN(sep);
@@ -2554,7 +2554,7 @@ str_insert(mrb_state *mrb, mrb_value self)
 {
   mrb_int idx;
   mrb_value str_to_insert;
-  mrb_get_args(mrb, "iS", &idx, &str_to_insert);
+  mrb_get_args(mrb, "iS~", &idx, &str_to_insert);
 
   struct RString *s = mrb_str_ptr(self);
   mrb_int self_len = RSTR_LEN(s);

@@ -1035,7 +1035,7 @@ static mrb_value
 regexp_escape(mrb_state *mrb, mrb_value self)
 {
   mrb_value str;
-  mrb_get_args(mrb, "S", &str);
+  mrb_get_args(mrb, "S~", &str);
   return re_escape_str(mrb, str);
 }
 

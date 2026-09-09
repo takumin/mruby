@@ -64,7 +64,7 @@ str_force_encoding(mrb_state *mrb, mrb_value self)
 {
   mrb_value enc;
 
-  mrb_get_args(mrb, "S", &enc);
+  mrb_get_args(mrb, "S~", &enc);
 
   struct RString *s = mrb_str_ptr(self);
   if (MRB_STR_CASECMP_P(enc, ENC_ASCII_8BIT) ||

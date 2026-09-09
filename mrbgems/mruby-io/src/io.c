@@ -587,7 +587,7 @@ io_init(mrb_state *mrb, mrb_value io)
   if (mrb_block_given_p(mrb)) {
     mrb_warn(mrb, "File.new() does not take block; use File.open() instead");
   }
-  mrb_get_args(mrb, "i|oH", &fd, &mode, &opt);
+  mrb_get_args(mrb, "i|oH~", &fd, &mode, &opt);
   switch (fd) {
     case 0: /* STDIN_FILENO */
     case 1: /* STDOUT_FILENO */
@@ -786,7 +786,7 @@ io_s_sysopen(mrb_state *mrb, mrb_value klass)
   mrb_value mode = mrb_nil_value();
   mrb_int perm = -1;
 
-  mrb_get_args(mrb, "S|oi", &path, &mode, &perm);
+  mrb_get_args(mrb, "S~|oi", &path, &mode, &perm);
   if (perm < 0) {
     perm = 0666;
   }
@@ -852,7 +852,7 @@ io_sysread(mrb_state *mrb, mrb_value io)
   mrb_value buf = mrb_nil_value();
   mrb_int maxlen;
 
-  mrb_get_args(mrb, "i|S", &maxlen, &buf);
+  mrb_get_args(mrb, "i|S~", &maxlen, &buf);
 
   buf = io_sysread_buf(mrb, buf, maxlen);
   if (maxlen == 0) return buf;
@@ -924,7 +924,7 @@ io_syswrite(mrb_state *mrb, mrb_value io)
 {
   mrb_value buf;
 
-  mrb_get_args(mrb, "S", &buf);
+  mrb_get_args(mrb, "S~", &buf);
 
   int fd = io_get_write_fd(io_get_write_fptr(mrb, io));
   mrb_int n = mrb_hal_io_write(mrb, fd, RSTRING_PTR(buf), (size_t)RSTRING_LEN(buf));
@@ -1803,7 +1803,7 @@ io_pread(mrb_state *mrb, mrb_value io)
   mrb_value off;
   mrb_int maxlen;
 
-  mrb_get_args(mrb, "io|S!", &maxlen, &off, &buf);
+  mrb_get_args(mrb, "io|S~!", &maxlen, &off, &buf);
 
   off_t offset = (off_t)mrb_as_int(mrb, off);
   buf = io_sysread_buf(mrb, buf, maxlen);
@@ -1822,7 +1822,7 @@ io_pwrite(mrb_state *mrb, mrb_value io)
 {
   mrb_value buf, off;
 
-  mrb_get_args(mrb, "So", &buf, &off);
+  mrb_get_args(mrb, "S~o", &buf, &off);
 
   off_t offset = (off_t)mrb_as_int(mrb, off);
   int fd = io_get_write_fd(io_get_write_fptr(mrb, io));
@@ -1884,7 +1884,7 @@ io_ungetc(mrb_state *mrb, mrb_value io)
   struct mrb_io *fptr = io_get_read_fptr(mrb, io);
   mrb_value str;
 
-  mrb_get_args(mrb, "S", &str);
+  mrb_get_args(mrb, "S~", &str);
   io_unget_data(mrb, fptr, RSTRING_PTR(str), RSTRING_LEN(str));
   return mrb_nil_value();
 }
@@ -2048,7 +2048,7 @@ io_read(mrb_state *mrb, mrb_value io)
   mrb_bool length_given;
   struct mrb_io *fptr = io_get_read_fptr(mrb, io);
 
-  mrb_get_args(mrb, "|o?S", &len, &length_given, &outbuf);
+  mrb_get_args(mrb, "|o?S~", &len, &length_given, &outbuf);
   if (length_given) {
     if (mrb_nil_p(len)) {
       length_given = FALSE;

@@ -143,7 +143,7 @@ mrb_file_s_rename(mrb_state *mrb, mrb_value obj)
 {
   mrb_value from, to;
 
-  mrb_get_args(mrb, "SS", &from, &to);
+  mrb_get_args(mrb, "S~S~", &from, &to);
   char *src = mrb_locale_from_utf8(RSTRING_CSTR(mrb, from), -1);
   char *dst = mrb_locale_from_utf8(RSTRING_CSTR(mrb, to), -1);
   if (mrb_hal_io_rename(mrb, src, dst) < 0) {
@@ -323,7 +323,7 @@ mrb_file_realpath(mrb_state *mrb, mrb_value klass)
 {
   mrb_value pathname, dir_string;
 
-  if (mrb_get_args(mrb, "S|S", &pathname, &dir_string) == 2) {
+  if (mrb_get_args(mrb, "S~|S~", &pathname, &dir_string) == 2) {
     mrb_value s = mrb_str_dup(mrb, dir_string);
     s = mrb_str_cat_cstr(mrb, s, FILE_SEPARATOR);
     s = mrb_str_append(mrb, s, pathname);
@@ -744,7 +744,7 @@ mrb_file_s_symlink(mrb_state *mrb, mrb_value klass)
 {
   mrb_value from, to;
 
-  mrb_get_args(mrb, "SS", &from, &to);
+  mrb_get_args(mrb, "S~S~", &from, &to);
   char *src = mrb_locale_from_utf8(RSTRING_CSTR(mrb, from), -1);
   char *dst = mrb_locale_from_utf8(RSTRING_CSTR(mrb, to), -1);
   if (mrb_hal_io_symlink(mrb, src, dst) == -1) {
@@ -907,7 +907,7 @@ static mrb_value
 mrb_file_path(mrb_state *mrb, mrb_value klass)
 {
   mrb_value filename;
-  mrb_get_args(mrb, "S", &filename);
+  mrb_get_args(mrb, "S~", &filename);
   return filename;
 }
 
