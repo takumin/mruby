@@ -1851,10 +1851,17 @@ ary_min(mrb_state *mrb, mrb_value self)
  *
  *  ISO 15.3.2.2.10, 15.3.2.2.15
  */
+static mrb_value ary_include_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The walk, resumable from any index. The receiver and the argument are read
+   from the frame rather than held in C locals: the walk returns to the VM
+   whenever a comparison needs Ruby, and only the frame survives that. */
 static mrb_value
-ary_include(mrb_state *mrb, mrb_value self)
+ary_include_walk(mrb_state *mrb, mrb_int i)
 {
-  mrb_value obj = mrb_get_arg1(mrb);
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+  mrb_value obj = ci->stack[1];
 
   /* `==` may run Ruby that grows or shrinks the array under us, so the length
      and the pointer are read afresh each turn.
@@ -1863,12 +1870,33 @@ ary_include(mrb_state *mrb, mrb_value self)
      no arena restore in it, as there is none in `Array#index`: what a call
      leaves behind is its return value, and this walk returns at the first one
      that is true. The answers it walks past are false, which is immediate. */
-  for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-    if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-      return mrb_true_value();
+  for (; i < RARRAY_LEN(self); i++) {
+    int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+    if (r > 0) return mrb_true_value();
+    if (r < 0) {
+      /* The `==` here is written in Ruby. Hand the call to the VM and ask to
+         be resumed with its answer, rather than running it on a nested VM:
+         that keeps this walk off the C stack, so a Fiber can suspend inside
+         the comparison. */
+      return mrb_funcall_cont(mrb, ary_include_resume, i,
+                              RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj);
     }
   }
   return mrb_false_value();
+}
+
+static mrb_value
+ary_include_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) return mrb_true_value();
+  return ary_include_walk(mrb, i + 1);
+}
+
+static mrb_value
+ary_include(mrb_state *mrb, mrb_value self)
+{
+  mrb_get_arg1(mrb);            /* checks the argument count */
+  return ary_include_walk(mrb, 0);
 }
 
 static const mrb_mt_entry array_ext_rom_entries[] = {

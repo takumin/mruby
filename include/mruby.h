@@ -202,6 +202,8 @@ enum mrb_fiber_state {
 #define MRB_TASK_CREATED MRB_FIBER_CREATED
 #define MRB_TASK_STOPPED MRB_FIBER_TERMINATED
 
+struct mrb_cont_stack;
+
 struct mrb_context {
   struct mrb_context *prev;
 
@@ -226,6 +228,12 @@ struct mrb_context {
      would have cost every frame of every call stack eight bytes.  Grown with
      cibase and freed with it. */
   struct RBasic **svars;
+
+  /* Continuations registered by C methods that handed a Ruby call to the VM
+     and asked to be resumed with its result (see mrb_funcall_cont()). NULL
+     until a first such call needs one, so a context that never makes one
+     pays this pointer and nothing else. Freed with the context. */
+  struct mrb_cont_stack *conts;
 
   enum mrb_fiber_state status : 4;
   mrb_bool vmexec : 1;
@@ -1711,6 +1719,32 @@ MRB_API mrb_value mrb_yield_with_class(mrb_state *mrb, mrb_value b, mrb_int argc
 /* this function should always be called as the last function of a method */
 /* e.g. return mrb_yield_cont(mrb, proc, self, argc, argv); */
 mrb_value mrb_yield_cont(mrb_state *mrb, mrb_value b, mrb_value self, mrb_int argc, const mrb_value *argv);
+
+/**
+ * Resumes a C method after a Ruby call it asked the VM to make.
+ *
+ * @param result what the call answered
+ * @param state the integer the C method left for itself
+ */
+typedef mrb_value mrb_cont_func(mrb_state *mrb, mrb_value result, mrb_int state);
+
+/**
+ * Hands a Ruby call to the VM and asks to be resumed with its result.
+ *
+ * The call runs in the mrb_vm_exec() this method was dispatched from rather
+ * than in a nested one, so no C frame stands between the two and a Fiber can
+ * suspend inside the call. Use it as `return mrb_funcall_cont(...)`: the
+ * method returns at once and `k` is called later with the result.
+ *
+ * `k` keeps what the method needs in `state` and in its own frame's
+ * registers; C local variables do not survive the return.
+ *
+ * Falls back to a nested call plus an immediate `k` where the frame cannot
+ * be handed over: a method reached from C, and a callee that is itself a C
+ * function (which cannot suspend anyway).
+ */
+MRB_API mrb_value mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                                   mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv);
 
 /* mrb_gc_protect() leaves the object in the arena */
 MRB_API void mrb_gc_protect(mrb_state *mrb, mrb_value obj);

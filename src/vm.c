@@ -848,6 +848,74 @@ mrb_svars_reserve(mrb_state *mrb, struct mrb_context *c)
                                          sizeof(struct RBasic*));
 }
 
+/* A C method that hands a Ruby call to the VM leaves one of these behind: the
+   function to resume it with, the integer it kept for itself, and the frame
+   that is to receive the result. Entries are held per context and indexed by
+   nothing: only the top one is ever consulted, and it is consulted only when
+   a return lands exactly on the frame that owns it. */
+struct mrb_cont_entry {
+  mrb_cont_func *func;
+  mrb_int state;
+  ptrdiff_t ci_index;
+};
+
+struct mrb_cont_stack {
+  int len;
+  int capa;
+  struct mrb_cont_entry *entries;
+};
+
+void
+mrb_cont_stack_free(mrb_state *mrb, struct mrb_cont_stack *s)
+{
+  if (!s) return;
+  mrb_free(mrb, s->entries);
+  mrb_free(mrb, s);
+}
+
+static void
+cont_push(mrb_state *mrb, mrb_cont_func *func, mrb_int state, ptrdiff_t ci_index)
+{
+  struct mrb_context *c = mrb->c;
+  struct mrb_cont_stack *s = c->conts;
+
+  if (s == NULL) {
+    s = (struct mrb_cont_stack*)mrb_malloc(mrb, sizeof(struct mrb_cont_stack));
+    s->len = 0;
+    s->capa = 8;
+    s->entries = (struct mrb_cont_entry*)mrb_malloc(mrb, sizeof(struct mrb_cont_entry) * 8);
+    c->conts = s;
+  }
+  else if (s->len == s->capa) {
+    s->capa *= 2;
+    s->entries = (struct mrb_cont_entry*)mrb_realloc(mrb, s->entries,
+                                                     sizeof(struct mrb_cont_entry) * s->capa);
+  }
+  s->entries[s->len].func = func;
+  s->entries[s->len].state = state;
+  s->entries[s->len].ci_index = ci_index;
+  s->len++;
+}
+
+/* Frames above `depth` are gone, so the continuations they own are too. Called
+   from cipop(), which is why it is spelled as one comparison on the top entry:
+   frames are popped one at a time, and a context that registers none never
+   reaches here. */
+static void
+cont_discard_above(struct mrb_cont_stack *s, ptrdiff_t depth)
+{
+  while (s->len > 0 && s->entries[s->len-1].ci_index > depth) {
+    s->len--;
+  }
+}
+
+static mrb_bool
+cont_owned_by(struct mrb_context *c, const mrb_callinfo *ci)
+{
+  struct mrb_cont_stack *s = c->conts;
+  return s && s->len > 0 && s->entries[s->len-1].ci_index == ci - c->cibase;
+}
+
 static inline mrb_callinfo*
 cipush(mrb_state *mrb, mrb_int push_stacks, uint8_t cci, struct RClass *target_class,
        const struct RProc *proc, struct RProc *blk, mrb_sym mid, uint16_t argc)
@@ -899,6 +967,8 @@ fiber_terminate(mrb_state *mrb, struct mrb_context *c, mrb_callinfo *ci)
   c->status = MRB_FIBER_TERMINATED;
   mrb_free(mrb, c->svars);
   c->svars = NULL;
+  mrb_cont_stack_free(mrb, c->conts);
+  c->conts = NULL;
   mrb_free(mrb, c->cibase);
   c->cibase = c->ciend = c->ci = NULL;
   mrb_value *stack = c->stbase;
@@ -1171,6 +1241,10 @@ cipop(mrb_state *mrb)
 {
   struct mrb_context *c = mrb->c;
   mrb_callinfo *ci = c->ci;
+
+  if (mrb_unlikely(c->conts != NULL)) {
+    cont_discard_above(c->conts, ci - c->cibase - 1);
+  }
 
   /* Fast path: no env and no blk (most common for simple method calls) */
   if (mrb_likely((!ci->u.env || ci->u.env->tt != MRB_TT_ENV) && !ci->blk)) {
@@ -2125,6 +2199,63 @@ mrb_yield_cont(mrb_state *mrb, mrb_value b, mrb_value self, mrb_int argc, const 
   }
   ci->kw = FALSE;
   return exec_irep(mrb, self, p);
+}
+
+MRB_API mrb_value
+mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                 mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  struct RClass *tc;
+  mrb_method_t m;
+  const struct RProc *p;
+
+  /* Two things have to hold for the call to be handed over. The frame this
+     method runs on has to be one this mrb_vm_exec() will return through: a
+     frame carrying another cci belongs to a C caller waiting on the C stack.
+     And the callee has to be written in Ruby: a C function returns to
+     whoever called it rather than to the VM loop, and cannot suspend. */
+  if (ci->cci != CINFO_NONE) goto nested;
+  tc = mrb_class(mrb, recv);
+  m = mrb_vm_find_method(mrb, tc, &tc, mid);
+  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_CFUNC_P(m)) goto nested;
+  p = MRB_METHOD_PROC(m);
+  if (MRB_PROC_ALIAS_P(p)) {
+    mid = p->body.mid;
+    p = p->upper;
+  }
+  if (MRB_PROC_CFUNC_P(p) || p->body.irep == NULL) goto nested;
+
+  {
+    ptrdiff_t idx = ci - mrb->c->cibase;
+    mrb_int n = mrb_ci_nregs(ci);
+    mrb_callinfo *ci2 = cipush(mrb, n, CINFO_NONE, tc, p, NULL, mid, 0);
+    mrb_int keep, nregs;
+
+    funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci2);
+    ci2->stack[0] = recv;
+    keep = ci_bidx(ci2) + 1;
+    nregs = p->body.irep->nregs;
+    if (nregs < keep) {
+      stack_extend(mrb, keep);
+    }
+    else {
+      stack_extend(mrb, nregs);
+      stack_clear(ci2->stack + keep, nregs - keep);
+    }
+    cont_push(mrb, k, state, idx);
+    /* The frame the cfunc epilogue in mrb_vm_exec() pops on the way back. Its
+       NULL `u` is what tells that epilogue to reload `irep` from the callee
+       below it, the same signal exec_irep() leaves. */
+    cipush(mrb, 0, 0, NULL, NULL, NULL, 0, 0);
+    return recv;
+  }
+
+nested:
+  {
+    mrb_value v = mrb_funcall_argv(mrb, recv, mid, argc, argv);
+    return k(mrb, v, state);
+  }
 }
 
 #define RBREAK_TAG_FOREACH(f) \
@@ -4152,6 +4283,29 @@ RETRY_TRY_BLOCK:
         mrb_gc_arena_restore(mrb, ai);
         mrb->jmp = prev_jmp;
         return v;
+      }
+      if (mrb_unlikely(cont_owned_by(mrb->c, ci))) {
+        /* The frame returned into is a C method that asked to be resumed with
+           this value (see mrb_funcall_cont()). It runs here rather than on a
+           nested VM, so what it does next -- answer, or ask for another call
+           -- is decided without leaving this loop. */
+        struct mrb_cont_stack *cs = mrb->c->conts;
+        struct mrb_cont_entry e = cs->entries[--cs->len];
+        ptrdiff_t idx = ci - mrb->c->cibase;
+
+        v = e.func(mrb, v, e.state);
+        if (mrb_unlikely(mrb->exc)) goto L_RAISE;
+        ci = mrb->c->ci;
+        if (ci - mrb->c->cibase != idx) {
+          /* it asked for another call: callee and dummy frame are pushed */
+          irep = ci[-1].proc->body.irep;
+          ci->stack[0] = v;
+          ci = cipop(mrb);
+          mrb_gc_arena_restore(mrb, ai);
+          JUMP;
+        }
+        /* it answered: return that from the C method */
+        ci = cipop(mrb);
       }
       DEBUG(fprintf(stderr, "from :%s\n", mrb_sym_name(mrb, ci->mid)));
       irep = ci->proc->body.irep;
