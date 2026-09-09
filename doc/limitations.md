@@ -236,11 +236,11 @@ a, b, c = MyAry.new     # => a=1, b=2, c=3   (to_ary)
 
 Which arguments take a conversion is written down rather than implied by
 the type a method wants. A method written in C marks the argument with `~`
-in its `mrb_get_args()` format (`S~`, `A~`, `H~`), or asks for the
-conversion itself with `mrb_convert_arg()` where the format reads `o` and
-the method decides the type. An unmarked `S`, `A` or `H` demands its type
-as it always did, so a format nobody edited keeps refusing what it always
-refused.
+in its `mrb_get_args()` format (`S~`, `A~`, `H~`, and `s~`, `z~`, `a~` for
+the specifiers that hand out a pointer), or asks for the conversion itself
+with `mrb_convert_arg()` where the format reads `o` and the method decides
+the type. An unmarked specifier demands its type as it always did, so a
+format nobody edited keeps refusing what it always refused.
 
 The conversion runs as ordinary bytecode: the instruction or the send that
 met the wrong type rewinds and runs again once the conversion has answered.
@@ -249,7 +249,9 @@ and it is also what bounds where a conversion can happen. A send converts
 its last argument only, and only where the dispatch loop issued the send
 itself: a call taking a block, a call whose arguments a splat packed,
 `obj[i] = x`, and a method reached from C through `mrb_funcall()` and its
-kin all raise `TypeError` as before.
+kin all raise `TypeError` as before. `Class#new` reaches `initialize` that
+way, so `File.open(obj)` and `Dir.new(obj)` raise where `File.basename(obj)`
+converts.
 
 Identity versions of `to_int`, `to_str`, `to_sym`, and `to_hash`
 remain defined on the corresponding built-in types so that

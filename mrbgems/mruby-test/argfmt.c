@@ -69,6 +69,72 @@ af_conv_first(mrb_state *mrb, mrb_value klass)
   return v;
 }
 
+/* marked, on the specifiers that hand out a pointer rather than the value:
+   the conversion has to happen before the pointer is taken */
+static mrb_value
+af_conv_ptr(mrb_state *mrb, mrb_value klass)
+{
+  const char *p;
+  mrb_int len;
+  mrb_get_args(mrb, "s~", &p, &len);
+  return mrb_str_new(mrb, p, len);
+}
+
+static mrb_value
+af_conv_cstr(mrb_state *mrb, mrb_value klass)
+{
+  const char *p;
+  mrb_get_args(mrb, "z~", &p);
+  return mrb_str_new_cstr(mrb, p);
+}
+
+static mrb_value
+af_conv_alist(mrb_state *mrb, mrb_value klass)
+{
+  const mrb_value *p;
+  mrb_int len;
+  mrb_get_args(mrb, "a~", &p, &len);
+  return len > 0 ? p[0] : mrb_nil_value();
+}
+
+/* unmarked: the pointer specifiers demand their type as they always did */
+static mrb_value
+af_strict_ptr(mrb_state *mrb, mrb_value klass)
+{
+  const char *p;
+  mrb_int len;
+  mrb_get_args(mrb, "s", &p, &len);
+  return mrb_str_new(mrb, p, len);
+}
+
+/* marked with `!`, so the general path: a nil argument skips the conversion
+   and gives the empty pointer */
+static mrb_value
+af_conv_ptr_alt(mrb_state *mrb, mrb_value klass)
+{
+  const char *p;
+  mrb_int len;
+  mrb_get_args(mrb, "s~!", &p, &len);
+  return p ? mrb_str_new(mrb, p, len) : mrb_nil_value();
+}
+
+static mrb_value
+af_conv_cstr_alt(mrb_state *mrb, mrb_value klass)
+{
+  const char *p;
+  mrb_get_args(mrb, "z~!", &p);
+  return p ? mrb_str_new_cstr(mrb, p) : mrb_nil_value();
+}
+
+static mrb_value
+af_conv_alist_alt(mrb_state *mrb, mrb_value klass)
+{
+  const mrb_value *p;
+  mrb_int len;
+  mrb_get_args(mrb, "a~!", &p, &len);
+  return p ? mrb_int_value(mrb, len) : mrb_nil_value();
+}
+
 /* `~` on a specifier that names no type to convert to */
 static mrb_value
 af_bad_modifier(mrb_state *mrb, mrb_value klass)
@@ -91,4 +157,11 @@ mrb_init_test_argfmt(mrb_state *mrb)
   mrb_define_class_method(mrb, af, "conv_alt", af_conv_alt, MRB_ARGS_REQ(1));
   mrb_define_class_method(mrb, af, "conv_first", af_conv_first, MRB_ARGS_REQ(2));
   mrb_define_class_method(mrb, af, "bad_modifier", af_bad_modifier, MRB_ARGS_REQ(1));
+  mrb_define_class_method(mrb, af, "conv_ptr", af_conv_ptr, MRB_ARGS_REQ(1));
+  mrb_define_class_method(mrb, af, "conv_cstr", af_conv_cstr, MRB_ARGS_REQ(1));
+  mrb_define_class_method(mrb, af, "conv_alist", af_conv_alist, MRB_ARGS_REQ(1));
+  mrb_define_class_method(mrb, af, "strict_ptr", af_strict_ptr, MRB_ARGS_REQ(1));
+  mrb_define_class_method(mrb, af, "conv_ptr_alt", af_conv_ptr_alt, MRB_ARGS_REQ(1));
+  mrb_define_class_method(mrb, af, "conv_cstr_alt", af_conv_cstr_alt, MRB_ARGS_REQ(1));
+  mrb_define_class_method(mrb, af, "conv_alist_alt", af_conv_alist_alt, MRB_ARGS_REQ(1));
 }

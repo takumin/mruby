@@ -217,13 +217,14 @@ mrb_int mrb_get_args(mrb_state *mrb, const char *format, ...);
 Adding `!` to `S`, `A`, `H`, `C`, `c`, `s`, `z`, `a`, `d` allows `nil`
 (returns NULL/zero for nil).
 
-Adding `~` to `S`, `A` or `H` takes an implicit conversion: an argument of
-another type is asked for `to_str`, `to_ary` or `to_hash` and the method
-runs again with what it answered. Without the mark the specifier demands
-its type and raises `TypeError`, as it always did. A method whose format
-reads `o` because it decides the type itself asks with
-`mrb_convert_arg()`; see `doc/limitations.md` for what the conversion
-reaches.
+Adding `~` to `S`, `A`, `H`, `s`, `z` or `a` takes an implicit conversion:
+an argument of another type is asked for `to_str`, `to_ary` or `to_hash`
+and the method runs again with what it answered. Without the mark the
+specifier demands its type and raises `TypeError`, as it always did. On
+`s`, `z` and `a` the conversion happens before the pointer is handed out,
+so the pointer names the converted object. A method whose format reads `o`
+because it decides the type itself asks with `mrb_convert_arg()`; see
+`doc/limitations.md` for what the conversion reaches.
 
 ### Examples
 

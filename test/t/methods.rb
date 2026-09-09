@@ -340,6 +340,29 @@ assert('`~` in a format states that the argument takes an implicit conversion') 
   end
 end
 
+assert('`~` reaches the specifiers that hand out a pointer') do
+  # `s`, `z` and `a` give the method a pointer into the object, so the
+  # conversion has to have happened by the time the pointer is taken.
+  assert_equal("b", TestArgFormat.conv_ptr(ArgConvToStr.new))
+  assert_equal("b", TestArgFormat.conv_cstr(ArgConvToStr.new))
+  assert_equal(1, TestArgFormat.conv_alist(ArgConvToAry.new))
+  assert_equal("x", TestArgFormat.conv_ptr("x"))
+
+  # unmarked, they demand their type as they always did
+  assert_raise_with_message(TypeError, "ArgConvToStr cannot be converted to String") do
+    TestArgFormat.strict_ptr(ArgConvToStr.new)
+  end
+
+  # `!` puts the format on the general path, where nil is the empty pointer
+  # and asks for nothing
+  assert_nil(TestArgFormat.conv_ptr_alt(nil))
+  assert_equal("b", TestArgFormat.conv_ptr_alt(ArgConvToStr.new))
+  assert_nil(TestArgFormat.conv_cstr_alt(nil))
+  assert_equal("b", TestArgFormat.conv_cstr_alt(ArgConvToStr.new))
+  assert_nil(TestArgFormat.conv_alist_alt(nil))
+  assert_equal(2, TestArgFormat.conv_alist_alt(ArgConvToAry.new))
+end
+
 assert('a format modifier is not an argument of its own') do
   assert_nil(TestArgFormat.conv_opt)
   assert_equal("b", TestArgFormat.conv_opt(ArgConvToStr.new))

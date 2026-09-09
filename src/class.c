@@ -1530,9 +1530,10 @@ fast_fmt_ok(char c)
     return 1;
 #endif
   case 'o': case 'i': case 'b':
-  case 'n': case 'z': case 'c': case 's': case 'a':
+  case 'n': case 'c':
     return 1;
   case 'S': case 'A': case 'H':
+  case 's': case 'z': case 'a':
     return 4;
   case '|':
     return 2;
@@ -1608,13 +1609,14 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
   while (*p) {
     char c = *p++;
     if (c == '|') continue;
+    /* The scan above refused a `~` on a specifier that takes none, so one
+       met here belongs to the specifier just read.  Reading it before the
+       switch keeps the format pointer out of the arms. */
+    mrb_bool conv = (*p == '~');
+    if (conv) p++;
     if (i >= argc) {
       /* skip remaining optional args (just consume GET_ARG pointers) */
       switch (c) {
-      case 'S': case 'A': case 'H':
-        (void)GET_ARG(void*);
-        if (*p == '~') p++;
-        break;
       case 's': case 'a':
         (void)GET_ARG(void*);
         (void)GET_ARG(void*);
@@ -1633,8 +1635,6 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     }
     case 'S': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      mrb_bool conv = (*p == '~');
-      if (conv) p++;
       if (mrb_unlikely(!mrb_string_p(argv[i]))) {
         if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_STR);
         else mrb_ensure_string_type(mrb, argv[i]);
@@ -1644,8 +1644,6 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     }
     case 'A': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      mrb_bool conv = (*p == '~');
-      if (conv) p++;
       if (mrb_unlikely(!mrb_array_p(argv[i]))) {
         if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_ARY);
         else mrb_ensure_array_type(mrb, argv[i]);
@@ -1655,8 +1653,6 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     }
     case 'H': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      mrb_bool conv = (*p == '~');
-      if (conv) p++;
       if (mrb_unlikely(!mrb_hash_p(argv[i]))) {
         if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_HASH);
         else mrb_ensure_hash_type(mrb, argv[i]);
@@ -1688,14 +1684,20 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     }
     case 'z': {
       const char **zp = GET_ARG(const char**);
-      mrb_ensure_string_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_string_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_STR);
+        else mrb_ensure_string_type(mrb, argv[i]);
+      }
       *zp = RSTRING_CSTR(mrb, argv[i++]);
       break;
     }
     case 's': {
       const char **sp = GET_ARG(const char**);
       mrb_int *lp = GET_ARG(mrb_int*);
-      mrb_ensure_string_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_string_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_STR);
+        else mrb_ensure_string_type(mrb, argv[i]);
+      }
       *sp = RSTRING_PTR(argv[i]);
       *lp = RSTRING_LEN(argv[i]);
       i++;
@@ -1704,7 +1706,10 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     case 'a': {
       const mrb_value **pb = GET_ARG(const mrb_value**);
       mrb_int *pl = GET_ARG(mrb_int*);
-      mrb_ensure_array_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_array_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_ARY);
+        else mrb_ensure_array_type(mrb, argv[i]);
+      }
       struct RArray *a = mrb_ary_ptr(argv[i]);
       *pb = ARY_PTR(a);
       *pl = ARY_LEN(a);
@@ -1830,7 +1835,8 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
         if (convmode) goto modifier_exit; /* not accept for multiple '~' */
         /* only the specifiers that name a type to convert to take `~`; the
            test sits here so that a format without one pays nothing for it */
-        if (c != 'S' && c != 'A' && c != 'H') {
+        if (c != 'S' && c != 'A' && c != 'H' &&
+            c != 's' && c != 'z' && c != 'a') {
           mrb_raisef(mrb, E_ARGUMENT_ERROR, "wrong `%c~` modified specifier", c);
         }
         convmode = TRUE;
@@ -1934,7 +1940,10 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
             *pl = 0;
           }
           else {
-            mrb_ensure_string_type(mrb, *pickarg);
+            if (!mrb_string_p(*pickarg)) {
+              if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+              else mrb_ensure_string_type(mrb, *pickarg);
+            }
             *ps = RSTRING_PTR(*pickarg);
             *pl = RSTRING_LEN(*pickarg);
           }
@@ -1952,7 +1961,10 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
             *ps = NULL;
           }
           else {
-            mrb_ensure_string_type(mrb, *pickarg);
+            if (!mrb_string_p(*pickarg)) {
+              if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+              else mrb_ensure_string_type(mrb, *pickarg);
+            }
             *ps = RSTRING_CSTR(mrb, *pickarg);
           }
         }
@@ -1973,7 +1985,10 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
             *pl = 0;
           }
           else {
-            mrb_ensure_array_type(mrb, *pickarg);
+            if (!mrb_array_p(*pickarg)) {
+              if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_ARY);
+              else mrb_ensure_array_type(mrb, *pickarg);
+            }
             a = mrb_ary_ptr(*pickarg);
             *pb = ARY_PTR(a);
             *pl = ARY_LEN(a);
