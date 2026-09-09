@@ -172,7 +172,7 @@ mrb_i2c_m_init(mrb_state *mrb, mrb_value self)
   const char *unit;
   mrb_int freq, sda, scl;
 
-  mrb_get_args(mrb, "z~iii", &unit, &freq, &sda, &scl);
+  mrb_get_args(mrb, "ziii", &unit, &freq, &sda, &scl);
 
   int num = mrb_i2c_unit_name_to_num(unit);
   if (num < 0) {
