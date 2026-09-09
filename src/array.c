@@ -2530,165 +2530,55 @@ cmpint(mrb_state *mrb, mrb_value c, mrb_value a, mrb_value b)
   return 0;
 }
 
-static mrb_bool
-sort_cmp(mrb_state *mrb, mrb_value ary, mrb_value a_val, mrb_value b_val, mrb_value blk)
+/* The comparison the sort makes without a block, as far as it goes without
+   running Ruby: 1 with the sign in `*out`, 0 for a pair that has no order at
+   all, and -1 for one that only a `<=>` written in Ruby can order. What it
+   answers is not quite what mrb_cmp() answers: a pair with a NaN in it has no
+   order here rather than being a tie, which is what CRuby's Array#sort does
+   with one. */
+static int
+sort_cmp_in_c(mrb_state *mrb, mrb_value a, mrb_value b, mrb_int *out)
 {
-  mrb_value *p = RARRAY_PTR(ary);
-  mrb_int n = RARRAY_LEN(ary);
+  enum mrb_vtype ta = mrb_type(a), tb = mrb_type(b);
 
-  mrb_int cmp;
-  int ai = mrb_gc_arena_save(mrb);
-
-  if (mrb_nil_p(blk)) {
-    enum mrb_vtype type_a = mrb_type(a_val);
-    enum mrb_vtype type_b = mrb_type(b_val);
-
-    if (type_a == type_b) {
-      switch (type_a) {
-      case MRB_TT_INTEGER:
-        {
-          /* Read with mrb_integer(): an Integer too wide to sit in the value
-             is an object here, and reading that one as an inline value reads
-             its address. */
-          mrb_int a_i = mrb_integer(a_val), b_i = mrb_integer(b_val);
-          cmp = (a_i > b_i) ? 1 : (a_i < b_i) ? -1 : 0;
-        }
-        break;
-#ifndef MRB_NO_FLOAT
-      case MRB_TT_FLOAT:
-        {
-          /* A NaN is greater than, less than and equal to nothing at all, so
-             the pair is reported as one that cannot be compared. Falling out
-             of the two tests below would call it a tie and leave the NaN
-             wherever the sort happened to put it. */
-          mrb_float a_flo = mrb_float(a_val), b_flo = mrb_float(b_val);
-          cmp = (a_flo > b_flo) ? 1 : (a_flo < b_flo) ? -1 : (a_flo == b_flo) ? 0 : -2;
-        }
-        break;
-#endif
-      case MRB_TT_STRING:
-        cmp = mrb_str_cmp(mrb, a_val, b_val);
-        break;
-      default:
-        cmp = mrb_cmp(mrb, a_val, b_val);
-        break;
+  if (ta == tb) {
+    switch (ta) {
+    case MRB_TT_INTEGER:
+      {
+        /* Read with mrb_integer(): an Integer too wide to sit in the value is
+           an object here, and reading that one as an inline value reads its
+           address. */
+        mrb_int x = mrb_integer(a), y = mrb_integer(b);
+        *out = (x > y) ? 1 : (x < y) ? -1 : 0;
+        return 1;
       }
+#ifndef MRB_NO_FLOAT
+    case MRB_TT_FLOAT:
+      {
+        mrb_float x = mrb_float(a), y = mrb_float(b);
+        if (x > y) *out = 1;
+        else if (x < y) *out = -1;
+        else if (x == y) *out = 0;
+        else return 0;          /* a NaN stands in no order */
+        return 1;
+      }
+#endif
+    case MRB_TT_STRING:
+      *out = mrb_str_cmp(mrb, a, b);
+      return 1;
+    default:
+      break;
     }
-    else {
-      cmp = mrb_cmp(mrb, a_val, b_val);
-    }
-    /* -2 is how the comparisons above report a pair they cannot order. It is
-       a value a block may answer with, so the test for it stays on this side
-       of the branch, where the answers are the ones written here. */
-    if (cmp == -2) {
-      mrb_gc_arena_restore(mrb, ai);
-      mrb_raise(mrb, E_ARGUMENT_ERROR, "comparison failed");
-    }
   }
-  else {
-    mrb_value args[2] = {a_val, b_val};
-    mrb_value c = mrb_yield_argv(mrb, blk, 2, args);
-    /* The pair goes to `cmpint()` out of `args`, which the yield leaves as it
-       found it, rather than out of the parameters: one arm of the map calls
-       Ruby, and holding the two in registers across the yield so that arm can
-       reach them costs every comparison the sort makes, Integer answers
-       included. */
-    cmp = cmpint(mrb, c, args[0], args[1]);
+  /* A number and a number of the other kind are ordered without either being
+     asked, which is the one pair of unlike types mrb_cmp() settles in C. */
+  if ((mrb_fixnum_p(a) || mrb_float_p(a)) && (mrb_fixnum_p(b) || mrb_float_p(b))) {
+    mrb_int c = mrb_cmp(mrb, a, b);
+    if (c == -2) return 0;
+    *out = c;
+    return 1;
   }
-  mrb_gc_arena_restore(mrb, ai);
-  if (RARRAY_PTR(ary) != p || RARRAY_LEN(ary) != n) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "array modified during sort");
-  }
-  return cmp > 0;
-}
-
-/* Hole-style sift-down: save root, move larger children up, write once at end.
-   Reduces assignments from 3 per level (swap) to 1 per level (move). */
-static void
-heapify(mrb_state *mrb, mrb_value ary, mrb_value *a, mrb_int index, mrb_int size, mrb_value blk)
-{
-  int ai = mrb_gc_arena_save(mrb);
-  mrb_value val = a[index];  /* save root to hole */
-  mrb_gc_protect(mrb, val);
-
-  while (1) {
-    mrb_int child = 2 * index + 1;
-    if (child >= size) break;
-
-    /* pick the larger child */
-    if (child + 1 < size && sort_cmp(mrb, ary, a[child + 1], a[child], blk)) {
-      child++;
-    }
-    /* if hole value >= larger child, done */
-    if (!sort_cmp(mrb, ary, a[child], val, blk)) break;
-
-    a[index] = a[child];     /* move child up */
-    index = child;
-  }
-  a[index] = val;             /* place saved value */
-  mrb_gc_arena_restore(mrb, ai);
-}
-
-/* Floyd's bottom-up heap deletion: sift the hole down to a leaf without
-   comparing against the removed root, then sift up from the leaf position.
-   This reduces comparisons from ~2 log n to ~log n per extraction,
-   because most elements end up near the bottom of the heap anyway. */
-static void
-heap_delete_root(mrb_state *mrb, mrb_value ary, mrb_value *a, mrb_int size, mrb_value blk)
-{
-  int ai = mrb_gc_arena_save(mrb);
-  /* a[0] already holds the value to be re-inserted (set by caller) */
-  mrb_value last = a[0];
-  mrb_gc_protect(mrb, last);
-
-  /* Phase 1: sift the hole down to a leaf (only child-child comparisons) */
-  mrb_int hole = 0;
-  mrb_int child = 1;
-  while (child + 1 < size) {
-    /* pick the larger child - 1 comparison per level */
-    if (sort_cmp(mrb, ary, a[child + 1], a[child], blk)) {
-      child++;
-    }
-    a[hole] = a[child];
-    hole = child;
-    child = 2 * hole + 1;
-  }
-  /* handle single child at bottom */
-  if (child < size) {
-    a[hole] = a[child];
-    hole = child;
-  }
-
-  /* Phase 2: sift up from hole to find correct position for last */
-  while (hole > 0) {
-    mrb_int parent = (hole - 1) / 2;
-    if (!sort_cmp(mrb, ary, last, a[parent], blk)) break;
-    a[hole] = a[parent];
-    hole = parent;
-  }
-  a[hole] = last;
-  mrb_gc_arena_restore(mrb, ai);
-}
-
-static void
-insertion_sort(mrb_state *mrb, mrb_value ary, mrb_value *a, mrb_int size, mrb_value blk)
-{
-  int ai = mrb_gc_arena_save(mrb);
-  for (mrb_int i = 1; i < size; i++) {
-    mrb_value key = a[i];
-    mrb_int j = i - 1;
-
-    /* Protect key from GC - it's temporarily out of the array during sort */
-    mrb_gc_protect(mrb, key);
-
-    /* Move elements that are greater than key to one position ahead */
-    while (j >= 0 && sort_cmp(mrb, ary, a[j], key, blk)) {
-      a[j + 1] = a[j];
-      j--;
-    }
-    a[j + 1] = key;
-    mrb_gc_arena_restore(mrb, ai);
-  }
+  return -1;
 }
 
 /* --- the sort a block orders -------------------------------------------
@@ -2740,6 +2630,17 @@ enum { SORT_PHASE_BUILD, SORT_PHASE_EXTRACT, SORT_PHASE_INSERT };
 
 static mrb_value sort_resume(mrb_state *mrb, mrb_value result, mrb_int pc);
 
+/* Hands one comparison to the VM: to the block where there is one, and to the
+   pair's own `<=>` where there is not. */
+static mrb_value
+sort_hand_over(mrb_state *mrb, mrb_value blk, mrb_int pc, mrb_value *args)
+{
+  if (mrb_nil_p(blk)) {
+    return mrb_funcall_cont(mrb, sort_resume, pc, args[0], MRB_OPSYM(cmp), 1, &args[1]);
+  }
+  return mrb_block_cont(mrb, sort_resume, pc, blk, 2, args);
+}
+
 /* Runs the sort until it needs the block again, or until it is done. `cmp`
    answers the comparison it was waiting on: true when the first of the pair
    is to come after the second.
@@ -2760,6 +2661,8 @@ sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
   mrb_int phase = mrb_fixnum(sp[SORT_PHASE]);
   mrb_value *a;
   mrb_value args[2];
+  /* Read once: the sort asks it of every comparison it makes. */
+  mrb_bool no_blk = mrb_nil_p(sp[SORT_BLK]);
 
   /* The block is free to change the array under the sort, and the sort reads
      it afresh on the way back in. A change of length is refused rather than
@@ -2775,18 +2678,35 @@ sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
     a[y] = tmp_;                                \
   } while (0)
 
+  /* A comparison the sort can make in C is made here rather than handed over,
+     and the machine goes straight on with the answer. Only the one that needs
+     Ruby leaves this loop. */
+/* Written as a block rather than the usual do-while: the `continue` below is
+   the sort's loop, and a do-while would catch it. */
+#define SORT_TRY(next, x, y)                                    \
+    if (no_blk) {                                               \
+      mrb_int c_;                                               \
+      int r_ = sort_cmp_in_c(mrb, a[x], a[y], &c_);             \
+      if (r_ > 0) { cmp = c_ > 0; pc = (next); continue; }      \
+      if (r_ == 0) {                                            \
+        mrb_raise(mrb, E_ARGUMENT_ERROR, "comparison failed");  \
+      }                                                         \
+    }
+
   /* The insertion sort keeps two of the slots, and writes back those. */
-#define SORT_ASK_INS(next, x, y) do {           \
+#define SORT_ASK_INS(next, x, y) {              \
+    SORT_TRY(next, x, y)                        \
     sp[SORT_I] = mrb_fixnum_value(i);           \
     sp[SORT_INDEX] = mrb_fixnum_value(index);   \
     sp[SORT_X] = mrb_fixnum_value(x);           \
     sp[SORT_Y] = mrb_fixnum_value(y);           \
     args[0] = a[x];                             \
     args[1] = a[y];                             \
-    return mrb_block_cont(mrb, sort_resume, next, sp[SORT_BLK], 2, args); \
-  } while (0)
+    return sort_hand_over(mrb, sp[SORT_BLK], next, args); \
+  }
 
-#define SORT_ASK(next, x, y) do {               \
+#define SORT_ASK(next, x, y) {                  \
+    SORT_TRY(next, x, y)                        \
     sp[SORT_HSIZE] = mrb_fixnum_value(hsize);   \
     sp[SORT_I] = mrb_fixnum_value(i);           \
     sp[SORT_INDEX] = mrb_fixnum_value(index);   \
@@ -2796,8 +2716,8 @@ sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
     sp[SORT_Y] = mrb_fixnum_value(y);           \
     args[0] = a[x];                             \
     args[1] = a[y];                             \
-    return mrb_block_cont(mrb, sort_resume, next, sp[SORT_BLK], 2, args); \
-  } while (0)
+    return sort_hand_over(mrb, sp[SORT_BLK], next, args); \
+  }
 
   for (;;) {
     switch (pc) {
@@ -2906,6 +2826,7 @@ sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
   }
 #undef SORT_ASK
 #undef SORT_ASK_INS
+#undef SORT_TRY
 #undef SORT_SWAP
 }
 
@@ -2918,6 +2839,15 @@ sort_resume(mrb_state *mrb, mrb_value result, mrb_int pc)
   mrb_int ix = mrb_fixnum(RARRAY_PTR(st)[SORT_X]);
   mrb_int iy = mrb_fixnum(RARRAY_PTR(st)[SORT_Y]);
 
+  if (mrb_nil_p(RARRAY_PTR(st)[SORT_BLK])) {
+    /* What `<=>` answered, read as mrb_cmp() reads it: an Integer for its
+       sign, and anything else for a pair with no order. */
+    if (!mrb_integer_p(result)) {
+      mrb_raise(mrb, E_ARGUMENT_ERROR, "comparison failed");
+    }
+    return sort_step(mrb, pc, mrb_integer(result) > 0);
+  }
+
   /* cmpint() names the pair in the error it raises for an answer it cannot
      read, and asks the answer itself where that answer is an object rather
      than an Integer. The pair comes from the array as it stands now, the
@@ -2927,11 +2857,12 @@ sort_resume(mrb_state *mrb, mrb_value result, mrb_int pc)
   return sort_step(mrb, pc, cmpint(mrb, result, x, y) > 0);
 }
 
-/* Sorts `ary` by the block, through the VM rather than on a nested
-   mrb_vm_exec(), so a Fiber.yield written in the block has no C frame to
-   lose. Answers with `ary` once the sort is done. */
+/* Sorts `ary`, running whatever orders it -- the block, or a `<=>` written in
+   Ruby -- through the VM rather than on a nested mrb_vm_exec(), so a
+   Fiber.yield written there has no C frame to lose. Answers with `ary` once
+   the sort is done. */
 static mrb_value
-sort_by_block(mrb_state *mrb, mrb_value ary, mrb_value blk, mrb_int len)
+sort_general(mrb_state *mrb, mrb_value ary, mrb_value blk, mrb_int len)
 {
   mrb_value slots[SORT_NSLOTS];
   mrb_bool small = len <= SMALL_ARRAY_SORT_THRESHOLD;
@@ -3042,28 +2973,7 @@ mrb_ary_sort_bang(mrb_state *mrb, mrb_value ary)
   }
 
   /* General path */
-  if (!mrb_nil_p(blk)) {
-    return sort_by_block(mrb, ary, blk, n);
-  }
-  if (n <= SMALL_ARRAY_SORT_THRESHOLD) {
-    /* Use insertion sort for small arrays */
-    insertion_sort(mrb, ary, a, n, blk);
-  }
-  else {
-    /* Heap sort with Floyd's bottom-up deletion */
-    /* Phase 1: build max-heap (standard sift-down, hole style) */
-    for (mrb_int i = n / 2 - 1; i >= 0; i--) {
-      heapify(mrb, ary, a, i, n, blk);
-    }
-    /* Phase 2: extract max elements using Floyd's method */
-    for (mrb_int i = n - 1; i > 0; i--) {
-      mrb_value max = a[0];
-      a[0] = a[i];   /* temporary for GC safety */
-      a[i] = max;     /* max goes to final position */
-      heap_delete_root(mrb, ary, a, i, blk);
-    }
-  }
-  return ary;
+  return sort_general(mrb, ary, blk, n);
 }
 
 /*
