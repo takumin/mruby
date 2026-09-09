@@ -10,6 +10,14 @@ assert('mrb_block_cont answers what the nested call answers') do
   assert_nil BlockCont.detect([]) { |x| true }
 end
 
+assert('mrb_block_cont hands over an argument list of any length') do
+  [[], [1], (1..14).to_a, (1..15).to_a, (1..20).to_a].each do |args|
+    assert_equal BlockCont.apply_nested(args) { |*a| a },
+                 BlockCont.apply(args) { |*a| a }
+  end
+  assert_equal [1, 2], BlockCont.apply([1, 2]) { |a, b| [a, b] }
+end
+
 assert('mrb_block_cont leaves the caller where it found it') do
   before = BlockCont.depth
   BlockCont.detect([1, 2, 3]) { |x| x == 3 }

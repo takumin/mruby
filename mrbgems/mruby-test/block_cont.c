@@ -72,6 +72,40 @@ block_cont_detect_nested(mrb_state *mrb, mrb_value self)
   return mrb_nil_value();
 }
 
+/* BlockCont.apply(ary) { |*args| ... } -> what the block answers
+ *
+ * One call, taking the array's elements as its arguments. A count of 15 or
+ * more is the one mrb_block_cont() cannot lay out register by register and
+ * packs into an array instead, and no walk reaches that path.
+ */
+static mrb_value
+block_cont_apply_resume(mrb_state *mrb, mrb_value result, mrb_int state)
+{
+  return result;
+}
+
+static mrb_value
+block_cont_apply(mrb_state *mrb, mrb_value self)
+{
+  mrb_value ary, blk;
+
+  mrb_get_args(mrb, "A&", &ary, &blk);
+  if (mrb_nil_p(blk)) mrb_raise(mrb, E_ARGUMENT_ERROR, "no block given");
+  return mrb_block_cont(mrb, block_cont_apply_resume, 0, blk,
+                        RARRAY_LEN(ary), RARRAY_PTR(ary));
+}
+
+/* BlockCont.apply_nested(ary) { |*args| ... } -> the same, the old way */
+static mrb_value
+block_cont_apply_nested(mrb_state *mrb, mrb_value self)
+{
+  mrb_value ary, blk;
+
+  mrb_get_args(mrb, "A&", &ary, &blk);
+  if (mrb_nil_p(blk)) mrb_raise(mrb, E_ARGUMENT_ERROR, "no block given");
+  return mrb_yield_argv(mrb, blk, RARRAY_LEN(ary), RARRAY_PTR(ary));
+}
+
 /* BlockCont.depth -> the number of frames below this one */
 static mrb_value
 block_cont_depth(mrb_state *mrb, mrb_value self)
@@ -86,5 +120,7 @@ mrb_init_test_block_cont(mrb_state *mrb)
 
   mrb_define_module_function(mrb, c, "detect", block_cont_detect, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
   mrb_define_module_function(mrb, c, "detect_nested", block_cont_detect_nested, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
+  mrb_define_module_function(mrb, c, "apply", block_cont_apply, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
+  mrb_define_module_function(mrb, c, "apply_nested", block_cont_apply_nested, MRB_ARGS_REQ(1)|MRB_ARGS_BLOCK());
   mrb_define_module_function(mrb, c, "depth", block_cont_depth, MRB_ARGS_NONE());
 }

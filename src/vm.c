@@ -2341,19 +2341,34 @@ mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
     ptrdiff_t idx = ci - mrb->c->cibase;
     mrb_int n = mrb_ci_nregs(ci);
     mrb_callinfo *ci2 = cipush(mrb, n, CINFO_CONT, tc, p, NULL, mid, 0);
-    mrb_int keep, nregs;
+    mrb_int nregs = p->body.irep->nregs;
+    mrb_value *regs;
 
-    funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci2);
-    ci2->stack[0] = bself;
-    keep = ci_bidx(ci2) + 1;
-    nregs = p->body.irep->nregs;
-    if (nregs < keep) {
-      stack_extend(mrb, keep);
+    /* The arguments are laid out here rather than through
+       funcall_args_capture(), which would size the stack for them and leave
+       the block's own registers to a second call. A walk pays for this on
+       every element, so the two are done as one. The count it cannot lay out
+       flat is left to it. */
+    if (mrb_unlikely(argc >= CALL_MAXARGS)) {
+      funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci2);
+      stack_extend(mrb, nregs > 3 ? nregs : 3);
+      regs = ci2->stack;
+      if (nregs > 3) stack_clear(regs + 3, nregs - 3);
     }
     else {
-      stack_extend(mrb, nregs);
-      stack_clear(ci2->stack + keep, nregs - keep);
+      mrb_int keep = argc + 2;          /* self + args + block */
+
+      ci2->n = (uint8_t)argc;
+      ci2->kw = FALSE;
+      stack_extend_adjust(mrb, nregs > keep ? nregs : keep, &argv);
+      /* Read after the extend: growing the stack moves every frame onto the
+         new one. */
+      regs = ci2->stack;
+      stack_copy(regs + 1, argv, argc);
+      regs[keep-1] = mrb_nil_value();   /* the block takes no block of its own */
+      if (nregs > keep) stack_clear(regs + keep, nregs - keep);
     }
+    regs[0] = bself;
     cont_push(mrb, k, state, idx);
     cipush(mrb, 0, 0, NULL, NULL, NULL, 0, 0);
     return bself;
