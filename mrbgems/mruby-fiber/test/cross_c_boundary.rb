@@ -86,3 +86,16 @@ assert_cross(:ng, 'string interpolation sending to_s') { "#{CrossStr.new}" }
 assert_cross(:ng, 'respond_to? sending respond_to_missing?') { CrossMissing.new.respond_to?(:nosuch) }
 assert_cross(:ng, 'const_missing')              { CrossConst::NoSuch }
 assert_cross(:ng, '&obj sending to_proc')       { [1].map(&CrossProc.new) }
+
+# --- the API a conversion is written with ----------------------------------
+# Not a method of its own: this is mrb_funcall_tail() driven from the test
+# driver. A stage that converts a method with it inherits what is recorded
+# here, so the API answers for its own crossing rather than being read off
+# the first method that uses it.
+
+class CrossTail
+  def run; Fiber.yield; 1; end
+end
+
+assert_cross(:ok, 'mrb_funcall_tail')           { FuncallTail.tail(CrossTail.new, :run) }
+assert_cross(:ng, 'mrb_funcall_tail falling back') { FuncallTail.from_c(CrossTail.new, :run) }

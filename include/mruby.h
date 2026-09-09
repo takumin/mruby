@@ -1743,6 +1743,15 @@ MRB_API mrb_value mrb_yield_with_class(mrb_state *mrb, mrb_value b, mrb_int argc
 /* e.g. return mrb_yield_cont(mrb, proc, self, argc, argv); */
 mrb_value mrb_yield_cont(mrb_state *mrb, mrb_value b, mrb_value self, mrb_int argc, const mrb_value *argv);
 
+/* continue execution to the method `mid` answers on `self` */
+/* the same rule applies: call it as the last thing the C method does */
+/* e.g. return mrb_funcall_tail(mrb, obj, MRB_OPSYM(eq), 1, &other); */
+/* a call the VM cannot be handed this way (method_missing, a C method) is
+   made the ordinary way instead, so a caller needs no test of its own */
+/* named for the tail call rather than for a continuation: mrb_funcall_cont()
+   below is the one that resumes the C method afterwards */
+mrb_value mrb_funcall_tail(mrb_state *mrb, mrb_value self, mrb_sym mid, mrb_int argc, const mrb_value *argv);
+
 /**
  * Resumes a C method after a Ruby call it asked the VM to make.
  *

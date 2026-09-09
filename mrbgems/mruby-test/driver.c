@@ -30,6 +30,7 @@ void mrb_init_test_notimplement(mrb_state* mrb);
 void mrb_init_test_sysfail(mrb_state* mrb);
 void mrb_init_test_ary_shared(mrb_state* mrb);
 void mrb_init_test_env(mrb_state* mrb);
+void mrb_init_test_funcall_tail(mrb_state* mrb);
 
 /* Print a short remark for the user */
 static void
@@ -269,6 +270,7 @@ mrb_init_test_driver(mrb_state *mrb, mrb_bool verbose)
   mrb_init_test_notimplement(mrb);
   mrb_init_test_sysfail(mrb);
   mrb_init_test_ary_shared(mrb);
+  mrb_init_test_funcall_tail(mrb);
   mrb_init_test_env(mrb);
 
   if (verbose) {

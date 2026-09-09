@@ -2193,6 +2193,41 @@ mrb_yield_cont(mrb_state *mrb, mrb_value b, mrb_value self, mrb_int argc, const 
   return exec_irep(mrb, self, p);
 }
 
+mrb_value
+mrb_funcall_tail(mrb_state *mrb, mrb_value self, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  /* The same frame that mrb_yield_cont() refuses to replace, for the same
+     reason: a frame carrying another `cci` is one a C caller is waiting for
+     on the C stack, and taking it away drops that caller's return. */
+  if (ci->cci != CINFO_NONE) {
+    return mrb_funcall_argv(mrb, self, mid, argc, argv);
+  }
+
+  struct RClass *tc = mrb_class(mrb, self);
+  mrb_method_t m = mrb_vm_find_method(mrb, tc, &tc, mid);
+
+  /* A method the receiver does not have is dispatched through
+     method_missing, which rewrites the argument list of the frame it is
+     called from and puts the name in front of it. Doing that to the frame
+     this is about to hand to the VM is a second thing to get right for no
+     gain, so the nested path takes it.
+
+     A C method is left there too, and loses nothing by it: mrb_funcall_argv()
+     calls a C method on a frame of its own rather than on a nested
+     mrb_vm_exec(), so there is no re-entry to remove and no boundary for a
+     Fiber.yield to cross. */
+  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_CFUNC_P(m)) {
+    return mrb_funcall_argv(mrb, self, mid, argc, argv);
+  }
+
+  funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci);
+  ci->mid = mid;
+  mrb_vm_ci_target_class_set(ci, tc);
+  return exec_irep(mrb, self, MRB_METHOD_PROC(m));
+}
+
 /* Runs the continuation the frame at `idx` is owed. Answers 1 if it asked for
    another call (callee and dummy frame pushed), 0 if it answered into *vp,
    and -1 if it raised. */
