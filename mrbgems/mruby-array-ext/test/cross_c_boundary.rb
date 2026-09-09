@@ -21,8 +21,8 @@ assert_cross(:ok, 'Array#bsearch')              { [1, 2, 3].bsearch { Fiber.yiel
 assert_cross(:ok, 'Array#uniq with a block')    { [1, 2].uniq { Fiber.yield; 1 } }
 assert_cross(:ok, 'Array#find')                 { [1, 2].find { Fiber.yield; true } }
 assert_cross(:ok, 'Array#flatten sending to_ary') { [AryCrossToAry.new].flatten }
+assert_cross(:ok, 'Array#include? sending ==')  { [AryCrossEq.new].include?(AryCrossEq.new) }
 
 assert_cross(:ng, 'Array#max sending <=>')      { [AryCrossCmp.new(2), AryCrossCmp.new(1)].max }
-assert_cross(:ng, 'Array#include? sending ==')  { [AryCrossEq.new].include?(AryCrossEq.new) }
 assert_cross(:ng, 'Array#uniq sending hash')    { [AryCrossEq.new, AryCrossEq.new].uniq }
 assert_cross(:ng, 'Array#- sending hash')       { [AryCrossEq.new] - [AryCrossEq.new] }
