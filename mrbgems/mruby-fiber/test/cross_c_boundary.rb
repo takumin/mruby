@@ -71,6 +71,14 @@ class CrossProc
   def to_proc; Fiber.yield; ->(x) { x }; end
 end
 
+# `NoSuchBare` is read as a bare name, which is the other constant instruction:
+# the hook belongs to the class the lexical search ends on rather than to a
+# module the source names.
+class CrossBareConst
+  def self.const_missing(name); Fiber.yield; 1; end
+  def read; NoSuchBare; end
+end
+
 assert_cross(:ok, 'method_missing')             { CrossMissing.new.nosuch }
 assert_cross(:ok, 'Comparable#< sending <=>')   { CrossCmp.new(1) < CrossCmp.new(2) }
 assert_cross(:ok, 'Array#+ sending to_ary')     { [1] + [CrossAry.new] }
@@ -83,18 +91,25 @@ assert_cross(:ok, 'Array#inspect sending inspect') { [CrossStr.new].inspect }
 
 assert_cross(:ok, 'Array#join sending to_s')    { [CrossStr.new].join }
 
+# Sent by the constant read itself rather than by a method, with the compiler
+# reserving the two registers the read's instruction builds the call in.
+assert_cross(:ok, 'const_missing')              { CrossConst::NoSuch }
+assert_cross(:ok, 'const_missing on a bare name') { CrossBareConst.new.read }
+
 # The sends below are not ones the continuation protocol reaches, each for a
 # reason of its own.
 #
 # `hash` is asked from inside the table's own walk over its buckets, whose
 # place is a C iterator rather than an index a resumed method could carry.
 #
-# The last three are sent by an instruction rather than by a method. An
-# instruction has no frame of its own to be resumed on, and no spare register
-# to build a call in: the compiler hands it exactly the ones it names.
+# The last two are sent by an instruction, which has no frame of its own to be
+# resumed on. A constant read is where that costs nothing: what the hook
+# answers is the read's own result, so the send returns into the register the
+# instruction was going to write and the instruction does not run again. These
+# two need the value back in the middle of their instruction, and running that
+# instruction again after the send would send again.
 assert_cross(:ng, 'Hash#[] sending hash')       { ({CrossEq.new => 1})[CrossEq.new] }
 assert_cross(:ng, 'string interpolation sending to_s') { "#{CrossStr.new}" }
-assert_cross(:ng, 'const_missing')              { CrossConst::NoSuch }
 assert_cross(:ng, '&obj sending to_proc')       { [1].map(&CrossProc.new) }
 
 # --- the API a conversion is written with ----------------------------------
