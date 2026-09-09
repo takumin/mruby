@@ -227,3 +227,14 @@ assert('symbol GC keeps the symbols a suspended fiber holds') do
   GC.start
   assert_true f.resume
 end
+
+assert('a conversion of a C method argument can yield out of a fiber') do
+  # The conversion runs as ordinary bytecode, so `Fiber.yield` inside it
+  # crosses no C function boundary.
+  cls = Class.new do
+    def to_str; Fiber.yield(:asked); "b"; end
+  end
+  f = Fiber.new { "abc".include?(cls.new) }
+  assert_equal(:asked, f.resume)
+  assert_true(f.resume)
+end

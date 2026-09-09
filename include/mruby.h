@@ -524,6 +524,12 @@ struct mrb_state {
      walking an ancestor chain for a name that is not there.  Conservative:
      never cleared by `undef`. */
   uint8_t conv_defined;
+
+  /* Set while a conversion arranged for a C method's argument is on its way
+     to the dispatch loop: `mrb_get_args()` cannot return to the method it is
+     serving, so it throws, and this says the throw carries a restart rather
+     than an exception.  Read and cleared where the loop catches it. */
+  uint8_t conv_signal;
   mrb_method_t bop_builtin[MRB_BOP_SLOT_COUNT];
 
 #ifdef MRB_USE_TASK_SCHEDULER

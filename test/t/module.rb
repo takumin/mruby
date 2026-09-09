@@ -1701,3 +1701,31 @@ assert('constant and class variable lookup: a method written in a block given a 
   assert_raise(NameError) { Test4GivenMethodOwn.new.own_direct }
   assert_raise(NameError) { Test4GivenMethodOwn.new.own_nested }
 end
+
+class ModEnsureBadToAry
+  def to_ary; 7; end
+end
+
+class ModEnsureHasToAry
+  def to_ary; [1]; end
+end
+
+assert('Module#__ensure checks its argument and names the object that was asked') do
+  # The coercion trampoline in the VM calls this on what a conversion method
+  # gave back, passing the object it asked and the name it sent: the class of
+  # the result on its own would not say where the result came from.
+  bad = ModEnsureBadToAry.new
+
+  assert_equal [1, 2], Array.__ensure([1, 2], bad, :to_ary)
+  assert_equal "s", String.__ensure("s", bad, :to_str)
+  assert_raise_with_message(TypeError,
+      "can't convert ModEnsureBadToAry to Array " \
+      "(ModEnsureBadToAry#to_ary gives Integer)") do
+    Array.__ensure(7, bad, :to_ary)
+  end
+  # a check ON the argument, never a dispatch TO it
+  assert_raise(TypeError) { Array.__ensure(ModEnsureHasToAry.new, bad, :to_ary) }
+
+  assert_raise(ArgumentError) { Array.__ensure([1], bad) }
+  assert_raise(ArgumentError) { Array.__ensure([1], bad, :to_ary, bad) }
+end

@@ -2659,33 +2659,6 @@ static const mrb_mt_entry array_rom_entries[] = {
   MRB_MT_ENTRY(mrb_ary_svalue_eq,    MRB_SYM(__svalue_eq),     MRB_ARGS_REQ(1)),
 };
 
-/*
- * Array.__ensure(val, obj) -> Array
- *
- * Internal. Checks that `val` is an Array, as a check ON its argument rather
- * than a dispatch TO it, the way `Integer.__ensure` does. The coercion
- * trampoline in the VM calls it on what `to_ary` gave back, and passes the
- * object it asked as `obj`, which is what the error names: the type the
- * conversion produced on its own says nothing about where it came from.
- */
-static mrb_value
-ary_s_ensure(mrb_state *mrb, mrb_value self)
-{
-  /* Read the two arguments rather than asking `mrb_get_args` for them.  It
-     walks the format string twice: the second specifier alone measured 48
-     instructions on every conversion that succeeds, and doing without the
-     call entirely takes 119 off each one. */
-  mrb_int argc = mrb_get_argc(mrb);
-  const mrb_value *argv = mrb_get_argv(mrb);
-
-  if (argc != 2) mrb_argnum_error(mrb, argc, 2, 2);
-  if (!mrb_array_p(argv[0])) {
-    mrb_raisef(mrb, E_TYPE_ERROR, "can't convert %Y to Array (%Y#to_ary gives %Y)",
-               argv[1], argv[1], argv[0]);
-  }
-  return argv[0];
-}
-
 void
 mrb_init_array(mrb_state *mrb)
 {
@@ -2695,7 +2668,6 @@ mrb_init_array(mrb_state *mrb)
   MRB_SET_INSTANCE_TT(a, MRB_TT_ARRAY);
 
   mrb_define_class_method_id(mrb, a, MRB_OPSYM(aref),    mrb_ary_s_create,     MRB_ARGS_ANY());    /* 15.2.12.4.1 */
-  mrb_define_class_method_id(mrb, a, MRB_SYM(__ensure),  ary_s_ensure,         MRB_ARGS_REQ(2));
 
   MRB_MT_INIT_ROM(mrb, a, array_rom_entries);
 }

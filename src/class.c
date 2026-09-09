@@ -1537,6 +1537,24 @@ fast_fmt_ok(char c)
 }
 
 /*
+ * An argument met the wrong type where an implicit conversion could answer.
+ * `mrb_vm_coerce_arg()` arranges for the dispatch loop to run the conversion
+ * and take the send from the top again, and does not return when it can;
+ * where it cannot, the `TypeError` is raised here as it always was.
+ */
+static void
+arg_conv(mrb_state *mrb, const mrb_value *argv, mrb_int i, uint8_t conv)
+{
+  mrb_vm_coerce_arg(mrb, i, conv);
+  switch (conv) {
+  case MRB_CONV_TO_STR:  mrb_ensure_string_type(mrb, argv[i]); break;
+  case MRB_CONV_TO_ARY:  mrb_ensure_array_type(mrb, argv[i]); break;
+  default:               /* MRB_CONV_TO_HASH */
+                         mrb_ensure_hash_type(mrb, argv[i]); break;
+  }
+}
+
+/*
  * Fast path for simple format strings (no *, :, !, +, &, ?).
  * Handles the most common patterns directly in one pass,
  * skipping the two-pass format scanning of the general path.
@@ -1596,19 +1614,19 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     }
     case 'S': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      mrb_ensure_string_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_string_p(argv[i]))) arg_conv(mrb, argv, i, MRB_CONV_TO_STR);
       *vp = argv[i++];
       break;
     }
     case 'A': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      mrb_ensure_array_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_array_p(argv[i]))) arg_conv(mrb, argv, i, MRB_CONV_TO_ARY);
       *vp = argv[i++];
       break;
     }
     case 'H': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      mrb_ensure_hash_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_hash_p(argv[i]))) arg_conv(mrb, argv, i, MRB_CONV_TO_HASH);
       *vp = argv[i++];
       break;
     }
@@ -1817,9 +1835,15 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
           if (!(altmode && mrb_nil_p(*pickarg))) {
             switch (c) {
             case 'C': ensure_class_type(mrb, *pickarg); break;
-            case 'S': mrb_ensure_string_type(mrb, *pickarg); break;
-            case 'A': mrb_ensure_array_type(mrb, *pickarg); break;
-            case 'H': mrb_ensure_hash_type(mrb, *pickarg); break;
+            case 'S':
+              if (!mrb_string_p(*pickarg)) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+              break;
+            case 'A':
+              if (!mrb_array_p(*pickarg)) arg_conv(mrb, argv, i-1, MRB_CONV_TO_ARY);
+              break;
+            case 'H':
+              if (!mrb_hash_p(*pickarg)) arg_conv(mrb, argv, i-1, MRB_CONV_TO_HASH);
+              break;
             }
           }
           *p = *pickarg;
@@ -4998,6 +5022,34 @@ static const mrb_mt_entry cls_rom_entries[] = {
   MRB_MT_ENTRY(mrb_class_superclass, MRB_SYM(superclass), MRB_ARGS_NONE()),                   /* 15.2.3.3.4 */
 };
 
+/*
+ * Module#__ensure(val, obj, conv) -> val
+ *
+ * Internal. Checks that `val` is an instance of the receiver, as a check ON
+ * its argument rather than a dispatch TO it. The coercion trampoline in the
+ * VM calls it on what a conversion method gave back, handing it the object
+ * it asked and the name it sent: the type the conversion produced on its own
+ * says nothing about where it came from, and the error names all three the
+ * way CRuby's does.
+ *
+ * It reads its arguments rather than asking `mrb_get_args` for them, which
+ * walks the format string twice and costs more than the check.
+ */
+static mrb_value
+mod_ensure(mrb_state *mrb, mrb_value self)
+{
+  mrb_int argc = mrb_get_argc(mrb);
+  const mrb_value *argv = mrb_get_argv(mrb);
+
+  if (argc != 3) mrb_argnum_error(mrb, argc, 3, 3);
+  if (!mrb_obj_is_kind_of(mrb, argv[0], mrb_class_ptr(self))) {
+    mrb_raisef(mrb, E_TYPE_ERROR, "can't convert %Y to %C (%Y#%n gives %Y)",
+               argv[1], mrb_class_ptr(self), argv[1],
+               mrb_symbol(argv[2]), argv[0]);
+  }
+  return argv[0];
+}
+
 static const mrb_mt_entry mod_rom_entries[] = {
   MRB_MT_ENTRY(mrb_mod_eqq,             MRB_OPSYM(eqq),            MRB_ARGS_REQ(1)),                   /* 15.2.2.4.7 */
   MRB_MT_ENTRY(mrb_mod_alias,           MRB_SYM(alias_method),     MRB_ARGS_ANY()),                    /* 15.2.2.4.8 */
@@ -5033,6 +5085,10 @@ static const mrb_mt_entry mod_rom_entries[] = {
   MRB_MT_ENTRY(mrb_mod_remove_const,    MRB_SYM(remove_const),     MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),  /* 15.2.2.4.40 */
   MRB_MT_ENTRY(mrb_mod_to_s,            MRB_SYM(to_s),             MRB_ARGS_NONE()),
   MRB_MT_ENTRY(mrb_mod_undef,           MRB_SYM(undef_method),     MRB_ARGS_ANY()),                    /* 15.2.2.4.41 */
+  /* Last on purpose: the table is scanned in order, and everything above
+     is a name programs call.  Boot cost 743 instructions more with this
+     entry second. */
+  MRB_MT_ENTRY(mod_ensure,              MRB_SYM(__ensure),         MRB_ARGS_REQ(3)),
 };
 
 void

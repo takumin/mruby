@@ -260,3 +260,65 @@ assert('super in a method with a receiver') do
   assert_equal(:base, SuperInSdefSub.go)
   assert_equal([:base_block], SuperInSdefSub.in_block)
 end
+
+class ArgConvToStr
+  def initialize; @asked = 0; end
+  attr_reader :asked
+  def to_str; @asked += 1; "b"; end
+end
+
+class ArgConvToAry
+  def to_ary; [1, 2]; end
+end
+
+class ArgConvToHash
+  def to_hash; {a: 1}; end
+end
+
+class ArgConvBadToStr
+  def to_str; 7; end
+end
+
+class ArgConvRaises
+  def to_str; raise ArgumentError, "from to_str"; end
+end
+
+assert('an argument of a method written in C takes an implicit conversion') do
+  o = ArgConvToStr.new
+  assert_true("abc".include?(o))
+  assert_equal(1, o.asked)
+
+  assert_equal([1, 2], [0].replace(ArgConvToAry.new))
+  assert_equal({a: 1}, {b: 2}.replace(ArgConvToHash.new))
+end
+
+assert('a conversion that gives back the wrong type names the object that was asked') do
+  assert_raise_with_message(TypeError,
+      "can't convert ArgConvBadToStr to String " \
+      "(ArgConvBadToStr#to_str gives Integer)") do
+    "abc".include?(ArgConvBadToStr.new)
+  end
+  # an object that does not answer the protocol at all is the error it was
+  assert_raise_with_message(TypeError, "Object cannot be converted to String") do
+    "abc".include?(Object.new)
+  end
+  # an exception from the conversion is the one that comes out
+  assert_raise_with_message(ArgumentError, "from to_str") do
+    "abc".include?(ArgConvRaises.new)
+  end
+end
+
+assert('a conversion nested in a conversion runs out of call frames, not C stack') do
+  # The conversion is bytecode, so nesting it spends what a Ruby call spends.
+  cls = Class.new do
+    def initialize(n); @n = n; end
+    def to_str; @n == 0 ? "x" : "a".include?(self.class.new(@n - 1)).to_s; end
+  end
+  assert_raise(SystemStackError) do
+    d = 0
+    while d < 100000
+      d += 1
+      "a".include?(cls.new(d))
+    end
+  end
+end

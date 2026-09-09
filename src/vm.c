@@ -3137,36 +3137,48 @@ mrb_vm_interrupt(mrb_state *mrb)
    frame returns into the register it was pushed over, so the restarted
    instruction reads the converted value with nothing recorded anywhere.
 
-   `Array.__ensure` is a check ON its argument, so a `to_ary` that gives
-   back something else raises here instead of letting the restart trap a
-   second time.  That is what removes the need for an "already tried" mark.
+   The class's `__ensure` is a check ON its argument, so a conversion that
+   gives back something else raises here instead of letting the restart trap
+   a second time.  That is what removes the need for an "already tried" mark.
    It is handed the object that was asked as well, so that the error names
    that object the way CRuby's does rather than naming only the type the
-   conversion produced. */
-static const mrb_code coerce_ary_iseq[] = {
+   conversion produced.
+
+   One shape serves every protocol: the frame is handed the object as its
+   self and the target class as its one argument, and `__ensure` is a method
+   of Module, so it is the receiver that says what to check against and the
+   symbol handed along that says what was sent.  Only the two symbols differ
+   between protocols, so the bytecode is shared and each carries a symbol
+   pair, an irep and a proc. */
+static const mrb_code coerce_iseq[] = {
   OP_ENTER, 0x04, 0x00, 0x00,   /* 1:0:0:0:0:0:0 */
   OP_MOVE, 3, 0,                /* R3 = self */
-  OP_SEND, 3, 0, 0,             /* R3 = R3.to_ary */
-  OP_MOVE, 2, 1,                /* R2 = Array */
+  OP_SEND, 3, 0, 0,             /* R3 = R3.to_xxx */
+  OP_MOVE, 2, 1,                /* R2 = the class */
   OP_MOVE, 4, 0,                /* R4 = the object that was asked */
-  OP_SEND, 2, 1, 2,             /* R2 = R2.__ensure(R3, R4) */
+  OP_LOADSYM, 5, 0,             /* R5 = :to_xxx */
+  OP_SEND, 2, 1, 3,             /* R2 = R2.__ensure(R3, R4, R5) */
   OP_RETURN, 2,
 };
 
-MRB_PRESYM_DEFINE_VAR_AND_INITER(coerce_ary_syms, 2, MRB_SYM(to_ary), MRB_SYM(__ensure))
+#define COERCE_TRAMPOLINE(name, convsym)                                \
+  MRB_PRESYM_DEFINE_VAR_AND_INITER(coerce_##name##_syms, 2,             \
+                                   convsym, MRB_SYM(__ensure))          \
+  static const mrb_irep coerce_##name##_irep = {                        \
+    2, 7, 0, MRB_IREP_STATIC,                                           \
+    coerce_iseq, NULL, coerce_##name##_syms, NULL, NULL, NULL,          \
+    sizeof(coerce_iseq), 0, 2, 0, 0,                                    \
+  };                                                                    \
+  mrb_alignas(8)                                                        \
+  static const struct RProc coerce_##name##_proc = {                    \
+    NULL, MRB_TT_PROC, MRB_GC_RED, MRB_OBJ_IS_FROZEN,                   \
+    MRB_PROC_SCOPE | MRB_PROC_STRICT,                                   \
+    { &coerce_##name##_irep }, NULL, { NULL }                           \
+  };
 
-static const mrb_irep coerce_ary_irep = {
-  2, 6, 0, MRB_IREP_STATIC,
-  coerce_ary_iseq, NULL, coerce_ary_syms, NULL, NULL, NULL,
-  sizeof(coerce_ary_iseq), 0, 2, 0, 0,
-};
-
-mrb_alignas(8)
-static const struct RProc coerce_ary_proc = {
-  NULL, MRB_TT_PROC, MRB_GC_RED, MRB_OBJ_IS_FROZEN, MRB_PROC_SCOPE | MRB_PROC_STRICT,
-  { &coerce_ary_irep }, NULL, { NULL }
-};
-
+COERCE_TRAMPOLINE(ary,  MRB_SYM(to_ary))
+COERCE_TRAMPOLINE(str,  MRB_SYM(to_str))
+COERCE_TRAMPOLINE(hash, MRB_SYM(to_hash))
 /* `flatten` on mrb_vm_exec pulls every callee into the dispatch loop.  These
    run only when a conversion is about to happen, and letting them inline
    there costs the whole VM in register pressure: `fib(25)` ran 1.3% more
@@ -3342,6 +3354,151 @@ vm_coerce_ary(mrb_state *mrb, mrb_code op, int which)
   return TRUE;
 }
 
+/* ---- implicit conversion of a C method's argument ------------------------
+   `mrb_get_args` does not convert either: it hands the mismatch here, and
+   this arranges for the dispatch loop to run the conversion and then take
+   the send from the top again with the converted value in the argument's
+   register.  The C method is entered a second time, which is why only a
+   method that does nothing before `mrb_get_args` may take part.
+
+   Restarting the send is what makes the write-back implicit here too: the
+   trampoline is pushed over the argument's own register in the caller's
+   frame, so the value lands where the send will read it again. */
+
+/* Sends whose restart is known to put the frame back exactly as it was.
+   `OP_SEND` and `OP_SSEND` write nil over the block slot themselves, and
+   the operators reach the send through `L_SEND_SYM`, which does the same.
+   `OP_SENDB` reads a block out of a register the trampoline's frame lies
+   over, `OP_SETIDX` likewise, and `OP_ADDI` and `OP_SUBI` write their
+   immediate back into the argument's register, which would undo the
+   conversion and trap forever. */
+static mrb_bool
+conv_send_insn_p(const struct vm_insn *d, const mrb_irep *irep,
+                 uint16_t a, mrb_sym mid)
+{
+  switch (d->insn) {
+  case OP_SEND: case OP_SSEND:
+    if (d->b >= irep->slen || irep->syms[d->b] != mid) return FALSE;
+    break;
+  case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV:
+  case OP_EQ: case OP_LT: case OP_LE: case OP_GT: case OP_GE:
+  case OP_GETIDX:
+    break;
+  default:
+    return FALSE;
+  }
+  return d->a == a;
+}
+
+/* Where the send being served began.  Same problem as the instructions that
+   trap in place, without the opcode to key on: the lengths a send can have
+   are tried, and a candidate counts only once it decodes to one of them, to
+   that very length, and to this frame's own register and method. */
+static VM_COLD const mrb_code *
+vm_send_insn_start(const mrb_irep *irep, const mrb_code *end, uint16_t a,
+                   mrb_sym mid, struct vm_insn *out)
+{
+  const mrb_code *found = NULL;
+  int hits = 0;
+
+  for (uint32_t len = 2; len <= 7; len++) {
+    struct vm_insn d;
+    const mrb_code *pc = end - len;
+    if (pc < irep->iseq) break;
+    if (vm_insn_decode(pc, &d) != len) continue;
+    if (!conv_send_insn_p(&d, irep, a, mid)) continue;
+    found = pc;
+    *out = d;
+    hits++;
+  }
+  if (hits != 1) {
+    struct vm_insn d;
+    found = vm_insn_start_scan(irep, end, &d);
+    if (found && !conv_send_insn_p(&d, irep, a, mid)) found = NULL;
+    else if (found) *out = d;
+  }
+#ifdef MRB_DEBUG
+  {
+    struct vm_insn d;
+    const mrb_code *exact = vm_insn_start_scan(irep, end, &d);
+    if (exact && !conv_send_insn_p(&d, irep, a, mid)) exact = NULL;
+    mrb_assert(found == exact);
+  }
+#endif
+  return found;
+}
+
+/* An argument of a C method is of the wrong type where an implicit
+   conversion could answer.  Returns FALSE when the conversion cannot be
+   arranged, and then the caller raises `TypeError` as before; otherwise it
+   does not return, throwing to the dispatch loop with the trampoline
+   already pushed. */
+mrb_bool
+mrb_vm_coerce_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  const struct RProc *tramp;
+  const mrb_irep *tirep;
+  struct RClass *target;
+  mrb_sym cmid;
+
+  if (!(mrb->conv_defined & conv)) return FALSE;
+  /* Only a frame the dispatch loop pushed has a send to go back to: a
+     method reached from C through `mrb_funcall` and its kin has not. */
+  if (ci->cci != CINFO_NONE || ci <= mrb->c->cibase) return FALSE;
+  /* The packed argument array and the keyword dictionary are built by the
+     send itself, so a restart would build them again out of registers it has
+     already written over. */
+  if (ci->n >= 15 || ci->kw) return FALSE;
+  /* The trampoline's frame lies over the argument's register and the ones
+     above it, so an argument after it would not survive the restart. */
+  if (argidx != ci->n - 1) return FALSE;
+
+  switch (conv) {
+  case MRB_CONV_TO_STR:
+    tramp = &coerce_str_proc; tirep = &coerce_str_irep;
+    target = mrb->string_class; cmid = MRB_SYM(to_str);
+    break;
+  case MRB_CONV_TO_ARY:
+    tramp = &coerce_ary_proc; tirep = &coerce_ary_irep;
+    target = mrb->array_class; cmid = MRB_SYM(to_ary);
+    break;
+  case MRB_CONV_TO_HASH:
+    tramp = &coerce_hash_proc; tirep = &coerce_hash_irep;
+    target = mrb->hash_class; cmid = MRB_SYM(to_hash);
+    break;
+  default:
+    return FALSE;
+  }
+
+  {
+    struct RClass *c = mrb_class(mrb, ci->stack[1+argidx]);
+    if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &c, cmid))) return FALSE;
+  }
+
+  const struct RProc *caller = ci[-1].proc;
+  if (caller == NULL || MRB_PROC_CFUNC_P(caller)) return FALSE;
+  const mrb_irep *cirep = caller->body.irep;
+  ptrdiff_t off = ci->stack - ci[-1].stack;
+  if (off < 0 || off > UINT16_MAX) return FALSE;
+
+  struct vm_insn d;
+  const mrb_code *start = vm_send_insn_start(cirep, ci[-1].pc, (uint16_t)off,
+                                             ci->mid, &d);
+  if (start == NULL) return FALSE;
+
+  mrb_assert(ci->blk == NULL);
+  ci = cipop(mrb);
+  ci->pc = start;
+  ci = cipush(mrb, off + 1 + argidx, CINFO_NONE, target, tramp, NULL, cmid, 1);
+  stack_extend(mrb, tirep->nregs);
+  ci->stack[1] = mrb_obj_value(target);
+  mrb->conv_signal = TRUE;
+  MRB_THROW(mrb->jmp);
+  /* not reached */
+  return FALSE;
+}
+
 MRB_FLATTEN MRB_API mrb_value
 mrb_vm_exec(mrb_state *mrb, const struct RProc *begin_proc, const mrb_code *iseq)
 {
@@ -3375,7 +3532,16 @@ RETRY_TRY_BLOCK:
 
   MRB_TRY(&c_jmp) {
 
-  if (mrb_unlikely(mrb->exc)) {
+  if (mrb_unlikely(mrb->conv_signal)) {
+    /* An argument of a C method needs converting.  `mrb_vm_coerce_arg()`
+       has rewound the send and pushed the trampoline over the argument's
+       register already, so there is nothing to do but run it: the send is
+       taken from the top once the frame returns. */
+    mrb->conv_signal = FALSE;
+    ci = mrb->c->ci;
+    irep = ci->proc->body.irep;
+  }
+  else if (mrb_unlikely(mrb->exc)) {
     mrb_gc_arena_restore(mrb, ai);
     if (mrb->exc->tt == MRB_TT_BREAK)
       goto L_BREAK;
@@ -5084,7 +5250,7 @@ RETRY_TRY_BLOCK:
 #undef regs
   }
   MRB_CATCH(&c_jmp) {
-    mrb_assert(mrb->exc != NULL);
+    mrb_assert(mrb->exc != NULL || mrb->conv_signal);
 
     ci = mrb->c->ci;
     while (ci > mrb->c->cibase && ci->cci == CINFO_DIRECT) {
