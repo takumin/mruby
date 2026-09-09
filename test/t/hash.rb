@@ -1087,3 +1087,12 @@ assert('Hash#== and #eql? with recursive values') do
     assert_false a.__send__(op, c), op.to_s
   end
 end
+
+assert('Hash#[] with a proc default on a frame a C caller owns') do
+  # mrb_hash_aget() hands its frame to the default proc. Reached through
+  # mrb_funcall(), that frame belongs to the C caller waiting for it, and
+  # handing it away would drop the caller's return.
+  h = Hash.new { |hash, key| [hash.size, key] }
+  assert_equal [0, :x], FuncallTail.nested(h, :[], :x)
+  assert_equal [0, :x], FuncallTail.nested(h, :default, :x)
+end
