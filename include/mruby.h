@@ -199,10 +199,20 @@ typedef struct {
                   result (mrb_funcall_cont()); that method left a
                   continuation rather than a C frame
 
-   MRB_CI_PINS_C_FRAME_P() asks the question the values exist to answer: is a
-   C frame waiting on this one? A fiber switched away from such a frame could
-   not return to it. A CINFO_CONT frame is not one: what the C method needs to
-   go on is in its own frame and in the continuation, both on the heap. */
+   Two questions are asked of these values, and CINFO_CONT is the one case
+   they answer differently, so each has a macro of its own.
+
+   MRB_CI_PINS_C_FRAME_P() asks whether a C frame is waiting on this one. A
+   fiber switched away from such a frame could not return to it. A CINFO_CONT
+   frame is not one: what the C method needs to go on is in its own frame and
+   in the continuation, both on the heap.
+
+   MRB_CI_RETURN_CLAIMED_P() asks whether anything outside this mrb_vm_exec()
+   is waiting for what this frame returns. A CINFO_CONT frame is one: a C
+   method asked to be resumed with it. So a method that means to take the
+   frame over -- to replace it, or to hand its own call to the VM -- asks this
+   rather than the other, and taking a CINFO_CONT frame is what the two differ
+   about. */
 #define CINFO_NONE    0
 #define CINFO_SKIP    1
 #define CINFO_DIRECT  2
@@ -211,6 +221,7 @@ typedef struct {
 
 #define MRB_CI_PINS_C_FRAME_P(ci) \
   ((ci)->cci != CINFO_NONE && (ci)->cci != CINFO_CONT)
+#define MRB_CI_RETURN_CLAIMED_P(ci) ((ci)->cci != CINFO_NONE)
 
 enum mrb_fiber_state {
   MRB_FIBER_CREATED = 0,

@@ -2817,13 +2817,13 @@ sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
   mrb_value args[2];
   mrb_value ans;
   /* Read once: the sort asks these of every comparison it makes. A block
-     written in Ruby, on a frame no C caller owns, is a comparison the VM can
-     always be handed; the ask is then the last thing this function does,
+     written in Ruby, on a frame whose return is this loop's to give away, is
+     a comparison the VM can always be handed; the ask is then the last thing this function does,
      which is what keeps a handover from costing anything on the way out. The
      `<=>` of an object is not that: whether it can be handed over is a
      property of the pair, so those go through the form that answers here. */
   mrb_bool no_blk = mrb_nil_p(sp[SORT_BLK]);
-  mrb_bool tail_ok = !no_blk && !MRB_CI_PINS_C_FRAME_P(mrb->c->ci) &&
+  mrb_bool tail_ok = !no_blk && !MRB_CI_RETURN_CLAIMED_P(mrb->c->ci) &&
                      mrb_proc_p(sp[SORT_BLK]) &&
                      !MRB_PROC_CFUNC_P(mrb_proc_ptr(sp[SORT_BLK])) &&
                      mrb_proc_ptr(sp[SORT_BLK])->body.irep != NULL;

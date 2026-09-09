@@ -819,7 +819,8 @@ mrb_vm_svar_set(mrb_state *mrb, enum mrb_svar_index key, mrb_value v)
   }
 }
 
-/* CINFO_* and MRB_CI_PINS_C_FRAME_P() are in mruby.h */
+/* CINFO_*, MRB_CI_PINS_C_FRAME_P() and MRB_CI_RETURN_CLAIMED_P() are in
+   mruby.h */
 
 #define BLK_PTR(b) ((mrb_proc_p(b)) ? mrb_proc_ptr(b) : NULL)
 
@@ -1750,7 +1751,7 @@ mrb_value
 mrb_exec_irep(mrb_state *mrb, mrb_value self, const struct RProc *p)
 {
   mrb_callinfo *ci = mrb->c->ci;
-  if (ci->cci == CINFO_NONE) {
+  if (!MRB_CI_RETURN_CLAIMED_P(ci)) {
     return exec_irep(mrb, self, p);
   }
   else {
@@ -1812,7 +1813,10 @@ send_method(mrb_state *mrb, mrb_value self, mrb_bool pub)
   int n = ci->n;
   mrb_sym name;
 
-  if (ci->cci > CINFO_NONE) {
+  /* Entered from C, this frame's return is not this loop's to give away, so
+     the send is made as a call of its own rather than by taking the frame
+     over the way the path below does. */
+  if (MRB_CI_RETURN_CLAIMED_P(ci)) {
   funcall:;
     const mrb_value *argv;
     mrb_int argc;
@@ -2174,11 +2178,10 @@ mrb_yield_cont(mrb_state *mrb, mrb_value b, mrb_value self, mrb_int argc, const 
   const struct RProc *p = mrb_proc_ptr(b);
   mrb_callinfo *ci = mrb->c->ci;
 
-  /* The frame this replaces has to be one this `mrb_vm_exec()` will return
-     through. A frame carrying another `cci` was pushed by a C caller that is
-     waiting for it on the C stack, and replacing it drops that caller's
-     return: the block runs on a nested VM there instead. */
-  if (ci->cci != CINFO_NONE) {
+  /* The frame this replaces has to be one whose return nothing outside this
+     `mrb_vm_exec()` is waiting for. Taking a claimed frame away drops that
+     return, so the block runs on a nested VM there instead. */
+  if (MRB_CI_RETURN_CLAIMED_P(ci)) {
     struct RClass *tc;
     mrb_proc_get_self(mrb, p, &tc);
     return yield_with_attr(mrb, b, argc, argv, self, tc, FALSE);
@@ -2214,9 +2217,9 @@ mrb_funcall_tail(mrb_state *mrb, mrb_value self, mrb_sym mid, mrb_int argc, cons
   mrb_callinfo *ci = mrb->c->ci;
 
   /* The same frame that mrb_yield_cont() refuses to replace, for the same
-     reason: a frame carrying another `cci` is one a C caller is waiting for
-     on the C stack, and taking it away drops that caller's return. */
-  if (ci->cci != CINFO_NONE) {
+     reason: something outside this `mrb_vm_exec()` is waiting for what a
+     claimed frame returns, and taking it away drops that return. */
+  if (MRB_CI_RETURN_CLAIMED_P(ci)) {
     return mrb_funcall_argv(mrb, self, mid, argc, argv);
   }
 
@@ -2309,12 +2312,12 @@ funcall_cont_attr(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state
   mrb_func_t f;
   const struct RProc *cp;
 
-  /* Two things have to hold for the call to be handed over. The frame this
-     method runs on has to be one this mrb_vm_exec() will return through: a
-     frame carrying another cci belongs to a C caller waiting on the C stack.
-     And the callee has to be written in Ruby: a C function returns to
-     whoever called it rather than to the VM loop, and cannot suspend. */
-  if (ci->cci != CINFO_NONE) goto nested;
+  /* Two things have to hold for the call to be handed over. Nothing outside
+     this mrb_vm_exec() may be waiting for what the frame this method runs on
+     returns, since the handover answers through that frame. And the callee
+     has to be written in Ruby: a C function returns to whoever called it
+     rather than to the VM loop, and cannot suspend. */
+  if (MRB_CI_RETURN_CLAIMED_P(ci)) goto nested;
   tc = mrb_class(mrb, recv);
   m = mrb_vm_find_method(mrb, tc, &tc, mid);
   if (MRB_METHOD_UNDEF_P(m)) goto nested;
@@ -2417,11 +2420,11 @@ block_cont_attr(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
   check_block(mrb, blk);
 
   /* The two conditions mrb_funcall_cont() checks, less the method lookup it
-     has no need of here. The frame this method runs on has to be one this
-     mrb_vm_exec() will return through, and the block has to be written in
-     Ruby: a C block returns to whoever called it rather than to the VM loop,
-     and cannot suspend. */
-  if (ci->cci != CINFO_NONE) goto nested;
+     has no need of here. Nothing outside this mrb_vm_exec() may be waiting
+     for what the frame this method runs on returns, and the block has to be
+     written in Ruby: a C block returns to whoever called it rather than to
+     the VM loop, and cannot suspend. */
+  if (MRB_CI_RETURN_CLAIMED_P(ci)) goto nested;
   p = mrb_proc_ptr(blk);
   if (MRB_PROC_CFUNC_P(p) || p->body.irep == NULL) goto nested;
 
@@ -2472,7 +2475,7 @@ mrb_block_cont_ready_p(mrb_state *mrb, mrb_value blk)
 {
   const struct RProc *p;
 
-  if (mrb->c->ci->cci != CINFO_NONE) return FALSE;
+  if (MRB_CI_RETURN_CLAIMED_P(mrb->c->ci)) return FALSE;
   if (!mrb_proc_p(blk)) return FALSE;
   p = mrb_proc_ptr(blk);
   return !MRB_PROC_CFUNC_P(p) && p->body.irep != NULL;
