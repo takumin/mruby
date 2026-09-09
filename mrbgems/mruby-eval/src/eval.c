@@ -289,7 +289,7 @@ f_eval(mrb_state *mrb, mrb_value self)
   const char *file = NULL;
   mrb_int line = 1;
 
-  mrb_get_args(mrb, "s~|ozi", &s, &len, &binding, &file, &line);
+  mrb_get_args(mrb, "s~|oz~i", &s, &len, &binding, &file, &line);
 
   if (!mrb_nil_p(binding)) {
     binding_eval_prepare(mrb, binding, s, len, file);
@@ -357,7 +357,7 @@ object_eval(mrb_state *mrb, mrb_value self, mrb_bool class_eval)
   mrb_int len;
   const char *file = NULL;
   mrb_int line = 1;
-  mrb_get_args(mrb, "s~|zi", &s, &len, &file, &line);
+  mrb_get_args(mrb, "s~|z~i", &s, &len, &file, &line);
 
   struct RClass *c = class_eval ? mrb_class_ptr(self) : mrb_singleton_class_ptr(mrb, self);
   /* The string runs in its own scope with `c` as its cref, so the caller's
