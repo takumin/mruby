@@ -7,6 +7,10 @@
 
 fiber = Object.const_defined?(:Fiber)
 
+# These three walk the subject with a match, a replacement and the string
+# being built to carry, which is the shape Array#sort's conversion took: an
+# array in a frame register holding what does not fit in the one integer the
+# protocol carries. They are left to a stage of their own.
 assert_cross(:ng, 'String#gsub with a block', fiber) { 'ab'.gsub('a') { Fiber.yield; 'x' } }
 assert_cross(:ng, 'String#sub with a block', fiber)  { 'ab'.sub('a') { Fiber.yield; 'x' } }
 assert_cross(:ng, 'String#scan with a block', fiber) { 'ab'.scan(/a/) { Fiber.yield } }

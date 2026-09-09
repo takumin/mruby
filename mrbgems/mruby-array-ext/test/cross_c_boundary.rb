@@ -25,5 +25,8 @@ assert_cross(:ok, 'Array#include? sending ==')  { [AryCrossEq.new].include?(AryC
 
 assert_cross(:ok, 'Array#max sending <=>')      { [AryCrossCmp.new(2), AryCrossCmp.new(1)].max }
 assert_cross(:ok, 'Array#min sending <=>')      { [AryCrossCmp.new(2), AryCrossCmp.new(1)].min }
+# Both build a hash table of the elements and ask `hash` from inside its own
+# walk over the buckets, whose place is a C iterator rather than an index a
+# resumed method could carry. `Hash#[]` is the same case.
 assert_cross(:ng, 'Array#uniq sending hash')    { [AryCrossEq.new, AryCrossEq.new].uniq }
 assert_cross(:ng, 'Array#- sending hash')       { [AryCrossEq.new] - [AryCrossEq.new] }
