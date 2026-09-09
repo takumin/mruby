@@ -1793,33 +1793,85 @@ ary_combination_next(mrb_state *mrb, mrb_value self)
    block call and a `__svalue` send, then compare it with a `<=>` send. An
    Array is walked in place instead, and `mrb_cmp()` answers for an Integer, a
    Float and a String without a send at all, as `Array#sort` already does. */
-static mrb_int
-ary_cmp_ordered(mrb_state *mrb, mrb_value a, mrb_value b)
+
+static mrb_value ary_max_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+static mrb_value ary_min_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The walk, resumable from any index. `<=>` can run Ruby, which can grow the
+   array, shrink it or drop the element held as the answer so far, so the
+   length and the element are read afresh each time round. The answer so far
+   is kept in the register the block came in on: the walk returns to the VM
+   whenever a comparison needs Ruby, and only the frame survives that. */
+static mrb_value
+ary_max_min_walk(mrb_state *mrb, mrb_int i, mrb_int want)
 {
-  mrb_int cmp = mrb_cmp(mrb, a, b);
-  if (cmp == -2) {
-    mrb_raisef(mrb, E_ARGUMENT_ERROR, "comparison of %T with %T failed", a, b);
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+
+  for (; i < RARRAY_LEN(self); i++) {
+    mrb_value val = RARRAY_PTR(self)[i];
+    mrb_int cmp;
+    int r = mrb_cmp_in_c(mrb, val, ci->stack[1], &cmp);
+
+    if (r < 0) {
+      /* The `<=>` here is written in Ruby. Hand the call to the VM and ask to
+         be resumed with its answer, rather than running it on a nested VM:
+         that keeps this walk off the C stack, so a Fiber can suspend inside
+         the comparison. */
+      return mrb_funcall_cont(mrb, want > 0 ? ary_max_resume : ary_min_resume,
+                              i, val, MRB_OPSYM(cmp), 1, &ci->stack[1]);
+    }
+    if (r == 0) {
+      mrb_raisef(mrb, E_ARGUMENT_ERROR, "comparison of %T with %T failed",
+                 val, ci->stack[1]);
+    }
+    if (cmp == want) ci->stack[1] = val;
   }
-  return cmp;
+  return ci->stack[1];
 }
 
-/* `<=>` can run Ruby, which can grow the array, shrink it or drop the element
-   held as the answer so far, so the length and the element are read afresh
-   each time round and the answer is kept in the arena. */
+/* What `<=>` answered, read as mrb_cmp() reads it: an Integer for its sign,
+   and anything else for a pair with no order. */
+static mrb_value
+ary_max_min_resume(mrb_state *mrb, mrb_value result, mrb_int i, mrb_int want)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  if (!mrb_integer_p(result)) {
+    mrb_value val = i < RARRAY_LEN(ci->stack[0]) ? RARRAY_PTR(ci->stack[0])[i]
+                                                 : mrb_nil_value();
+    mrb_raisef(mrb, E_ARGUMENT_ERROR, "comparison of %T with %T failed",
+               val, ci->stack[1]);
+  }
+  if (mrb_integer(result) == want && i < RARRAY_LEN(ci->stack[0])) {
+    ci->stack[1] = RARRAY_PTR(ci->stack[0])[i];
+  }
+  return ary_max_min_walk(mrb, i + 1, want);
+}
+
+static mrb_value
+ary_max_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  return ary_max_min_resume(mrb, result, i, 1);
+}
+
+static mrb_value
+ary_min_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  return ary_max_min_resume(mrb, result, i, -1);
+}
+
+/* The walk runs through the VM rather than on a nested mrb_vm_exec(), so a
+   Fiber.yield written in a `<=>` it reaches has no C frame to lose. The
+   answer so far goes into the frame's second register, which the block came
+   in on and nothing else reads. */
 static mrb_value
 ary_max_min(mrb_state *mrb, mrb_value self, mrb_int want)
 {
   if (RARRAY_LEN(self) == 0) return mrb_nil_value();
 
-  mrb_value result = RARRAY_PTR(self)[0];
-  int ai = mrb_gc_arena_save(mrb);
-  for (mrb_int i = 1; i < RARRAY_LEN(self); i++) {
-    mrb_value val = RARRAY_PTR(self)[i];
-    if (ary_cmp_ordered(mrb, val, result) == want) result = val;
-    mrb_gc_arena_restore(mrb, ai);
-    mrb_gc_protect(mrb, result);
-  }
-  return result;
+  mrb->c->ci->stack[1] = RARRAY_PTR(self)[0];
+  return ary_max_min_walk(mrb, 1, want);
 }
 
 static mrb_value

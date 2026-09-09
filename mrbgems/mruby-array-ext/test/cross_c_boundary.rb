@@ -23,6 +23,7 @@ assert_cross(:ok, 'Array#find')                 { [1, 2].find { Fiber.yield; tru
 assert_cross(:ok, 'Array#flatten sending to_ary') { [AryCrossToAry.new].flatten }
 assert_cross(:ok, 'Array#include? sending ==')  { [AryCrossEq.new].include?(AryCrossEq.new) }
 
-assert_cross(:ng, 'Array#max sending <=>')      { [AryCrossCmp.new(2), AryCrossCmp.new(1)].max }
+assert_cross(:ok, 'Array#max sending <=>')      { [AryCrossCmp.new(2), AryCrossCmp.new(1)].max }
+assert_cross(:ok, 'Array#min sending <=>')      { [AryCrossCmp.new(2), AryCrossCmp.new(1)].min }
 assert_cross(:ng, 'Array#uniq sending hash')    { [AryCrossEq.new, AryCrossEq.new].uniq }
 assert_cross(:ng, 'Array#- sending hash')       { [AryCrossEq.new] - [AryCrossEq.new] }

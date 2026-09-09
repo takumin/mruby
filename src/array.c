@@ -2530,57 +2530,6 @@ cmpint(mrb_state *mrb, mrb_value c, mrb_value a, mrb_value b)
   return 0;
 }
 
-/* The comparison the sort makes without a block, as far as it goes without
-   running Ruby: 1 with the sign in `*out`, 0 for a pair that has no order at
-   all, and -1 for one that only a `<=>` written in Ruby can order. What it
-   answers is not quite what mrb_cmp() answers: a pair with a NaN in it has no
-   order here rather than being a tie, which is what CRuby's Array#sort does
-   with one. */
-static int
-sort_cmp_in_c(mrb_state *mrb, mrb_value a, mrb_value b, mrb_int *out)
-{
-  enum mrb_vtype ta = mrb_type(a), tb = mrb_type(b);
-
-  if (ta == tb) {
-    switch (ta) {
-    case MRB_TT_INTEGER:
-      {
-        /* Read with mrb_integer(): an Integer too wide to sit in the value is
-           an object here, and reading that one as an inline value reads its
-           address. */
-        mrb_int x = mrb_integer(a), y = mrb_integer(b);
-        *out = (x > y) ? 1 : (x < y) ? -1 : 0;
-        return 1;
-      }
-#ifndef MRB_NO_FLOAT
-    case MRB_TT_FLOAT:
-      {
-        mrb_float x = mrb_float(a), y = mrb_float(b);
-        if (x > y) *out = 1;
-        else if (x < y) *out = -1;
-        else if (x == y) *out = 0;
-        else return 0;          /* a NaN stands in no order */
-        return 1;
-      }
-#endif
-    case MRB_TT_STRING:
-      *out = mrb_str_cmp(mrb, a, b);
-      return 1;
-    default:
-      break;
-    }
-  }
-  /* A number and a number of the other kind are ordered without either being
-     asked, which is the one pair of unlike types mrb_cmp() settles in C. */
-  if ((mrb_fixnum_p(a) || mrb_float_p(a)) && (mrb_fixnum_p(b) || mrb_float_p(b))) {
-    mrb_int c = mrb_cmp(mrb, a, b);
-    if (c == -2) return 0;
-    *out = c;
-    return 1;
-  }
-  return -1;
-}
-
 /* --- the sort a block orders -------------------------------------------
    The block runs through the VM, so the sort cannot keep its place in C
    locals: every comparison returns to the VM and comes back through
@@ -2686,7 +2635,7 @@ sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
 #define SORT_TRY(next, x, y)                                    \
     if (no_blk) {                                               \
       mrb_int c_;                                               \
-      int r_ = sort_cmp_in_c(mrb, a[x], a[y], &c_);             \
+      int r_ = mrb_cmp_in_c(mrb, a[x], a[y], &c_);             \
       if (r_ > 0) { cmp = c_ > 0; pc = (next); continue; }      \
       if (r_ == 0) {                                            \
         mrb_raise(mrb, E_ARGUMENT_ERROR, "comparison failed");  \
