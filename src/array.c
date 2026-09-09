@@ -1654,6 +1654,33 @@ mrb_ary_index_m(mrb_state *mrb, mrb_value self)
  *
  * ISO 15.2.12.5.26
  */
+static mrb_value ary_rindex_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The backward walk, resumable from any index. Like ary_index_walk(), it keeps
+   nothing in C locals: the walk returns to the VM on every element. */
+static mrb_value
+ary_rindex_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  if (i < 0) return mrb_nil_value();
+
+  mrb_value v = RARRAY_PTR(ci->stack[0])[i];
+  return mrb_block_cont(mrb, ary_rindex_resume, i, ci->stack[mrb_ci_bidx(ci)], 1, &v);
+}
+
+static mrb_value
+ary_rindex_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) return mrb_int_value(mrb, i);
+
+  /* A block that shortened the array would leave the index past its end, so it
+     is brought back to the new end before stepping down. */
+  mrb_int len = RARRAY_LEN(mrb->c->ci->stack[0]);
+  if (i > len) i = len;
+  return ary_rindex_walk(mrb, i - 1);
+}
+
 static mrb_value
 mrb_ary_rindex_m(mrb_state *mrb, mrb_value self)
 {
@@ -1663,22 +1690,21 @@ mrb_ary_rindex_m(mrb_state *mrb, mrb_value self)
     return mrb_funcall_argv1(mrb, self, MRB_SYM(to_enum), mrb_symbol_value(MRB_SYM(rindex)));
   }
 
-  for (mrb_int i = RARRAY_LEN(self) - 1; i >= 0; i--) {
-    if (mrb_nil_p(blk)) {
+  if (mrb_nil_p(blk)) {
+    for (mrb_int i = RARRAY_LEN(self) - 1; i >= 0; i--) {
       if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-      return mrb_int_value(mrb, i);
+        return mrb_int_value(mrb, i);
+      }
+      mrb_int len = RARRAY_LEN(self);
+      if (i > len) {
+        i = len;
       }
     }
-    else {
-      mrb_value eq = mrb_yield(mrb, blk, RARRAY_PTR(self)[i]);
-      if (mrb_test(eq)) return mrb_int_value(mrb, i);
-    }
-    mrb_int len = RARRAY_LEN(self);
-    if (i > len) {
-      i = len;
-    }
+    return mrb_nil_value();
   }
-  return mrb_nil_value();
+  /* The block runs through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in it has no C frame to lose. */
+  return ary_rindex_walk(mrb, RARRAY_LEN(self) - 1);
 }
 
 /**

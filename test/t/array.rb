@@ -404,6 +404,13 @@ assert("Array#rindex (block)") do
   assert_equal 69, (1..100).to_a.rindex { |i| i % 5 == 0 and i % 7 == 0 }
 end
 
+assert("Array#rindex (block) with a block that shortens the array") do
+  a = [1, 2, 3, 4, 5, 6]
+  seen = []
+  assert_nil a.rindex { |x| seen << x; a.pop; a.pop; false }
+  assert_equal [6, 4, 2], seen
+end
+
 assert('Array#shift', '15.2.12.5.27') do
   a = [1,2,3]
   b = a.shift
