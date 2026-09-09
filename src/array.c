@@ -2232,22 +2232,65 @@ mrb_ary_svalue_eq(mrb_state *mrb, mrb_value ary)
  * that e == obj. If any such elements are found, ignores the block and
  * returns the last. Otherwise, returns the block's return value.
  */
+/* What the walk carries past a `==` written in Ruby, and cannot keep in C
+   locals. The frame holds the receiver, the argument and the block, and the
+   argument is the one of those with a register the walk can take: what came
+   in on it is read from here instead, at a fixed place rather than wherever
+   the block register happens to be. The array is made only where a `==`
+   sends, so a search that stays in C does not allocate it. */
+enum { ADEL_OBJ, ADEL_BLK, ADEL_RET, ADEL_J, ADEL_NSLOTS };
+
+static mrb_value ary_delete_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The walk, resumable from any index. `known` is the answer for the element
+   at `i` when the walk comes back with one, and -1 when it is to ask. */
 static mrb_value
-mrb_ary_delete(mrb_state *mrb, mrb_value self)
+ary_delete_walk(mrb_state *mrb, mrb_int i, mrb_int j, mrb_value ret, mrb_value st, int known)
 {
-  mrb_value obj, blk;
-
-  mrb_get_args(mrb, "o&", &obj, &blk);
-
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+  /* The argument register holds the array once there is one, and what came in
+     on it is in there too. */
+  mrb_value obj = mrb_nil_p(st) ? ci->stack[1] : RARRAY_PTR(st)[ADEL_OBJ];
   struct RArray *ary = RARRAY(self);
-  mrb_value ret = obj;
   int ai = mrb_gc_arena_save(mrb);
-  mrb_int i = 0;
-  mrb_int j = 0;
-  for (; i < ARY_LEN(ary); i++) {
-    mrb_value elem = ARY_PTR(ary)[i];
 
-    if (mrb_equal(mrb, elem, obj)) {
+  for (; i < ARY_LEN(ary); i++, known = -1) {
+    mrb_value elem = ARY_PTR(ary)[i];
+    int r = known;
+
+    if (r < 0) {
+      r = mrb_equal_in_c(mrb, elem, obj);
+      if (r < 0) {
+        /* The `==` here is written in Ruby. Hand the call to the VM and ask
+           to be resumed with its answer, rather than running it on a nested
+           VM: that keeps this walk off the C stack, so a Fiber can suspend
+           inside the comparison. */
+        if (mrb_nil_p(st)) {
+          mrb_value slots[ADEL_NSLOTS];
+          slots[ADEL_OBJ] = obj;
+          slots[ADEL_BLK] = ci->stack[mrb_ci_bidx(ci)];
+          slots[ADEL_RET] = ret;
+          slots[ADEL_J] = mrb_fixnum_value(j);
+          st = mrb_ary_new_from_values(mrb, ADEL_NSLOTS, slots);
+          ci->stack[1] = st;
+        }
+        else {
+          /* The answer changes only where an element goes, which is rarer
+             than a comparison, so it is written back only when it has. */
+          if (!mrb_obj_eq(mrb, RARRAY_PTR(st)[ADEL_RET], ret)) {
+            mrb_ary_set(mrb, st, ADEL_RET, ret);
+          }
+          RARRAY_PTR(st)[ADEL_J] = mrb_fixnum_value(j);
+        }
+        return mrb_funcall_cont(mrb, ary_delete_resume, i, elem, MRB_OPSYM(eq), 1, &obj);
+      }
+    }
+
+    if (r > 0) {
+      /* The element is on its way out of the array, and the answer is the
+         last one that goes. Compacting can write over where it sits, so it
+         is held in the arena rather than left to the array. */
       mrb_gc_arena_restore(mrb, ai);
       mrb_gc_protect(mrb, elem);
       ret = elem;
@@ -2268,6 +2311,7 @@ mrb_ary_delete(mrb_state *mrb, mrb_value self)
   }
 
   if (i == j) {
+    mrb_value blk = mrb_nil_p(st) ? ci->stack[mrb_ci_bidx(ci)] : RARRAY_PTR(st)[ADEL_BLK];
     if (mrb_nil_p(blk)) return mrb_nil_value();
     /* The block's result is this method's result, so it takes this frame
        rather than a nested `mrb_vm_exec()`. */
@@ -2278,6 +2322,26 @@ mrb_ary_delete(mrb_state *mrb, mrb_value self)
 
   ARY_SET_LEN(ary, j);
   return ret;
+}
+
+static mrb_value
+ary_delete_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  mrb_value st = mrb->c->ci->stack[1];
+
+  return ary_delete_walk(mrb, i, mrb_fixnum(RARRAY_PTR(st)[ADEL_J]),
+                         RARRAY_PTR(st)[ADEL_RET], st, mrb_test(result) ? 1 : 0);
+}
+
+static mrb_value
+mrb_ary_delete(mrb_state *mrb, mrb_value self)
+{
+  mrb_value obj, blk;
+
+  mrb_get_args(mrb, "o&", &obj, &blk);
+  /* The walk runs through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in a `==` it reaches has no C frame to lose. */
+  return ary_delete_walk(mrb, 0, 0, obj, mrb_nil_value(), -1);
 }
 
 
