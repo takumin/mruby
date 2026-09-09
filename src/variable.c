@@ -1409,12 +1409,14 @@ mrb_vm_const_get(mrb_state *mrb, mrb_sym sym)
   return const_get(mrb, c, sym, TRUE);
 }
 
-/* Non-raising lexical constant lookup for `defined?`. Mirrors the search
-   order of mrb_vm_const_get but takes the lexical scope's proc as an argument
-   (the caller's, via ci[-1]) and returns the value or undef, without invoking
-   const_missing or raising. */
+/* Non-raising lexical constant lookup. Mirrors the search order of
+   mrb_vm_const_get but takes the lexical scope's proc as an argument (the
+   caller's, via ci[-1]) and returns the value or undef, without invoking
+   const_missing or raising. Where `basep` is given, a search that ends in
+   undef reports through it the module the hook belongs to, which is the one
+   mrb_vm_const_get would have sent `const_missing` to. */
 mrb_value
-mrb_vm_const_get_noraise(mrb_state *mrb, mrb_callinfo *ci, mrb_sym sym)
+mrb_vm_const_get_noraise_base(mrb_state *mrb, mrb_callinfo *ci, mrb_sym sym, struct RClass **basep)
 {
   const struct RProc *proc = ci->proc;
   struct RClass *c = mrb_vm_cref_class(mrb, ci), *c2;
@@ -1441,7 +1443,14 @@ mrb_vm_const_get_noraise(mrb_state *mrb, mrb_callinfo *ci, mrb_sym sym)
     }
     if (c2 && (c2->tt == MRB_TT_CLASS || c2->tt == MRB_TT_MODULE)) c = c2;
   }
+  if (basep) *basep = c;
   return const_get_nohook(mrb, c, sym, TRUE);
+}
+
+mrb_value
+mrb_vm_const_get_noraise(mrb_state *mrb, mrb_callinfo *ci, mrb_sym sym)
+{
+  return mrb_vm_const_get_noraise_base(mrb, ci, sym, NULL);
 }
 
 mrb_bool

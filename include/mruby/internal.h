@@ -672,6 +672,7 @@ void mrb_vm_cv_set(mrb_state*, mrb_sym, mrb_value);
 mrb_value mrb_vm_const_get(mrb_state*, mrb_sym);
 mrb_bool mrb_vm_const_defined_p(mrb_state *mrb, mrb_callinfo *ci, mrb_sym sym);
 mrb_value mrb_vm_const_get_noraise(mrb_state *mrb, mrb_callinfo *ci, mrb_sym sym);
+mrb_value mrb_vm_const_get_noraise_base(mrb_state *mrb, mrb_callinfo *ci, mrb_sym sym, struct RClass **basep);
 mrb_value mrb_const_get_noraise(mrb_state *mrb, struct RClass *mod, mrb_sym sym);
 mrb_bool mrb_vm_cv_defined_p(mrb_state *mrb, const struct RProc *proc, mrb_sym sym);
 struct RClass *mrb_vm_cref_class(mrb_state *mrb, mrb_callinfo *ci);
