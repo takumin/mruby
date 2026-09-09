@@ -79,9 +79,9 @@ assert_cross(:ok, 'Array#index sending ==')     { [CrossEq.new].index(CrossEq.ne
 assert_cross(:ok, 'Array#rindex sending ==')    { [CrossEq.new].rindex(CrossEq.new) }
 assert_cross(:ok, 'Array#delete sending ==')    { [CrossEq.new].delete(CrossEq.new) }
 assert_cross(:ok, 'Array#sort sending <=>')     { [CrossCmp.new(2), CrossCmp.new(1)].sort }
+assert_cross(:ok, 'Array#inspect sending inspect') { [CrossStr.new].inspect }
 
 assert_cross(:ng, 'Hash#[] sending hash')       { ({CrossEq.new => 1})[CrossEq.new] }
-assert_cross(:ng, 'Array#inspect sending inspect') { [CrossStr.new].inspect }
 assert_cross(:ng, 'Array#join sending to_s')    { [CrossStr.new].join }
 assert_cross(:ng, 'string interpolation sending to_s') { "#{CrossStr.new}" }
 assert_cross(:ng, 'const_missing')              { CrossConst::NoSuch }

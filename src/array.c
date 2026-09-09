@@ -2085,24 +2085,74 @@ mrb_ary_join_m(mrb_state *mrb, mrb_value ary)
  *
  * Return the contents of this array as a string.
  */
+static mrb_value ary_to_s_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* Appends what `inspect` answered, which mrb_inspect() answers for the same
+   way: anything but a String is answered for with the element's own to_s. */
+static void
+ary_to_s_cat(mrb_state *mrb, mrb_value str, mrb_value elem, mrb_value result)
+{
+  if (!mrb_string_p(result)) {
+    result = mrb_obj_as_string(mrb, elem);
+  }
+  mrb_str_cat_str(mrb, str, result);
+}
+
+/* The walk, resumable from any index. The string being built is kept in the
+   register the block came in on: the walk returns to the VM for an element
+   whose `inspect` is written in Ruby, and only the frame survives that. An
+   element whose `inspect` is a C function is answered without leaving the
+   loop, which is what keeps a long array from taking a C frame per element. */
+static mrb_value
+ary_to_s_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_value self = mrb->c->ci->stack[0];
+  int ai = mrb_gc_arena_save(mrb);
+
+  /* An `inspect` written in Ruby may grow or shrink the array under us, so
+     the length is read afresh each turn. The frame is read afresh too: a call
+     that was not handed over ran a VM of its own, which can have moved both
+     the frames and the registers they point into. */
+  for (; i < RARRAY_LEN(self); i++) {
+    mrb_value elem = RARRAY_PTR(self)[i];
+    mrb_value v;
+
+    if (i > 0) mrb_str_cat_lit(mrb, mrb->c->ci->stack[1], ", ");
+    /* The element's `inspect` runs through the VM rather than on a nested
+       mrb_vm_exec(), so a Fiber.yield written in it has no C frame to lose. */
+    if (mrb_funcall_cont_p(mrb, &v, ary_to_s_resume, i, elem, MRB_SYM(inspect), 0, NULL)) {
+      return v;
+    }
+    ary_to_s_cat(mrb, mrb->c->ci->stack[1], elem, v);
+    mrb_gc_arena_restore(mrb, ai);
+  }
+  mrb_str_cat_lit(mrb, mrb->c->ci->stack[1], "]");
+  return mrb->c->ci->stack[1];
+}
+
+static mrb_value
+ary_to_s_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+
+  ary_to_s_cat(mrb, ci->stack[1],
+               i < RARRAY_LEN(self) ? RARRAY_PTR(self)[i] : mrb_nil_value(), result);
+  return ary_to_s_walk(mrb, i + 1);
+}
+
 static mrb_value
 mrb_ary_to_s(mrb_state *mrb, mrb_value self)
 {
   mrb->c->ci->mid = MRB_SYM(inspect);
   mrb_value ret = mrb_str_new_lit(mrb, "[");
-  int ai = mrb_gc_arena_save(mrb);
   if (MRB_RECURSIVE_UNARY_P(mrb, MRB_SYM(inspect), self)) {
     mrb_str_cat_lit(mrb, ret, "...]");
     return ret;
   }
-  for (mrb_int i=0; i<RARRAY_LEN(self); i++) {
-    if (i>0) mrb_str_cat_lit(mrb, ret, ", ");
-    mrb_str_cat_str(mrb, ret, mrb_inspect(mrb, RARRAY_PTR(self)[i]));
-    mrb_gc_arena_restore(mrb, ai);
-  }
-  mrb_str_cat_lit(mrb, ret, "]");
-
-  return ret;
+  /* The register the block came in on carries the string from here on. */
+  mrb->c->ci->stack[1] = ret;
+  return ary_to_s_walk(mrb, 0);
 }
 
 /* check array equality: 1=equal,0=not_equal,-1=need_elements_check */

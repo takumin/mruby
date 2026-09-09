@@ -518,6 +518,16 @@ assert("Array#unshift taking shared self") do
 end
 
 
+assert('Array#inspect over an array longer than a C stack holds') do
+  # Every element's `inspect` here is a C method, which is a call the walk
+  # cannot hand to the VM and makes itself. Coming back through the resume for
+  # each of those would take a C frame per element.
+  a = Array.new(50000) { |i| i }
+  s = a.inspect
+  assert_equal "[0, 1, 2, ", s[0, 10]
+  assert_equal "49999]", s[-6, 6]
+end
+
 assert('Array#to_s', '15.2.12.5.31 / 15.2.12.5.32') do
   a = [2, 3,   4, 5]
   a[4] = a
