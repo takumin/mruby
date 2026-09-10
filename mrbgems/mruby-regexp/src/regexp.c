@@ -3025,6 +3025,21 @@ str_scan_m(mrb_state *mrb, mrb_value self)
   return self;
 }
 
+/* The second argument of `split` and of the four index methods is the send's
+   last where it is given, and it needs asking for here for both of the
+   reasons the pattern does: the core method is reached through
+   `mrb_funcall_argv()`, which leaves no send to take from the top again, and
+   the Regexp branches read the number themselves rather than through a
+   format.  The numeric types are left to `mrb_as_int()` below, which reads
+   them without asking the object anything. */
+static void
+conv_int_arg(mrb_state *mrb, mrb_value v, mrb_int argidx)
+{
+  if (mrb_unlikely(!mrb_integer_convertible_p(v))) {
+    mrb_convert_arg(mrb, argidx, MRB_CONV_TO_INT);
+  }
+}
+
 /*
  * String#split(pattern = nil, limit = 0)
  *
@@ -3050,7 +3065,10 @@ str_split_m(mrb_state *mrb, mrb_value self)
      and does not fit `mrb_int`, and this is what narrows it and raises the
      RangeError the String-pattern path raises. */
   mrb_int limit = 0;
-  if (limit_given) limit = mrb_as_int(mrb, limit_v);
+  if (limit_given) {
+    conv_int_arg(mrb, limit_v, 1);
+    limit = mrb_as_int(mrb, limit_v);
+  }
 
   /* The real type, which an argument redefining `nil?` or `is_a?` cannot
      steer, and the same reading `Module#===` would give the pair. */
@@ -3226,6 +3244,7 @@ str_index_m(mrb_state *mrb, mrb_value self)
   mrb_int argc;
 
   mrb_get_args(mrb, "*", &argv, &argc);
+  if (argc == 2) conv_int_arg(mrb, argv[1], 1);
   if (argc == 0 || mrb_string_p(argv[0])) {
     return mrb_funcall_argv(mrb, self, MRB_SYM(__index), argc, argv);
   }
@@ -3259,6 +3278,7 @@ str_rindex_m(mrb_state *mrb, mrb_value self)
   mrb_int argc;
 
   mrb_get_args(mrb, "*", &argv, &argc);
+  if (argc == 2) conv_int_arg(mrb, argv[1], 1);
   if (argc == 0 || mrb_string_p(argv[0])) {
     return mrb_funcall_argv(mrb, self, MRB_SYM(__rindex), argc, argv);
   }
@@ -3314,6 +3334,7 @@ str_byteindex_m(mrb_state *mrb, mrb_value self)
   mrb_int argc;
 
   mrb_get_args(mrb, "*", &argv, &argc);
+  if (argc == 2) conv_int_arg(mrb, argv[1], 1);
   if (argc == 0 || mrb_string_p(argv[0])) {
     return mrb_funcall_argv(mrb, self, MRB_SYM(__byteindex), argc, argv);
   }
@@ -3358,6 +3379,7 @@ str_byterindex_m(mrb_state *mrb, mrb_value self)
   mrb_int argc;
 
   mrb_get_args(mrb, "*", &argv, &argc);
+  if (argc == 2) conv_int_arg(mrb, argv[1], 1);
   if (argc == 0 || mrb_string_p(argv[0])) {
     return mrb_funcall_argv(mrb, self, MRB_SYM(__byterindex), argc, argv);
   }

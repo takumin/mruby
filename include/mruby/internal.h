@@ -145,6 +145,11 @@ mrb_irep_catch_handler_table(const struct mrb_irep *irep)
 #endif
 
 /* numeric */
+/* TRUE where `mrb_ensure_integer_type()` reads the value on its own, without
+   asking it for anything.  A marked `i` in an `mrb_get_args()` format sends
+   `to_int` only where this is FALSE, so that a Float is truncated rather than
+   dispatched to, the way CRuby's `NUM2LONG` truncates it. */
+mrb_bool mrb_integer_convertible_p(mrb_value val);
 mrb_value mrb_div_int_value(mrb_state *mrb, mrb_int x, mrb_int y);
 mrb_int mrb_div_int(mrb_int x, mrb_int y);
 mrb_value mrb_int_add(mrb_state *mrb, mrb_value x, mrb_value y);

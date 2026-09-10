@@ -650,6 +650,36 @@ mrb_value mrb_complex_to_i(mrb_state *mrb, mrb_value comp);
  *
  * Returns the (potentially converted) integer value.
  */
+/*
+ * TRUE where `mrb_ensure_integer_type()` below reads the value on its own,
+ * without asking it for anything. Keep the two lists together: this is what
+ * decides whether a marked `i` in an `mrb_get_args()` format sends `to_int`
+ * at all, and asking a value the C code can already read would send where
+ * CRuby's `NUM2LONG` does not.
+ */
+mrb_bool
+mrb_integer_convertible_p(mrb_value val)
+{
+  switch (mrb_type(val)) {
+  case MRB_TT_INTEGER:
+#ifndef MRB_NO_FLOAT
+  case MRB_TT_FLOAT:
+#endif
+#ifdef MRB_USE_BIGINT
+  case MRB_TT_BIGINT:
+#endif
+#ifdef MRB_USE_RATIONAL
+  case MRB_TT_RATIONAL:
+#endif
+#ifdef MRB_USE_COMPLEX
+  case MRB_TT_COMPLEX:
+#endif
+    return TRUE;
+  default:
+    return FALSE;
+  }
+}
+
 MRB_API mrb_value
 mrb_ensure_integer_type(mrb_state *mrb, mrb_value val)
 {

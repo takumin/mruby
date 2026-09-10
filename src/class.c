@@ -1529,11 +1529,11 @@ fast_fmt_ok(char c)
   case 'f':
     return 1;
 #endif
-  case 'o': case 'i': case 'b':
+  case 'o': case 'b':
   case 'n': case 'c':
     return 1;
   case 'S': case 'A': case 'H':
-  case 's': case 'z': case 'a':
+  case 's': case 'z': case 'a': case 'i':
     return 4;
   case '|':
     return 2;
@@ -1557,9 +1557,25 @@ arg_conv(mrb_state *mrb, const mrb_value *argv, mrb_int i, uint8_t conv)
   switch (conv) {
   case MRB_CONV_TO_STR:  mrb_ensure_string_type(mrb, argv[i]); break;
   case MRB_CONV_TO_ARY:  mrb_ensure_array_type(mrb, argv[i]); break;
+  case MRB_CONV_TO_INT:  mrb_ensure_int_type(mrb, argv[i]); break;
   default:               /* MRB_CONV_TO_HASH */
                          mrb_ensure_hash_type(mrb, argv[i]); break;
   }
+}
+
+/*
+ * A marked `i`.  The numeric types come first, so a Float is truncated where
+ * CRuby's `NUM2LONG` truncates it; only a value none of them reads is asked
+ * for `to_int`, and where that request cannot be arranged the `TypeError` is
+ * the one `i` always raised.
+ */
+static mrb_int
+arg_as_int(mrb_state *mrb, const mrb_value *argv, mrb_int i)
+{
+  if (!mrb_integer_convertible_p(argv[i])) {
+    mrb_convert_arg(mrb, i, MRB_CONV_TO_INT);
+  }
+  return mrb_as_int(mrb, argv[i]);
 }
 
 /*
@@ -1662,6 +1678,11 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     }
     case 'i': {
       mrb_int *ip = GET_ARG(mrb_int*);
+      if (mrb_unlikely(!mrb_integer_p(argv[i]) && conv)) {
+        *ip = arg_as_int(mrb, argv, i);
+        i++;
+        break;
+      }
       *ip = mrb_as_int(mrb, argv[i++]);
       break;
     }
@@ -1836,7 +1857,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
         /* only the specifiers that name a type to convert to take `~`; the
            test sits here so that a format without one pays nothing for it */
         if (c != 'S' && c != 'A' && c != 'H' &&
-            c != 's' && c != 'z' && c != 'a') {
+            c != 's' && c != 'z' && c != 'a' && c != 'i') {
           mrb_raisef(mrb, E_ARGUMENT_ERROR, "wrong `%c~` modified specifier", c);
         }
         convmode = TRUE;
@@ -2014,7 +2035,12 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         p = GET_ARG(mrb_int*);
         if (pickarg) {
-          *p = mrb_as_int(mrb, *pickarg);
+          if (convmode && !mrb_integer_p(*pickarg)) {
+            *p = arg_as_int(mrb, argv, i-1);
+          }
+          else {
+            *p = mrb_as_int(mrb, *pickarg);
+          }
         }
       }
       break;

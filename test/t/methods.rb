@@ -271,6 +271,14 @@ class ArgConvToAry
   def to_ary; [1, 2]; end
 end
 
+class ArgConvToInt
+  def to_int; 2; end
+end
+
+class ArgConvToIntBad
+  def to_int; "2"; end
+end
+
 class ArgConvToHash
   def to_hash; {a: 1}; end
 end
@@ -361,6 +369,28 @@ assert('`~` reaches the specifiers that hand out a pointer') do
   assert_equal("b", TestArgFormat.conv_cstr_alt(ArgConvToStr.new))
   assert_nil(TestArgFormat.conv_alist_alt(nil))
   assert_equal(2, TestArgFormat.conv_alist_alt(ArgConvToAry.new))
+end
+
+assert('`~` on `i` asks only where the C code cannot read the value itself') do
+  # `i` has always read a Float as well as an Integer, and the mark does not
+  # change that: only a value none of the numeric types covers is asked for
+  # `to_int`, which is where CRuby's NUM2LONG asks too.
+  assert_equal(2, TestArgFormat.conv_int(ArgConvToInt.new))
+  assert_equal(7, TestArgFormat.conv_int(7))
+  assert_equal(1, TestArgFormat.conv_int(1.9)) if Object.const_defined?(:Float)
+  assert_equal(2, TestArgFormat.conv_int_alt(ArgConvToInt.new))
+  assert_nil(TestArgFormat.conv_int_alt)
+
+  # unmarked, `i` demands a value it can read on its own
+  assert_raise_with_message(TypeError, "ArgConvToInt cannot be converted to Integer") do
+    TestArgFormat.strict_int(ArgConvToInt.new)
+  end
+
+  # a `to_int` that gives back something else is refused where it answered
+  assert_raise_with_message(TypeError,
+                            "can't convert ArgConvToIntBad to Integer (ArgConvToIntBad#to_int gives String)") do
+    TestArgFormat.conv_int(ArgConvToIntBad.new)
+  end
 end
 
 assert('a format modifier is not an argument of its own') do

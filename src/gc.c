@@ -2074,7 +2074,7 @@ gc_interval_ratio_set(mrb_state *mrb, mrb_value obj)
 {
   mrb_int ratio;
 
-  mrb_get_args(mrb, "i", &ratio);
+  mrb_get_args(mrb, "i~", &ratio);
   mrb->gc.interval_ratio = (int)ratio;
   return mrb_nil_value();
 }
@@ -2108,7 +2108,7 @@ gc_step_ratio_set(mrb_state *mrb, mrb_value obj)
 {
   mrb_int ratio;
 
-  mrb_get_args(mrb, "i", &ratio);
+  mrb_get_args(mrb, "i~", &ratio);
   if (ratio <= 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "step_ratio must be positive");
   }
@@ -2143,7 +2143,7 @@ gc_step_limit_set(mrb_state *mrb, mrb_value obj)
 {
   mrb_int limit;
 
-  mrb_get_args(mrb, "i", &limit);
+  mrb_get_args(mrb, "i~", &limit);
   if (limit < 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "step_limit must be non-negative");
   }
@@ -2183,7 +2183,7 @@ gc_malloc_threshold_set(mrb_state *mrb, mrb_value obj)
 {
   mrb_int threshold;
 
-  mrb_get_args(mrb, "i", &threshold);
+  mrb_get_args(mrb, "i~", &threshold);
   if (threshold < 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "malloc_threshold must be non-negative");
   }

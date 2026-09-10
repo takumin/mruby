@@ -919,14 +919,16 @@ assert("String#split with regexp limit") do
   assert_raise(TypeError) { "a,b".split(/,/, nil) }
   assert_equal ["a,b"], "a,b".split(/,/, 1.5) if Object.const_defined?(:Float)
 
-  # mruby has no implicit conversion protocol, so an object defining `to_int`
-  # is rejected here exactly as `Array.new(obj)` and `ary[obj]` reject it. The
-  # limit is never asked what it responds to, so an object overriding
-  # `respond_to?` reaches the same TypeError rather than a NoMethodError.
+  # The limit takes an implicit conversion, and this override asks for it
+  # rather than leaving it to the core method it delegates to, which is
+  # reached from C and so has no send to take from the top again.
   limit = Object.new
   def limit.to_int; 2; end
-  assert_raise(TypeError) { "a,b".split(/,/, limit) }
+  assert_equal ["a", "b"], "a,b".split(/,/, limit)
 
+  # What answers the request is a method lookup, not a question put to the
+  # object, so overriding `respond_to?` reaches the TypeError rather than a
+  # NoMethodError.
   limit = Object.new
   def limit.respond_to?(name, include_all = false); true; end
   assert_raise(TypeError) { "a,b".split(/,/, limit) }

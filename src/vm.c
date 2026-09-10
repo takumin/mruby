@@ -3179,6 +3179,7 @@ static const mrb_code coerce_iseq[] = {
 COERCE_TRAMPOLINE(ary,  MRB_SYM(to_ary))
 COERCE_TRAMPOLINE(str,  MRB_SYM(to_str))
 COERCE_TRAMPOLINE(hash, MRB_SYM(to_hash))
+COERCE_TRAMPOLINE(int,  MRB_SYM(to_int))
 
 /* The splat's `to_a` is not one of those protocols and does not share their
    bytecode.  `[*obj]` accepts a `to_a` that gives back nil, wrapping the
@@ -3564,6 +3565,10 @@ mrb_convert_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv)
   case MRB_CONV_TO_HASH:
     tramp = &coerce_hash_proc; tirep = &coerce_hash_irep;
     target = mrb->hash_class; cmid = MRB_SYM(to_hash);
+    break;
+  case MRB_CONV_TO_INT:
+    tramp = &coerce_int_proc; tirep = &coerce_int_irep;
+    target = mrb->integer_class; cmid = MRB_SYM(to_int);
     break;
   default:
     return FALSE;

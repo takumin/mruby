@@ -139,9 +139,38 @@ af_conv_alist_alt(mrb_state *mrb, mrb_value klass)
 static mrb_value
 af_bad_modifier(mrb_state *mrb, mrb_value klass)
 {
+  mrb_bool t;
+  mrb_get_args(mrb, "b~", &t);
+  return mrb_bool_value(t);
+}
+
+/* marked `i`: the numeric types are read as they always were, and only a
+   value none of them reads is asked for `to_int` */
+static mrb_value
+af_conv_int(mrb_state *mrb, mrb_value klass)
+{
   mrb_int n;
   mrb_get_args(mrb, "i~", &n);
   return mrb_fixnum_value(n);
+}
+
+/* unmarked: `i` demands a value it can read on its own, as it always did */
+static mrb_value
+af_strict_int(mrb_state *mrb, mrb_value klass)
+{
+  mrb_int n;
+  mrb_get_args(mrb, "i", &n);
+  return mrb_fixnum_value(n);
+}
+
+/* marked `i` on the general path */
+static mrb_value
+af_conv_int_alt(mrb_state *mrb, mrb_value klass)
+{
+  mrb_int n;
+  mrb_bool given;
+  mrb_get_args(mrb, "|i~?", &n, &given);
+  return given ? mrb_fixnum_value(n) : mrb_nil_value();
 }
 
 void
@@ -164,4 +193,7 @@ mrb_init_test_argfmt(mrb_state *mrb)
   mrb_define_class_method(mrb, af, "conv_ptr_alt", af_conv_ptr_alt, MRB_ARGS_REQ(1));
   mrb_define_class_method(mrb, af, "conv_cstr_alt", af_conv_cstr_alt, MRB_ARGS_REQ(1));
   mrb_define_class_method(mrb, af, "conv_alist_alt", af_conv_alist_alt, MRB_ARGS_REQ(1));
+  mrb_define_class_method(mrb, af, "conv_int", af_conv_int, MRB_ARGS_REQ(1));
+  mrb_define_class_method(mrb, af, "strict_int", af_strict_int, MRB_ARGS_REQ(1));
+  mrb_define_class_method(mrb, af, "conv_int_alt", af_conv_int_alt, MRB_ARGS_OPT(1));
 }

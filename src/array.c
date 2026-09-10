@@ -1332,7 +1332,7 @@ aget_index(mrb_state *mrb, mrb_value index)
     mrb_int i, argc;
     const mrb_value *argv;
 
-    mrb_get_args(mrb, "i*!", &i, &argv, &argc);
+    mrb_get_args(mrb, "i~*!", &i, &argv, &argc);
     return i;
   }
 }
@@ -1389,7 +1389,7 @@ mrb_ary_aget(mrb_state *mrb, mrb_value self)
     }
   }
 
-  mrb_get_args(mrb, "oi", &index, &len);
+  mrb_get_args(mrb, "oi~", &index, &len);
   i = aget_index(mrb, index);
   mrb_int alen = ARY_LEN(a);
   if (i < 0) i += alen;
@@ -1525,7 +1525,7 @@ mrb_ary_first(mrb_state *mrb, mrb_value self)
     if (ARY_LEN(a) > 0) return ARY_PTR(a)[0];
     return mrb_nil_value();
   }
-  mrb_get_args(mrb, "|i", &size);
+  mrb_get_args(mrb, "|i~", &size);
   if (size < 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "negative array size");
   }
