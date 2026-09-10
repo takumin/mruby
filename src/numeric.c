@@ -2570,16 +2570,22 @@ static const mrb_mt_entry numeric_rom_entries[] = {
 };
 
 /*
- * Integer.__ensure(val) -> Integer
+ * Integer.__convert(val) -> Integer
  *
  * Internal. Converts `val` the way `mrb_ensure_int_type()` does, as a check
  * ON its argument rather than a dispatch TO it. `val.__to_int` used to be the
  * mrblib idiom, but `__to_int` was an ordinary public method, so an object
  * defining one was accepted where an object defining `to_int` is rejected
  * (#7014).
+ *
+ * It is not called `__ensure`, which would sit in Integer's singleton class
+ * and hide `Module#__ensure` there: the trampoline that runs a conversion
+ * sends `__ensure` to the class being converted to, and for `to_int` that
+ * class is this one. The two do different jobs anyway -- `__ensure` checks
+ * that a conversion gave back the type it promised, this converts.
  */
 static mrb_value
-int_s_ensure(mrb_state *mrb, mrb_value self)
+int_s_convert(mrb_state *mrb, mrb_value self)
 {
   mrb_value val;
   mrb_get_args(mrb, "o", &val);
@@ -2676,7 +2682,7 @@ mrb_init_numeric(mrb_state *mrb)
   MRB_UNDEF_ALLOCATOR(integer);
   mrb_undef_class_method_id(mrb, integer, MRB_SYM(new));
   MRB_MT_INIT_ROM_CONV(mrb, integer, integer_rom_entries, MRB_CONV_TO_INT);
-  mrb_define_class_method_id(mrb, integer, MRB_SYM(__ensure), int_s_ensure, MRB_ARGS_REQ(1));
+  mrb_define_class_method_id(mrb, integer, MRB_SYM(__convert), int_s_convert, MRB_ARGS_REQ(1));
 
   /* Fixnum Class for compatibility */
   mrb_define_const_id(mrb, mrb->object_class, MRB_SYM(Fixnum), mrb_obj_value(integer));
