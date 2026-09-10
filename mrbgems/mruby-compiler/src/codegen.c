@@ -1853,6 +1853,52 @@ mrc_generate_code(mrc_ccontext *c, mrc_node *node)
   pm_##name##_node_t *to = (pm_##name##_node_t *)from
 #define CAST(name) CAST3(name,tree,cast)
 
+/* A part of an interpolated string, symbol, command or regexp.  The parts are
+   joined by writing the rest of them into the string the first one leaves
+   behind, so a literal part is compiled to a string of its own: under a
+   `frozen_string_literal: true` comment it would otherwise be the frozen
+   string every occurrence of its text shares, and the join would write into
+   that. */
+static void
+gen_str_part(mrc_codegen_scope *s, mrc_node *node)
+{
+  if (nint(node) == PM_STRING_NODE) {
+    CAST3(string, node, part);
+    genop_2(s, OP_STRING, cursp(),
+            new_lit_str(s, (char *)part->unescaped.source, (mrc_int)part->unescaped.length));
+    push();
+    return;
+  }
+  codegen(s, node, VAL);
+}
+
+/* One frozen literal for a run of adjacent string literals (`'a' 'b'`), whose
+   text is settled here.  FALSE when a part is not a literal, which leaves the
+   node to be compiled the ordinary way. */
+static mrc_bool
+gen_frozen_str_parts(mrc_codegen_scope *s, mrc_node **nodes, uint32_t size)
+{
+  mrc_int len = 0;
+
+  for (uint32_t i = 0; i < size; i++) {
+    if (nint(nodes[i]) != PM_STRING_NODE) return FALSE;
+    len += (mrc_int)((pm_string_node_t *)nodes[i])->unescaped.length;
+  }
+
+  char *buf = (char *)codegen_palloc(s, (size_t)len + 1);
+  mrc_int off = 0;
+  for (uint32_t i = 0; i < size; i++) {
+    pm_string_node_t *part = (pm_string_node_t *)nodes[i];
+    mrc_int plen = (mrc_int)part->unescaped.length;
+    if (plen > 0) memcpy(buf+off, part->unescaped.source, (size_t)plen);
+    off += plen;
+  }
+  buf[len] = '\0';
+  genop_2(s, OP_LOADL, cursp(), new_lit_str(s, buf, len));
+  push();
+  return TRUE;
+}
+
 static void gen_massignment(mrc_codegen_scope *s, mrc_node *tree, int rhs, int val);
 static void gen_lvar(mrc_codegen_scope *s, mrc_sym name, int depth);
 static void codegen_pattern(mrc_codegen_scope *s, mrc_node *pattern, int target,
@@ -5675,7 +5721,15 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         mrc_int len = cast->unescaped.length;
         int off = new_lit_str(s, p, len);
 
-        genop_2(s, OP_STRING, cursp(), off);
+        /* A `frozen_string_literal: true` comment makes every literal of the
+           file the one frozen string of its text, which `OP_LOADL` reads from
+           the pool the same entry is written to. */
+        if (cast->base.flags & PM_STRING_FLAGS_FROZEN) {
+          genop_2(s, OP_LOADL, cursp(), off);
+        }
+        else {
+          genop_2(s, OP_STRING, cursp(), off);
+        }
         push();
       }
       break;
@@ -5758,7 +5812,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
           str_begin = TRUE;
         }
         for (size_t i = 0; i < cast->parts.size; i++) {
-          codegen(s, cast->parts.nodes[i], VAL);
+          gen_str_part(s, cast->parts.nodes[i]);
           pop();
           if (str_begin || 0 < i) {
             pop();
@@ -5858,6 +5912,17 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         nodes = (mrc_node **)cast->parts.nodes;
         size = cast->parts.size;
       }
+      /* Adjacent literals are the only interpolated string a
+         `frozen_string_literal: true` comment freezes: an interpolation writes
+         a string of its own every time it runs, and there is nothing to share.
+         Prism marks the node only where every part is a literal, so the text
+         is settled at compile time and the whole node is one frozen literal of
+         it. */
+      if (val && nt == PM_INTERPOLATED_STRING_NODE &&
+          (tree->flags & PM_INTERPOLATED_STRING_NODE_FLAGS_FROZEN) &&
+          gen_frozen_str_parts(s, nodes, size)) {
+        break;
+      }
       mrc_bool str_begin = FALSE;
       if (val) {
         if (nint(nodes[0]) != PM_STRING_NODE) {
@@ -5866,7 +5931,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
           str_begin = TRUE;
         }
         for (i = 0; i < size; i++) {
-          codegen(s, nodes[i], VAL);
+          gen_str_part(s, nodes[i]);
           pop();
           if (str_begin || 0 < i) {
             pop();
@@ -5935,7 +6000,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         str_begin = TRUE;
       }
       for (i = 0; i < cast->parts.size; i++) {
-        codegen(s, (mrc_node *)cast->parts.nodes[i], VAL);
+        gen_str_part(s, (mrc_node *)cast->parts.nodes[i]);
         pop();
         if (str_begin || 0 < i) {
           pop();

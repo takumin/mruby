@@ -62,6 +62,39 @@ assert('removing a redefined String#freeze leaves the literal answering') do
   RUBY
 end
 
+assert('a frozen literal of an irep that has been freed') do
+  # The (irep, pool index) cache in front of the table is keyed by the irep's
+  # address, so an address a later irep is given must not be answered with the
+  # literal of the one before it.  Each `eval` here makes an irep and drops it.
+  assert_mruby_out "[]\ntrue\n", <<~'RUBY'
+    res = []
+    300.times do |i|
+      res << eval("# frozen_string_literal: true\n\"lit#{i}\"")
+      GC.start if i % 5 == 0
+    end
+    p((0...300).reject { |i| res[i] == "lit#{i}" })
+    p res.all? { |s| s.frozen? }
+  RUBY
+end
+
+assert('the same text is one frozen string wherever it is written') do
+  assert_mruby_out "true\ntrue\n", <<~'RUBY'
+    def m
+      "shared".freeze
+    end
+    p m.equal?("shared".freeze)
+    p eval("# frozen_string_literal: true\n'shared'").equal?("shared".freeze)
+  RUBY
+end
+
+assert('frozen_string_literal and a copy through +@') do
+  assert_mruby_out "true\nfalse\ntrue\n", <<~'RUBY'
+    p eval("# frozen_string_literal: true\n'abc'").frozen?
+    p eval("# frozen_string_literal: true\n+'abc'").frozen?
+    p eval("# frozen_string_literal: true\n+'abc'") == "abc"
+  RUBY
+end
+
 assert('a string literal answers its own -@') do
   assert_mruby_out "true\ntrue\n", <<~'RUBY'
     p (-"abc").frozen?

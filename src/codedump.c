@@ -186,7 +186,11 @@ codedump(mrb_state *mrb, const mrb_irep *irep, FILE *out)
         break;
 #endif
       default:
+        /* a string pool entry: a frozen string literal */
         fprintf(out, "LOADL\t\tR%d\tL[%d]", a, b);
+        if (irep->pool[b].u.str[0]) {
+          fprintf(out, "\t; %s", irep->pool[b].u.str);
+        }
         break;
       }
       print_lv_a(mrb, irep, a, out);
