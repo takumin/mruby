@@ -1678,12 +1678,14 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     }
     case 'i': {
       mrb_int *ip = GET_ARG(mrb_int*);
-      if (mrb_unlikely(!mrb_integer_p(argv[i]) && conv)) {
-        *ip = arg_as_int(mrb, argv, i);
-        i++;
+      /* An Integer answers here rather than in `mrb_ensure_int_type()`,
+         which is a call this arm made on every argument it read. */
+      if (mrb_likely(mrb_integer_p(argv[i]))) {
+        *ip = mrb_integer(argv[i++]);
         break;
       }
-      *ip = mrb_as_int(mrb, argv[i++]);
+      *ip = conv ? arg_as_int(mrb, argv, i) : mrb_as_int(mrb, argv[i]);
+      i++;
       break;
     }
     case 'b': {
@@ -2035,7 +2037,10 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         p = GET_ARG(mrb_int*);
         if (pickarg) {
-          if (convmode && !mrb_integer_p(*pickarg)) {
+          if (mrb_likely(mrb_integer_p(*pickarg))) {
+            *p = mrb_integer(*pickarg);
+          }
+          else if (convmode) {
             *p = arg_as_int(mrb, argv, i-1);
           }
           else {
