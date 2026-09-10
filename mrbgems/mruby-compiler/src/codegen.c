@@ -411,6 +411,23 @@ pop_n_(mrc_codegen_scope *s, int n)
 #define pop_n(n) pop_n_(s,n)
 #define cursp() (s->sp)
 
+/* A block argument written as `&expr` is converted by the send instruction
+   itself, which builds the `to_proc` call above the argument's register and
+   marks the one just above that.  None of the three belongs to the call, so
+   the frame's high-water mark is raised to cover them.  Nothing is emitted
+   for any of them, and a call whose registers do not fit converts on a nested
+   VM.  A block written out as a literal is already a Proc and reserves
+   nothing. */
+static void
+reserve_blkarg(mrc_codegen_scope *s, uint16_t base, int n, int nk)
+{
+  int bn = (n == 15) ? 1 : n;
+  if (nk == 15) bn += 1;
+  else bn += nk*2;
+  int high = (int)base + bn + 5;  /* self + args + block + three of our own */
+  if (high <= 0xffff && (int)s->nregs < high) s->nregs = (uint16_t)high;
+}
+
 /* A part of a string interpolation that is no String is converted by sending
    `to_s`, which the instruction builds in dst+3 and dst+4 and marks in dst+2.
    None of the three belongs to the concatenation itself, so the frame's
@@ -2638,7 +2655,7 @@ gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe, int recv_ready
     gen_call_assign(s, tree, val, safe, recv_ready);
     return;
   }
-  int skip = 0, n = 0, nk = 0, noop = no_optimize(s), noself = 0, blk = 0;
+  int skip = 0, n = 0, nk = 0, noop = no_optimize(s), noself = 0, blk = 0, blkarg = 0;
   int sp_save = recv_ready ? cursp()-1 : cursp();
 
   if (recv_ready) {
@@ -2691,6 +2708,7 @@ gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe, int recv_ready
     pop();
     noop = 1;
     blk = 1;
+    if (nint(cast->block) == PM_BLOCK_ARGUMENT_NODE) blkarg = 1;
   }
   if (cast->arguments && cast->arguments->base.flags &PM_ARGUMENTS_NODE_FLAGS_CONTAINS_FORWARDING) {
     blk = 1;
@@ -2741,6 +2759,7 @@ gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe, int recv_ready
     }
     else {
       genop_3(s, blk ? OP_SSENDB : OP_SSEND, cursp(), new_sym(s, sym), n|(nk<<4));
+      if (blkarg) reserve_blkarg(s, cursp(), n, nk);
     }
   }
   else if (!blk && n == 0 && nk == 0) {
@@ -2748,6 +2767,7 @@ gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe, int recv_ready
   }
   else {
     genop_3(s, blk ? OP_SENDB : OP_SEND, cursp(), new_sym(s, sym), n|(nk<<4));
+    if (blkarg) reserve_blkarg(s, cursp(), n, nk);
   }
   if (safe) {
     dispatch(s, skip);
