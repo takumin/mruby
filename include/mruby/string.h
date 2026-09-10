@@ -474,6 +474,11 @@ MRB_API mrb_value mrb_str_dup_frozen(mrb_state *mrb, mrb_value str);
  * inside the cache's bound). What is promised is a frozen string equal to the
  * one passed in, never that it is the same object as any earlier answer.
  *
+ * What the answer carries is the class the string answers for -- its own,
+ * with a singleton class passed over -- and only a plain String is ever
+ * shared between callers: an instance of a subclass is answered with a frozen
+ * string of that subclass, which no other caller is handed.
+ *
  * @param mrb The current mruby state.
  * @param str A Ruby string.
  * @return [mrb_value] A frozen Ruby string equal to `str`.

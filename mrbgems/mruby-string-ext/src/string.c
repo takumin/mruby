@@ -1792,8 +1792,8 @@ str_uplus(mrb_state *mrb, mrb_value str)
  * one the frozen string cache holds for those bytes, which makes
  * `(-a).equal?(-b)` normally true. It is not promised: the cache holds what
  * it holds inside a bound (MRB_FSTRING_CACHE_MAX), and a build may carry no
- * cache at all. An instance of a subclass is answered with a frozen copy of
- * its own.
+ * cache at all. An instance of a subclass is answered with a frozen string of
+ * that subclass, which is shared with nobody.
  */
 static mrb_value
 str_uminus(mrb_state *mrb, mrb_value str)

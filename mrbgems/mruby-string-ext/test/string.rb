@@ -1614,9 +1614,32 @@ assert('String#-@ keeps a subclass out of the shared strings') do
   assert_true sub.frozen?
   assert_equal "as a subclass", sub
   # A subclass instance answers for more than its bytes, so it is neither
-  # handed to a later caller nor answered with what one left behind.
+  # handed to a later caller nor answered with what one left behind, and what
+  # it is answered with carries the class it answers for.
+  assert_equal cls, sub.class
   assert_false sub.equal?(-"as a subclass")
   assert_false (-cls.new("as a subclass")).equal?(sub)
+
+  # Frozen already, there is nothing to copy and nothing to exchange it for.
+  frozen = cls.new("as a frozen subclass").freeze
+  assert_true (-frozen).equal?(frozen)
+end
+
+assert('String#-@ shares a string that carries a singleton method') do
+  skip unless GC.stat.key?(:fstring_count)
+  tagged = "carrying a singleton method"
+  def tagged.tagged?; true; end
+  shared = -tagged
+  # The singleton class is the string's own; what stands for its bytes is a
+  # plain String, and that is shared like any other.
+  assert_equal String, shared.class
+  assert_false shared.respond_to?(:tagged?)
+  assert_true shared.equal?(-"carrying a singleton method")
+
+  frozen = "carrying a singleton method while frozen"
+  def frozen.tagged?; true; end
+  frozen.freeze
+  assert_true (-frozen).equal?(frozen)
 end
 
 assert('String#-@ tells the encodings apart') do
@@ -1686,6 +1709,12 @@ assert('a Hash keys an entry with a string of the frozen string cache') do
   # Two tables keyed by the same word hold one string between them.
   g = { "a key of a hash" => 2 }
   assert_true g.keys[0].equal?(key)
+
+  # A subclass key is frozen as one of its own, as `String#-@` answers one.
+  sub = Class.new(String)
+  s = { sub.new("a subclass key") => 1 }
+  assert_true s.keys[0].frozen?
+  assert_equal sub, s.keys[0].class
 end
 
 assert('a Hash keeps its string key out of the caller\'s reach') do

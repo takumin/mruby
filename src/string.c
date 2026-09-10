@@ -1879,6 +1879,29 @@ mrb_str_dup_frozen(mrb_state *mrb, mrb_value str)
  * is why the same source serves a microcontroller and a workstation.
  * ------------------------------------------------------------------------ */
 
+/* A frozen string with `s`'s bytes and the class `cls`, owning its bytes
+   rather than sharing `s`'s buffer: what mrb_str_dup() shares for a long
+   string is that string's whole buffer, spare capacity and all, which a copy
+   that may outlive the original has no business holding.
+
+   The class is given rather than taken from `s` because the two callers ask
+   for different ones: what stands in the cache is a plain String, while what
+   `String#-@` answers an instance of a subclass with carries that subclass. */
+static struct RString*
+fstr_copy(mrb_state *mrb, struct RString *s, struct RClass *cls)
+{
+  const char *p = RSTR_PTR(s);
+  mrb_int len = RSTR_LEN(s);
+  struct RString *dup = (struct RString*)mrb_obj_alloc(mrb, MRB_TT_STRING, cls);
+
+  if (RSTR_EMBEDDABLE_P(len)) str_init_embed(dup, p, len);
+  else if (p && mrb_ro_data_p(p)) str_init_nofree(dup, p, len);
+  else str_init_normal(mrb, dup, p, len);
+  RSTR_ENC_CR_COPY(dup, s);
+  dup->frozen = 1;
+  return dup;
+}
+
 #if MRB_FSTRING_CACHE_MAX > 0
 
 #if MRB_FSTRING_CACHE_MAX < MRB_FSTR_CACHE_WAYS
@@ -2036,14 +2059,25 @@ mrb_str_fstring(mrb_state *mrb, mrb_value str)
 
   /* Already the string its bytes are cached under, so it is its own answer. */
   if (RSTR_FSTR_P(s)) return str;
-  /* Only a plain String of the collected heap is shared between callers. An
-     instance of a subclass and a string carrying a singleton class each answer
-     for more than their bytes, and handing one of them to the next caller with
-     the same bytes would hand over that too; a string of the read-only heap
-     cannot be given the flag that says which strings the cache holds, since
-     the memory it stands in may be read-only in earnest. */
-  if (s->c != mrb->string_class || s->gc_color == MRB_GC_RED) {
-    return mrb_str_dup_frozen(mrb, str);
+  /* What the answer carries is the receiver's class with a singleton class
+     passed over, and only a plain String is ever shared between callers: an
+     instance of a subclass answers for more than its bytes, so handing one to
+     the next caller with the same bytes would hand over that too. A receiver
+     that is frozen already and is not a plain String is its own answer, since
+     there is nothing left to copy and nothing it may be exchanged for. */
+  if (s->c != mrb->string_class) {
+    struct RClass *cls = mrb_obj_class(mrb, str);
+
+    if (mrb_frozen_p(s)) return str;
+    if (cls != mrb->string_class) return mrb_obj_value(fstr_copy(mrb, s, cls));
+    /* A singleton class over a plain String: what the copy below carries is
+       String, so it is shared like any other copy of these bytes. */
+  }
+  /* A string of the read-only heap cannot be given the flag that says which
+     strings the cache holds, since the memory it stands in may be read-only in
+     earnest, and it is frozen already. */
+  else if (s->gc_color == MRB_GC_RED) {
+    return str;
   }
 
   const char *p = RSTR_PTR(s);
@@ -2070,14 +2104,11 @@ mrb_str_fstring(mrb_state *mrb, mrb_value str)
     }
   }
 
-  if (!mrb_frozen_p(s)) {
-    /* A copy that owns its bytes, rather than mrb_str_dup()'s, which shares
-       the buffer of a long string: sharing would hold that buffer, spare
-       capacity and all, for as long as the cached copy stands. */
-    struct RString *dup = str_new(mrb, p, len);
-    RSTR_ENC_CR_COPY(dup, s);
-    dup->frozen = 1;
-    s = dup;
+  /* The receiver takes the slot itself where it is a frozen plain String,
+     which is the whole of what a slot may hold; anything else is stood for by
+     a plain frozen copy of its bytes. */
+  if (!mrb_frozen_p(s) || s->c != mrb->string_class) {
+    s = fstr_copy(mrb, s, mrb->string_class);
   }
   fstr_cache_put(mrb, s, hash);
   return mrb_obj_value(s);
@@ -2088,7 +2119,13 @@ mrb_str_fstring(mrb_state *mrb, mrb_value str)
 MRB_API mrb_value
 mrb_str_fstring(mrb_state *mrb, mrb_value str)
 {
-  return mrb_str_dup_frozen(mrb, str);
+  struct RString *s = mrb_str_ptr(str);
+
+  /* The same answer the cache would give, minus the sharing: a frozen
+     receiver is its own answer, and anything else is answered with a frozen
+     copy carrying the class the receiver's answers for. */
+  if (mrb_frozen_p(s)) return str;
+  return mrb_obj_value(fstr_copy(mrb, s, mrb_obj_class(mrb, str)));
 }
 
 #endif  /* MRB_FSTRING_CACHE_MAX > 0 */
