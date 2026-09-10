@@ -371,6 +371,30 @@ assert('`~` reaches the specifiers that hand out a pointer') do
   assert_equal(2, TestArgFormat.conv_alist_alt(ArgConvToAry.new))
 end
 
+assert('a `to_int` conversion behaves like the other three') do
+  # asked once, its exception passes through, and nesting spends call frames
+  asked = 0
+  o = Class.new { define_method(:to_int) { asked += 1; 2 } }.new
+  assert_equal("abab", "ab" * o)
+  assert_equal(1, asked)
+
+  assert_raise_with_message(ArgumentError, "from to_int") do
+    "ab" * Class.new { def to_int; raise ArgumentError, "from to_int"; end }.new
+  end
+
+  cls = Class.new do
+    def initialize(n); @n = n; end
+    def to_int; @n == 0 ? 1 : ("a" * self.class.new(@n - 1)).size; end
+  end
+  assert_raise(SystemStackError) do
+    d = 0
+    while d < 100000
+      d += 1
+      "a" * cls.new(d)
+    end
+  end
+end
+
 assert('`~` on `i` asks only where the C code cannot read the value itself') do
   # `i` has always read a Float as well as an Integer, and the mark does not
   # change that: only a value none of the numeric types covers is asked for
