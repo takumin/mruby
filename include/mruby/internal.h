@@ -386,8 +386,22 @@ size_t mrb_gc_mark_range(mrb_state *mrb, struct RRange *r);
    RSTR_CODERANGE_SET(dst, (RSTR_CODERANGE(src) == MRB_STR_CODERANGE_7BIT) \
                            ? MRB_STR_CODERANGE_7BIT : MRB_STR_CODERANGE_UNKNOWN))
 
+/* gc.c */
+/* Whether the sweep of this cycle is going to free `obj`: what a weak table
+   asks of a string it holds, between the end of marking and the sweep. */
+mrb_bool mrb_gc_unreached_p(mrb_state *mrb, struct RBasic *obj);
+
 void mrb_gc_free_str(mrb_state*, struct RString*);
 uint32_t mrb_str_hash(mrb_state *mrb, mrb_value str);
+mrb_value mrb_str_frozen_literal(mrb_state *mrb, const char *p, mrb_int len);
+size_t mrb_frozen_strings_count(mrb_state *mrb);
+void mrb_gc_sweep_frozen_strings(mrb_state *mrb);
+void mrb_free_frozen_strings(mrb_state *mrb);
+#ifndef MRB_NO_FRZSTR_CACHE
+void mrb_frzstr_cache_forget_irep(mrb_state *mrb, const struct mrb_irep *irep);
+#else
+#define mrb_frzstr_cache_forget_irep(mrb, irep) ((void)0)
+#endif
 mrb_value mrb_str_dump(mrb_state *mrb, mrb_value str);
 mrb_value mrb_str_inspect(mrb_state *mrb, mrb_value str);
 mrb_bool mrb_str_beg_len(mrb_int str_len, mrb_int *begp, mrb_int *lenp);

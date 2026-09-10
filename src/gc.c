@@ -461,6 +461,21 @@ mrb_object_dead_p(mrb_state *mrb, struct RBasic *object)
   return is_dead(gc, object);
 }
 
+/* Whether the sweep of this cycle is going to free `obj`, asked of an object a
+   weak table is already holding.  Unlike mrb_object_dead_p() it does not ask
+   whether the object is in the heap at all, which walks every page, and it
+   answers FALSE for the read-only heap, which nothing marks and nothing
+   sweeps: unreached says nothing there.
+
+   It is answered between the end of marking and the start of the sweep, where
+   what is unmarked stays unmarked. */
+mrb_bool
+mrb_gc_unreached_p(mrb_state *mrb, struct RBasic *obj)
+{
+  if (is_red(obj)) return FALSE;
+  return is_dead(&mrb->gc, obj);
+}
+
 static void
 link_heap_page(mrb_gc *gc, mrb_heap_page *page)
 {
@@ -1531,6 +1546,11 @@ final_marking_phase(mrb_state *mrb, mrb_gc *gc)
 #endif
 
   gc_mark_gray_list(mrb, gc);
+
+  /* Last, with every reachable string marked: what is unmarked now stays
+     unmarked through the sweep, so this is where a weak table can tell what it
+     is about to lose. */
+  mrb_gc_sweep_frozen_strings(mrb);
 }
 
 static void
@@ -2424,6 +2444,7 @@ mrb_objspace_page_slot_size(void)
  *  Returns a Hash with GC statistics.
  *  Keys: :live, :debt, :state, :generational, :full,
  *        :step_limit, :malloc_increase, :malloc_threshold
+ *        :frozen_string_count
  *  With MRB_GC_STATS: :total, :minor, :major
  *
  */
@@ -2444,6 +2465,7 @@ gc_stat(mrb_state *mrb, mrb_value self)
   mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(malloc_threshold)), mrb_int_value(mrb, (mrb_int)gc->malloc_threshold));
   mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(symbol_count)), mrb_int_value(mrb, (mrb_int)(mrb_presym_max() + mrb->symidx)));
   mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(dynamic_symbol_count)), mrb_int_value(mrb, (mrb_int)mrb->dynamic_sym_count));
+  mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(frozen_string_count)), mrb_int_value(mrb, (mrb_int)mrb_frozen_strings_count(mrb)));
 
 #ifdef MRB_GC_STATS
   mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(total)), mrb_int_value(mrb, (mrb_int)gc->gc_total_count));

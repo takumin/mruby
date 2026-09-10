@@ -3269,10 +3269,47 @@ RETRY_TRY_BLOCK:
         break;
 #endif
       default:
-        /* should not happen (tt:string) */
-        regs[a] = mrb_nil_value();
-        break;
+        /* A string pool entry, whose `tt` packs the literal's length and so
+           matches none of the numbers above: a frozen string literal, which
+           `L_FROZEN_LITERAL` answers with the one string of its text. */
+        mrb_assert((irep->pool[b].tt&IREP_TT_NFLAG)==0);
+        goto L_FROZEN_LITERAL;
       }
+      NEXT;
+    }
+
+    /* The one frozen string standing for the literal at `Pool[b]`, put in
+       `R[a]`.  Reached from `OP_LOADL`, which a `frozen_string_literal: true`
+       comment compiles a literal to, and from `OP_STRING` where the send that
+       follows it is the `freeze` or `-@` the literal answers itself.
+
+       Hashing the text on every execution would cost more than the allocation
+       this saves, so a direct-mapped (irep, pool index) cache sits in front of
+       the table, of the same shape `OP_GETCONST` has in front of constant
+       lookup.  `MRB_FRZSTR_CACHE_SIZE` sizes it and `MRB_NO_FRZSTR_CACHE`
+       leaves it out. */
+    {
+    L_FROZEN_LITERAL:
+#ifndef MRB_NO_FRZSTR_CACHE
+      {
+        uint32_t h = mrb_int_hash_func(mrb, ((intptr_t)irep) ^ b) & (MRB_FRZSTR_CACHE_SIZE-1);
+        struct mrb_frzstr_cache_entry *sc = &mrb->frzstr_cache[h];
+        if (sc->irep == irep && sc->idx == b) {
+          regs[a] = mrb_obj_value(sc->str);
+          NEXT;
+        }
+        mrb_value str = mrb_str_frozen_literal(mrb, irep->pool[b].u.str,
+                                               (mrb_int)(irep->pool[b].tt >> 2));
+        regs[a] = str;
+        sc->irep = irep;
+        sc->idx = b;
+        sc->str = mrb_basic_ptr(str);
+      }
+#else
+      regs[a] = mrb_str_frozen_literal(mrb, irep->pool[b].u.str,
+                                       (mrb_int)(irep->pool[b].tt >> 2));
+#endif
+      mrb_gc_arena_restore(mrb, ai);
       NEXT;
     }
 
@@ -4603,6 +4640,33 @@ RETRY_TRY_BLOCK:
       mrb_int len;
 
       mrb_assert((irep->pool[b].tt&IREP_TT_NFLAG)==0);
+      /* `"lit".freeze` and `-"lit"` are compiled as a send of a literal
+         receiver, and the pair is read here as one: the literal answers with
+         the string every occurrence of its text shares and the send is
+         stepped over.  It may do so only while the method named is still the
+         builtin -- which `mrb_state.idx_class` records, as it does for the
+         index opcodes -- so a program that replaces one is sent it as
+         written, from the string the ordinary path below makes.  Reading the
+         send's operands is what the guard on the opcode is: they are only
+         read once `OP_SEND0` itself has been, and that instruction carries
+         them. */
+      {
+        const mrb_code *next = ci->pc;
+
+        if (next[0] == OP_SEND0 && next[1] == a) {
+          mrb_sym fmid = irep->syms[next[2]];
+          enum mrb_idx_op_slot slot;
+
+          if (fmid == MRB_SYM(freeze)) slot = MRB_IDX_OP_STR_FREEZE;
+          else if (fmid == MRB_OPSYM(minus)) slot = MRB_IDX_OP_STR_UMINUS;
+          else goto L_STRING_NEW;
+          if (mrb_likely(mrb->idx_class[slot] != NULL)) {
+            ci->pc = next+3;
+            goto L_FROZEN_LITERAL;
+          }
+        }
+      }
+    L_STRING_NEW:
       len = irep->pool[b].tt >> 2;
       if (irep->pool[b].tt & IREP_TT_SFLAG) {
         regs[a] = mrb_str_new_static(mrb, irep->pool[b].u.str, len);

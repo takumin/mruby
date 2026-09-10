@@ -1589,3 +1589,45 @@ assert('String#bytesplice on a shared buffer') do
   assert_equal 2000, d.bytesize
   assert_equal "0123456789012345678901234567890123456789", d.byteslice(-40, 40)
 end
+
+assert('String literal freeze answers one frozen string') do
+  a = 'abc'.freeze
+  assert_predicate a, :frozen?
+  assert_equal 'abc', a
+  # The text alone decides the answer, so every literal of it, wherever it is
+  # written, is the same string.
+  assert_same a, 'abc'.freeze
+  assert_same ''.freeze, ''.freeze
+  # A literal that was not frozen is still a string written afresh each time.
+  assert_not_same a, 'abc'
+  assert_not_same 'abc', 'abc'
+  # A receiver that is not a literal is answered by the method itself, which
+  # freezes the receiver and hands it back.
+  s = 'abc'.dup
+  assert_same s, s.freeze
+  assert_predicate s, :frozen?
+  assert_not_same a, s
+end
+
+assert('the table of frozen string literals holds them weakly') do
+  GC.start
+  base = GC.stat[:frozen_string_count]
+
+  held = 'a literal this test holds while it runs'.freeze
+  GC.start
+  with_held = GC.stat[:frozen_string_count]
+  assert_true with_held > base
+  # While the program holds it, every literal of its text is that one string.
+  assert_same held, 'a literal this test holds while it runs'.freeze
+
+  held = nil
+  GC.start
+  assert_true GC.stat[:frozen_string_count] < with_held
+
+  # The cache in front of the table named it too, and lost it with the table:
+  # running the same literal again makes a string of its own rather than
+  # reading one the sweep has freed.
+  again = 'a literal this test holds while it runs'.freeze
+  assert_predicate again, :frozen?
+  assert_equal 'a literal this test holds while it runs', again
+end
