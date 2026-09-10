@@ -323,3 +323,96 @@ assert('a -r library that loads still runs the program') do
   File.write(lib.path, "def libfn; 42; end\n")
   assert_mruby("42\n", "", true, ["-r", lib.path, "-e", "puts libfn"])
 end
+
+assert('a frozen string literal outlives the table emptying under it') do
+  # What a literal is answered from is freed when the last irep holding an
+  # entry in it is, and an irep is freed by the collection an allocation runs.
+  # The string a miss is building is such an allocation, so the table it was
+  # about to register in could be gone by the time it got there.
+  #
+  # Each round below drops the site of the round before, whose entry is the
+  # only one the table has, and asks a new site for its string twice.  A table
+  # freed under the first ask is a second string for the second, which is what
+  # `bad` counts.  The rounds differ in what they allocate because where the
+  # collector is when the new site runs is what decides whether it lands there.
+  skip 'no mruby to run the program' unless File.exist?(cmd_bin('mruby'))
+
+  # A table too small for the rounds below is full where it would have been
+  # freed, and a full table hands back a new string every time as well, so a
+  # build that cannot hold what the default holds is not asked.
+  literals = (0...256).map { |i| "'l#{i}'" }.join(',')
+  probe = "# frozen_string_literal: true\n" \
+          "def each_of_them; [#{literals}]; end\n" \
+          "a = each_of_them\nb = each_of_them\nheld = true\ni = 0\n" \
+          "while i < a.size\n  held = false unless a[i].equal?(b[i])\n  i += 1\nend\n" \
+          "p held\n"
+  out, _err, stat = Open3.capture3(*(cmd_list(MRUBY_BIN) + ['-e', probe]))
+  skip 'this build holds fewer literals than the rounds need' unless stat.success? && out.chomp == 'true'
+
+  out, _err, stat = Open3.capture3(*(cmd_list(MRUBY_BIN) + ['-e', 'p Kernel.eval("1")']))
+  skip 'no eval to build an irep that goes away' unless stat.success? && out.chomp == '1'
+
+  head = <<~'RUBY'
+    SRC = :"# frozen_string_literal: true\nProc.new { 'a' }"
+    bad = 0
+    held = nil
+  RUBY
+
+  rounds = {
+    'dropped when the round is over' => <<~'RUBY',
+      600.times do
+        site = Kernel.eval(SRC.to_s)
+        x = site.call
+        y = site.call
+        bad += 1 unless x.equal?(y)
+      end
+    RUBY
+    'dropped behind a different amount of garbage' => <<~'RUBY',
+      40.times do |pad|
+        60.times do
+          pad.times { Object.new }
+          site = Kernel.eval(SRC.to_s)
+          x = site.call
+          y = site.call
+          bad += 1 unless x.equal?(y)
+        end
+      end
+    RUBY
+    'dropped with nothing allocated after it' => <<~'RUBY',
+      40.times do |pad|
+        40.times do
+          pad.times { Object.new }
+          site = Kernel.eval(SRC.to_s)
+          held = nil
+          x = site.call
+          y = site.call
+          bad += 1 unless x.equal?(y)
+          held = site
+        end
+      end
+    RUBY
+    'dropped both ways' => <<~'RUBY',
+      [true, false].each do |drop|
+        40.times do |pad|
+          40.times do
+            pad.times { Object.new }
+            site = Kernel.eval(SRC.to_s)
+            held = nil if drop
+            x = site.call
+            y = site.call
+            bad += 1 unless x.equal?(y)
+            held = site
+          end
+        end
+      end
+    RUBY
+  }
+
+  rounds.each do |what, body|
+    script = Tempfile.new(['frozen_str', '.rb'])
+    File.write(script.path, head + body + "p bad\n")
+    out, err, stat = Open3.capture3(*(cmd_list(MRUBY_BIN) + [script.path]))
+    assert_true stat.success?, "#{what}: exited #{stat.exitstatus.inspect} #{err}"
+    assert_equal "0\n", out, what
+  end
+end

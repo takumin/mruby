@@ -1,14 +1,25 @@
 ##
-# Frozen string literals
+# Frozen string literals, the table they are answered from
 #
 # A literal in a file that asked for `# frozen_string_literal: true` compiles
 # to OP_LOADL over its pool entry, and the VM answers that entry with one
-# string for as long as the irep lives. FrozenLit builds such an irep by hand
-# (mrbgems/mruby-test/frozen_str.c), since no compiler in this tree emits one
-# yet.
+# string for as long as the irep lives. What such a literal reads as is in
+# test/t/string_literal_frozen.rb; here it is the table, over ireps FrozenLit
+# assembles by hand (mrbgems/mruby-test/frozen_str.c) so that they can be
+# freed while the test runs.
+#
+# This file must not ask for frozen string literals itself: it counts what
+# the table holds, and its own literals would be in it for the whole run.
 
-def frozen_lit_skip
+# A test that asks for one object per literal needs the table to have room
+# for what it is about to put there: it takes MRB_FROZEN_STRING_CACHE_SIZE
+# strings, and what a literal put there stays for as long as the irep it came
+# from.
+def frozen_lit_skip(need = 1)
   skip "no frozen string literal table in this build" if FrozenLit.capacity == 0
+  if FrozenLit.capacity - FrozenLit.count < need
+    skip "frozen string literal table is full in this build"
+  end
 end
 
 assert('frozen string literal, what the literal reads as') do
@@ -64,6 +75,7 @@ end
 assert('frozen string literal, a full table builds a string every time') do
   frozen_lit_skip
   GC.start
+  held = FrozenLit.count
   sites = []
   (FrozenLit.capacity + 4).times do |i|
     site = FrozenLit.site("full #{i}")
@@ -79,5 +91,5 @@ assert('frozen string literal, a full table builds a string every time') do
 
   sites = nil
   GC.start
-  assert_equal 0, FrozenLit.count
+  assert_equal held, FrozenLit.count
 end
