@@ -1903,6 +1903,33 @@ node_lineno(mrc_ccontext *c, mrc_node *node)
   return abs_line - file_start_line + 1 + line_offset;
 }
 
+/* Whether the file a node came from asked for frozen string literals.
+
+   The flag prism puts on the node is not read: it stands for what the source
+   the parser was handed asked for, and `mrbc` hands it every file it was
+   given as one, so it would be the first file's answer everywhere. What each
+   file asked for is in filename_table, which src/compile.c fills, and where
+   in the source each of them starts says which one a node belongs to. */
+static mrc_bool
+frozen_str_lit_p(mrc_codegen_scope *s, mrc_node *node)
+{
+  mrc_ccontext *c = s->c;
+  uint32_t pos = (uint32_t)(node->location.start - c->p->start);
+  uint16_t i = mrc_filename_index(c->filename_table, c->filename_table_length, pos);
+
+  return c->filename_table[i].frozen_string_literal;
+}
+
+/* A string literal at cursp(): the pool entry itself where its file froze it,
+   which the VM answers with a frozen string, and a copy of the entry where it
+   did not. */
+static void
+gen_str_lit(mrc_codegen_scope *s, mrc_node *node, int off)
+{
+  genop_2(s, frozen_str_lit_p(s, node) ? OP_LOADL : OP_STRING, cursp(), off);
+  push();
+}
+
 /* `alias` and `undef` take compile-time symbol indices, but prism hands them a
    SymbolNode *or* an InterpolatedSymbolNode (`alias :"#{x}" :y`), plus
    GlobalVariableReadNode / MissingNode on a parse error. Resolve the ones whose
@@ -4931,6 +4958,67 @@ codegen_defined(mrc_codegen_scope *s, mrc_node *value, int val)
   s->rlev = rlev;
 }
 
+/* One part of an interpolation, left at cursp().
+
+   A literal part is generated here instead of through codegen() so that it is
+   a string of its own even where the file asked for frozen literals: the
+   parts are joined by OP_STRCAT, which writes into the string it is given. */
+static void
+gen_interp_part(mrc_codegen_scope *s, mrc_node *part)
+{
+  if (nint(part) == PM_STRING_NODE) {
+    CAST3(string, part, str);
+    genop_2(s, OP_STRING, cursp(),
+            new_lit_str(s, (char *)str->unescaped.source, (mrc_int)str->unescaped.length));
+    push();
+  }
+  else {
+    codegen(s, part, VAL);
+  }
+}
+
+/* `"a" "b"` and a heredoc without interpolation reach codegen as parts to
+   join, and a file that asked for frozen literals wants one frozen string
+   out of them rather than the OP_STRCAT the parts would otherwise compile
+   to. Answers whether it generated the literal.
+
+   A join longer than a pool entry records its length in is refused, as
+   new_lit_str() refuses the same bytes written as one literal. Leaving it to
+   the OP_STRCAT would answer a file that froze its literals with a string
+   built at run time, which is a string of its own and not frozen. */
+static mrc_bool
+gen_frozen_interp_str(mrc_codegen_scope *s, mrc_node **parts, uint32_t size)
+{
+  size_t len = 0;
+  char *buf, *p;
+  int off;
+
+  if (size == 0 || !frozen_str_lit_p(s, parts[0])) return FALSE;
+  /* an interpolation of its own is joined at run time, however long it is */
+  for (uint32_t i = 0; i < size; i++) {
+    if (nint(parts[i]) != PM_STRING_NODE) return FALSE;
+  }
+  for (uint32_t i = 0; i < size; i++) {
+    CAST3(string, parts[i], str);
+    if (str->unescaped.length > UINT16_MAX - len) {
+      codegen_error(s, "frozen string literal too long");
+    }
+    len += str->unescaped.length;
+  }
+
+  p = buf = (char *)mrc_malloc(s->c, len + 1);
+  for (uint32_t i = 0; i < size; i++) {
+    CAST3(string, parts[i], str);
+    memcpy(p, str->unescaped.source, str->unescaped.length);
+    p += str->unescaped.length;
+  }
+  off = new_lit_str(s, buf, (mrc_int)len);
+  mrc_free(s->c, buf);
+  genop_2(s, OP_LOADL, cursp(), off);
+  push();
+  return TRUE;
+}
+
 static void
 codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
 {
@@ -5685,8 +5773,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         mrc_int len = cast->unescaped.length;
         int off = new_lit_str(s, p, len);
 
-        genop_2(s, OP_STRING, cursp(), off);
-        push();
+        gen_str_lit(s, tree, off);
       }
       break;
     }
@@ -5768,7 +5855,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
           str_begin = TRUE;
         }
         for (size_t i = 0; i < cast->parts.size; i++) {
-          codegen(s, cast->parts.nodes[i], VAL);
+          gen_interp_part(s, cast->parts.nodes[i]);
           pop();
           if (str_begin || 0 < i) {
             pop();
@@ -5870,13 +5957,16 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
       }
       mrc_bool str_begin = FALSE;
       if (val) {
+        if (nt == PM_INTERPOLATED_STRING_NODE && gen_frozen_interp_str(s, nodes, size)) {
+          break;
+        }
         if (nint(nodes[0]) != PM_STRING_NODE) {
           genop_2(s, OP_STRING, cursp(), new_lit_cstr(s, ""));
           push();
           str_begin = TRUE;
         }
         for (i = 0; i < size; i++) {
-          codegen(s, nodes[i], VAL);
+          gen_interp_part(s, nodes[i]);
           pop();
           if (str_begin || 0 < i) {
             pop();
@@ -5945,7 +6035,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         str_begin = TRUE;
       }
       for (i = 0; i < cast->parts.size; i++) {
-        codegen(s, (mrc_node *)cast->parts.nodes[i], VAL);
+        gen_interp_part(s, (mrc_node *)cast->parts.nodes[i]);
         pop();
         if (str_begin || 0 < i) {
           pop();
@@ -7121,8 +7211,8 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         char *p = (char *)cast->filepath.source;
         mrc_int len = cast->filepath.length;
         int off = new_lit_str(s, p, len);
-        genop_2(s, OP_STRING, cursp(), off);
-        push();
+        /* frozen where the file's literals are, which is what CRuby answers */
+        gen_str_lit(s, tree, off);
       }
       break;
     }

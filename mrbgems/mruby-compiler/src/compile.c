@@ -12,6 +12,30 @@
 #include "../include/mrc_proc.h"
 #endif
 
+/* Whether a warning that a `# frozen_string_literal` comment was passed over
+   is about one that was taken after all.
+
+   Prism takes such a comment only before the first semantic token of the
+   source it is handed, and `mrbc` hands it every file it was given as one; the
+   comment at the head of any file but the first therefore comes after code and
+   is passed over.  frozen_string_literal_scan() takes it all the same, and the
+   warning is about the comment it took where it covers the one it took. */
+static mrc_bool
+frozen_string_literal_taken_p(mrc_ccontext *c, const pm_diagnostic_t *w)
+{
+  uint16_t i;
+  uint32_t pos;
+
+  if (w->diag_id != PM_WARN_IGNORED_FROZEN_STRING_LITERAL) return FALSE;
+  if (!c->filename_table || c->filename_table_length < 2) return FALSE;
+
+  pos = (uint32_t)(w->location.start - c->p->start);
+  i = mrc_filename_index(c->filename_table, c->filename_table_length, pos);
+  return pos <= c->filename_table[i].frozen_comment &&
+         c->filename_table[i].frozen_comment <
+           (uint32_t)(w->location.end - c->p->start);
+}
+
 static mrc_irep *
 mrc_load_exec(mrc_ccontext *c, mrc_node *ast)
 {
@@ -29,7 +53,9 @@ mrc_load_exec(mrc_ccontext *c, mrc_node *ast)
   if (0 < c->p->warning_list.size) {
     pm_diagnostic_t *w = (pm_diagnostic_t *)c->p->warning_list.head;
     while (w) {
-      mrc_diagnostic_list_append(c, w->location.start, w->message, MRC_PARSER_WARNING);
+      if (!frozen_string_literal_taken_p(c, w)) {
+        mrc_diagnostic_list_append(c, w->location.start, w->message, MRC_PARSER_WARNING);
+      }
       w = (pm_diagnostic_t *)w->node.next;
     }
   }

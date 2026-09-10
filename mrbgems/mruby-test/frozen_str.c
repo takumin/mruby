@@ -2,10 +2,10 @@
 ** frozen_str.c - the instruction a frozen string literal turns into
 **
 ** OP_LOADL reaches a string pool entry only from a literal that its file
-** froze, and no compiler in this tree emits that yet.  FrozenLit.site()
-** builds the two instruction irep by hand so that the VM's side of it - the
-** string a pool entry is answered with, whether the entry owns its bytes or
-** points at the ones the binary already holds - is testable on its own.
+** froze.  FrozenLit.site() builds the two instruction irep by hand so that
+** the VM's side of it - the string a pool entry is answered with, whether
+** the entry owns its bytes or points at the ones the binary already holds -
+** is testable on its own.
 */
 
 #include <string.h>

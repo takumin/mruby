@@ -5,8 +5,9 @@
 # to OP_LOADL over its pool entry, and the VM answers that entry with a frozen
 # string. What such a literal reads as in a file is in
 # test/t/string_literal_frozen.rb; here it is the instruction, over ireps
-# FrozenLit assembles by hand (mrbgems/mruby-test/frozen_str.c) because no
-# compiler in this tree emits it yet.
+# FrozenLit assembles by hand (mrbgems/mruby-test/frozen_str.c), which is
+# also the only way to reach an entry that points at bytes the binary
+# already holds.
 
 assert('frozen string literal, what a pool entry is answered with') do
   site = FrozenLit.site("a literal")
