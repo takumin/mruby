@@ -249,13 +249,21 @@ than dispatched to.
 The conversion runs as ordinary bytecode: the instruction or the send that
 met the wrong type rewinds and runs again once the conversion has answered.
 That is what a method written in C cannot do by calling back into the VM,
-and it is also what bounds where a conversion can happen. A send converts
-its last argument only, and only where the dispatch loop issued the send
-itself: a call taking a block, a call whose arguments a splat packed,
-`obj[i] = x`, and a method reached from C through `mrb_funcall()` and its
-kin all raise `TypeError` as before. `Class#new` reaches `initialize` that
-way, so `File.open(obj)` and `Dir.new(obj)` raise where `File.basename(obj)`
-converts.
+and it is also what bounds where a conversion can happen. Only a send the
+dispatch loop issued itself can rewind, so `obj[i] = x` and a method
+reached from C through `mrb_funcall()` and its kin raise `TypeError` as
+before.
+
+A send that hands its arguments over one at a time converts its last
+argument only, and cannot carry a block: the conversion is answered over
+the argument's own register, and the registers above it are where the rest
+of the arguments and the block sit. A send that packs its arguments into an
+array has neither bound, because the array is an object the restart reads
+again rather than builds again, and the conversion is written inside it.
+`Class#new` passes what it was given to `initialize` packed, so
+`Dir.new(obj)` converts. `File.open(obj)` does not, for a different reason:
+`File#initialize` is written in Ruby, and it passes the path as the first
+of three arguments to a method written in C.
 
 A conversion is answered by a method lookup, not by a question put to the
 object, so overriding `respond_to?` steers nothing. One consequence is that

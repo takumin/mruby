@@ -417,6 +417,27 @@ assert('`~` on `i` asks only where the C code cannot read the value itself') do
   end
 end
 
+assert('a send that packs its arguments carries the conversion too') do
+  # `Class#new` hands what it was given to `initialize` packed, so a C
+  # `initialize` reads its arguments out of an array rather than registers.
+  # The array is an object the restart re-reads instead of building again,
+  # so the conversion is written into it.
+  o = ArgConvToStr.new
+  assert_equal("b", String.new(o))
+  assert_equal(1, o.asked)
+
+  # the trampoline goes above the caller's registers here, which leaves the
+  # block where the restart will read it
+  assert_equal("b", String.new(ArgConvToStr.new) {})
+
+  # and leaves the argument free to be one that is not the last
+  assert_equal(1, "abc".index(*[ArgConvToStr.new]))
+  assert_equal(1, "abc".index(*[ArgConvToStr.new, 0]))
+
+  # a value that answers no protocol is the error it always was
+  assert_raise(TypeError) { String.new(Object.new) }
+end
+
 assert('a format modifier is not an argument of its own') do
   assert_nil(TestArgFormat.conv_opt)
   assert_equal("b", TestArgFormat.conv_opt(ArgConvToStr.new))

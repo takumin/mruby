@@ -3161,6 +3161,29 @@ static const mrb_code coerce_iseq[] = {
   OP_RETURN, 2,
 };
 
+/* The same conversion for an argument that reached the C method inside a
+   packed argument array.  A send that packs takes the array out of a
+   register it built before the send, so the restart re-reads the very same
+   object rather than building it again — which means the converted value has
+   to be written into the array, not into a register.  This frame is pushed
+   clear of the caller's registers so that the block and the keyword
+   dictionary the send also re-reads survive it, and it hands its answer to
+   the array itself.  `Class#new` is the send that makes this worth having:
+   it passes what it was given straight to `initialize`, packed. */
+static const mrb_code coerce_packed_iseq[] = {
+  OP_ENTER, 0x0c, 0x00, 0x00,   /* 3:0:0:0:0:0:0 */
+  OP_MOVE, 4, 0,                /* R4 = self */
+  OP_SEND, 4, 0, 0,             /* R4 = R4.to_xxx */
+  OP_MOVE, 5, 1,                /* R5 = the class */
+  OP_MOVE, 6, 4,                /* R6 = what came back */
+  OP_MOVE, 7, 0,                /* R7 = the object that was asked */
+  OP_LOADSYM, 8, 0,             /* R8 = :to_xxx */
+  OP_SEND, 5, 1, 3,             /* R5 = R5.__ensure(R6, R7, R8) */
+  OP_MOVE, 4, 5,                /* R4 = the value it passed */
+  OP_SETIDX, 2,                 /* R2[R3] = R4 */
+  OP_RETURN, 4,
+};
+
 #define COERCE_TRAMPOLINE(name, convsym)                                \
   MRB_PRESYM_DEFINE_VAR_AND_INITER(coerce_##name##_syms, 2,             \
                                    convsym, MRB_SYM(__ensure))          \
@@ -3174,6 +3197,17 @@ static const mrb_code coerce_iseq[] = {
     NULL, MRB_TT_PROC, MRB_GC_RED, MRB_OBJ_IS_FROZEN,                   \
     MRB_PROC_SCOPE | MRB_PROC_STRICT,                                   \
     { &coerce_##name##_irep }, NULL, { NULL }                           \
+  };                                                                    \
+  static const mrb_irep coerce_##name##_packed_irep = {                 \
+    4, 10, 0, MRB_IREP_STATIC,                                          \
+    coerce_packed_iseq, NULL, coerce_##name##_syms, NULL, NULL, NULL,   \
+    sizeof(coerce_packed_iseq), 0, 2, 0, 0,                             \
+  };                                                                    \
+  mrb_alignas(8)                                                        \
+  static const struct RProc coerce_##name##_packed_proc = {             \
+    NULL, MRB_TT_PROC, MRB_GC_RED, MRB_OBJ_IS_FROZEN,                   \
+    MRB_PROC_SCOPE | MRB_PROC_STRICT,                                   \
+    { &coerce_##name##_packed_irep }, NULL, { NULL }                    \
   };
 
 COERCE_TRAMPOLINE(ary,  MRB_SYM(to_ary))
@@ -3476,8 +3510,21 @@ conv_send_insn_p(const struct vm_insn *d, const mrb_irep *irep,
                  uint16_t a, mrb_sym mid)
 {
   switch (d->insn) {
+  case OP_SENDB: case OP_SSENDB:
+    /* A send that packs its arguments is answered above the caller's
+       registers rather than over the argument's own, so the block stays
+       where the restart will read it.  Only that one may carry a block. */
+    if ((d->c & 0xf) != CALL_MAXARGS) return FALSE;
+    /* fall through */
   case OP_SEND: case OP_SSEND:
     if (d->b >= irep->slen || irep->syms[d->b] != mid) return FALSE;
+    /* A send that packs keyword arguments of its own writes the dictionary
+       over the first key it read, and would read the dictionary back as a
+       key on the way through again. */
+    if ((d->c & 0xf) == CALL_MAXARGS && ((d->c >> 4) & 0xf) != CALL_MAXARGS &&
+        ((d->c >> 4) & 0xf) != 0) {
+      return FALSE;
+    }
     break;
   case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV:
   case OP_EQ: case OP_LT: case OP_LE: case OP_GT: case OP_GE:
@@ -3536,46 +3583,77 @@ MRB_API mrb_bool
 mrb_convert_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv)
 {
   mrb_callinfo *ci = mrb->c->ci;
-  const struct RProc *tramp;
-  const mrb_irep *tirep;
+  const struct RProc *tramp, *ptramp;
+  const mrb_irep *tirep, *ptirep;
   struct RClass *target;
   mrb_sym cmid;
+  mrb_value arg;
+  struct RArray *packed = NULL;
 
   if (!(mrb->conv_defined & conv)) return FALSE;
   /* Only a frame the dispatch loop pushed has a send to go back to: a
      method reached from C through `mrb_funcall` and its kin has not. */
   if (ci->cci != CINFO_NONE || ci <= mrb->c->cibase) return FALSE;
-  /* The packed argument array and the keyword dictionary are built by the
-     send itself, so a restart would build them again out of registers it has
-     already written over. */
-  if (ci->n >= 15 || ci->kw) return FALSE;
-  /* The trampoline's frame lies over the argument's register and the ones
-     above it, so an argument after it would not survive the restart. */
-  if (argidx != ci->n - 1) return FALSE;
+
+  if (mrb_unlikely(ci->n == CALL_MAXARGS)) {
+    /* The arguments came packed into an array the send built before it ran,
+       so the restart re-reads that array rather than making a new one, and
+       the value is converted inside it.  Where the argument sits does not
+       matter here, because the trampoline is pushed clear of the caller's
+       registers instead of over the argument's own. */
+    if (!mrb_array_p(ci->stack[1])) return FALSE;
+    packed = mrb_ary_ptr(ci->stack[1]);
+    if (argidx < 0 || argidx >= ARY_LEN(packed)) return FALSE;
+    arg = ARY_PTR(packed)[argidx];
+    /* `mrb_get_args()` clears the class of an array it reads arguments out
+       of, to keep it out of `ObjectSpace.each_object`.  The store below is
+       an instruction, and an instruction asks the class what `[]=` means, so
+       the array carries its own again while the conversion runs; reading the
+       arguments a second time hides it as before. */
+    packed->c = mrb->array_class;
+  }
+  else {
+    /* The keyword dictionary is built by the send itself, out of registers
+       it then writes the dictionary over. */
+    if (ci->kw) return FALSE;
+    /* The trampoline's frame lies over the argument's register and the ones
+       above it, so an argument after it would not survive the restart. */
+    if (argidx != ci->n - 1) return FALSE;
+    arg = ci->stack[1+argidx];
+  }
 
   switch (conv) {
   case MRB_CONV_TO_STR:
     tramp = &coerce_str_proc; tirep = &coerce_str_irep;
+    ptramp = &coerce_str_packed_proc; ptirep = &coerce_str_packed_irep;
     target = mrb->string_class; cmid = MRB_SYM(to_str);
     break;
   case MRB_CONV_TO_ARY:
     tramp = &coerce_ary_proc; tirep = &coerce_ary_irep;
+    ptramp = &coerce_ary_packed_proc; ptirep = &coerce_ary_packed_irep;
     target = mrb->array_class; cmid = MRB_SYM(to_ary);
     break;
   case MRB_CONV_TO_HASH:
     tramp = &coerce_hash_proc; tirep = &coerce_hash_irep;
+    ptramp = &coerce_hash_packed_proc; ptirep = &coerce_hash_packed_irep;
     target = mrb->hash_class; cmid = MRB_SYM(to_hash);
     break;
   case MRB_CONV_TO_INT:
     tramp = &coerce_int_proc; tirep = &coerce_int_irep;
+    ptramp = &coerce_int_packed_proc; ptirep = &coerce_int_packed_irep;
     target = mrb->integer_class; cmid = MRB_SYM(to_int);
     break;
   default:
     return FALSE;
   }
 
+  if (packed) {
+    tramp = ptramp;
+    tirep = ptirep;
+  }
+
   {
-    struct RClass *c = mrb_class(mrb, ci->stack[1+argidx]);
+    struct RClass *c = mrb_class(mrb, arg);
     if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &c, cmid))) return FALSE;
   }
 
@@ -3590,12 +3668,22 @@ mrb_convert_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv)
                                              ci->mid, &d);
   if (start == NULL) return FALSE;
 
-  mrb_assert(ci->blk == NULL);
+  mrb_assert(packed || ci->blk == NULL);
   ci = cipop(mrb);
   ci->pc = start;
-  ci = cipush(mrb, off + 1 + argidx, CINFO_NONE, target, tramp, NULL, cmid, 1);
-  stack_extend(mrb, tirep->nregs);
-  ci->stack[1] = mrb_obj_value(target);
+  if (packed) {
+    ci = cipush(mrb, cirep->nregs, CINFO_NONE, target, tramp, NULL, cmid, 3);
+    stack_extend(mrb, tirep->nregs);
+    ci->stack[0] = arg;
+    ci->stack[1] = mrb_obj_value(target);
+    ci->stack[2] = mrb_obj_value(packed);
+    ci->stack[3] = mrb_int_value(mrb, argidx);
+  }
+  else {
+    ci = cipush(mrb, off + 1 + argidx, CINFO_NONE, target, tramp, NULL, cmid, 1);
+    stack_extend(mrb, tirep->nregs);
+    ci->stack[1] = mrb_obj_value(target);
+  }
   mrb->conv_signal = TRUE;
   MRB_THROW(mrb->jmp);
   /* not reached */

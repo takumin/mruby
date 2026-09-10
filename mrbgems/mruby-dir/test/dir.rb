@@ -42,6 +42,15 @@ assert('a path takes an implicit conversion') do
   # `Dir.mkdir` converts only where the mode is left out: the restart takes
   # the send from the top, and it reaches the last argument alone
   assert_raise(TypeError) { Dir.mkdir(o, 0700) }
+
+  # `Dir.new` reaches `initialize` through `Class#new`, which hands its
+  # arguments over packed; the restart re-reads that array
+  d = Dir.new(o)
+  begin
+    assert_equal Dir.entries(DirTest.sandbox).sort, d.entries.sort
+  ensure
+    d.close
+  end
 end
 
 assert('Dir.foreach') do
