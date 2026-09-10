@@ -457,9 +457,10 @@ struct mrb_state {
 #endif
 
 #if MRB_FSTRING_CACHE_MAX > 0
-  /* Where `String#-@` finds the string it answers with, when one is already
-     there. Nothing here keeps a string alive; see struct mrb_fstr_cache in
-     mruby/internal.h. NULL until the first `String#-@`. */
+  /* Where a frozen string is found again by the bytes it carries, for
+     `String#-@` and for a `String` key stored in a `Hash`. Nothing here keeps
+     a string alive; see struct mrb_fstr_cache in mruby/internal.h. NULL until
+     the first of those paths reaches it. */
   struct mrb_fstr_cache *fstr_cache;
 #endif
 

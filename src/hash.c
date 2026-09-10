@@ -1079,9 +1079,16 @@ ht_rehash(mrb_state *mrb, struct RHash *h)
 }
 
 /*
- * The key an entry is given: an unfrozen `String` is stored as a frozen copy,
- * so that changing the caller's string cannot move an entry away from the
- * place its hash code put it.
+ * The key an entry is given: an unfrozen `String` is stored as a frozen string
+ * with the same bytes, so that changing the caller's string cannot move an
+ * entry away from the place its hash code put it.
+ *
+ * That frozen string comes from the frozen string cache (mrb_str_fstring() in
+ * string.c), so tables keyed by the same words hold one string between them
+ * rather than one apiece, and a key stored a second time is stored without
+ * copying anything at all. The keys of a table read out of a message or a
+ * configuration file are what this is for: they repeat, and every repetition
+ * used to cost a string.
  *
  * This is asked for where an entry is inserted, not where a key is looked up
  * or an entry overwritten. A store to a key the table already has keeps the
@@ -1091,8 +1098,7 @@ static mrb_value
 h_key_for(mrb_state *mrb, struct RHash *h, mrb_value key)
 {
   if (mrb_string_p(key) && !mrb_frozen_p(mrb_str_ptr(key))) {
-    key = mrb_str_dup(mrb, key);
-    mrb_str_ptr(key)->frozen = 1;
+    key = mrb_str_fstring(mrb, key);
     mrb_field_write_barrier_value(mrb, (struct RBasic*)h, key);
   }
   return key;

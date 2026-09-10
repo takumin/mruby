@@ -1671,3 +1671,28 @@ assert('the frozen string cache stops growing at its bound') do
   assert_operator GC.stat[:fstring_count], :<=, bound
   assert_equal 1200, live.size
 end
+
+# The frozen key a Hash stores comes from the same cache, which is why these
+# live beside the `String#-@` tests: `-@` is what the shared string is read
+# back with.
+assert('a Hash keys an entry with a string of the frozen string cache') do
+  skip unless GC.stat.key?(:fstring_count)
+  h = {}
+  h["a key of a hash"] = 1
+  key = h.keys[0]
+  assert_true key.frozen?
+  assert_true key.equal?(-"a key of a hash")
+
+  # Two tables keyed by the same word hold one string between them.
+  g = { "a key of a hash" => 2 }
+  assert_true g.keys[0].equal?(key)
+end
+
+assert('a Hash keeps its string key out of the caller\'s reach') do
+  mutable = "a key still being written"
+  h = { mutable => 1 }
+  assert_false h.keys[0].equal?(mutable)
+  mutable << " and now written further"
+  assert_equal 1, h["a key still being written"]
+  assert_nil h[mutable]
+end

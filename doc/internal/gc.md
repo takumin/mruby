@@ -307,6 +307,17 @@ that ask about the same bytes, and the table it answers out of
 `src/string.c`) is the collector's one **weak** client: a slot naming
 a string is not a reason to keep that string alive.
 
+Two paths fill it, both of them through `src/string.c`:
+
+| Path                              | Entry point                             | What it does                                                               |
+| --------------------------------- | --------------------------------------- | -------------------------------------------------------------------------- |
+| `String#-@`                       | `mrb_str_fstring()`                     | answers with the string the cache holds for those bytes, or puts one there |
+| a `String` key stored in a `Hash` | `mrb_str_fstring()`, from `h_key_for()` | stores the shared frozen string as the key rather than a private copy      |
+
+Either is free to answer with a string other than the one it was
+handed, since what they promise is a frozen string with those bytes and
+nothing about which one.
+
 Three rules make that safe, and all three live in the collector:
 
 1. **Nothing marks a slot.** `gc_mark_children()` never walks the

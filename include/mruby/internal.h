@@ -390,7 +390,9 @@ void mrb_gc_free_str(mrb_state*, struct RString*);
 uint32_t mrb_str_hash(mrb_state *mrb, mrb_value str);
 
 #if MRB_FSTRING_CACHE_MAX > 0
-/* The cache mrb_str_fstring() answers `String#-@` out of.
+/* The cache of frozen strings: what `String#-@` answers out of, and where a
+ * `String` key stored in a `Hash` comes from. mrb_str_fstring() in
+ * src/string.c is the way in.
  *
  * It is a table of slots, each holding a frozen string or nothing, addressed
  * by the hash of the bytes. A hash names a row of MRB_FSTR_CACHE_WAYS

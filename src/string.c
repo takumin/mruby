@@ -1864,6 +1864,10 @@ mrb_str_dup_frozen(mrb_state *mrb, mrb_value str)
  * that finds the bytes answers with the string already standing for them, and
  * only a lookup that finds nothing puts a string there.
  *
+ * One more path reaches it: a `String` key stored in a `Hash` is taken from
+ * here rather than copied per table (h_key_for() in hash.c, through
+ * mrb_str_fstring()).
+ *
  * Two things keep it inside a bound that an embedded build can afford. It
  * holds pointers and no strings, so its whole cost is its slots, and the
  * count of those never passes MRB_FSTRING_CACHE_MAX; an insertion that finds
