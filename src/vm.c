@@ -3364,6 +3364,22 @@ const_missing_send_p(mrb_state *mrb, mrb_value mod)
   return TRUE;
 }
 
+/* Whether a block argument's `to_proc` is sent through the VM rather than
+   called from C.  A `to_proc` written in C runs in C either way, and one the
+   program declared private or protected keeps the nested call, which
+   dispatched it however it was declared. */
+static mrb_bool
+to_proc_send_p(mrb_state *mrb, mrb_value v)
+{
+  struct RClass *c = mrb_class(mrb, v);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(to_proc));
+
+  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_NOTIMPL_P(m)) return FALSE;
+  if (MRB_METHOD_VISIBILITY(m) != 0) return FALSE;
+  if (MRB_METHOD_FUNC_P(m)) return FALSE;
+  return !MRB_PROC_CFUNC_P(MRB_METHOD_PROC(m));
+}
+
 /* Whether OP_STRCAT sends `to_s` through the VM rather than calling it from
    C.  A `to_s` written in C runs in C either way, so the send is worth
    building only for one the program wrote, and one it declared private or
@@ -4221,10 +4237,10 @@ RETRY_TRY_BLOCK:
     }
     goto L_SENDB;
 
-    CASE(OP_SSENDB, BBB) {
+    CASE_PC(OP_SSENDB, BBB) {
       regs[a] = regs[0];
     }
-    goto L_SENDB;
+    goto L_SENDB_BLK;
 
     CASE(OP_SEND, BBB)
     goto L_SENDB;
@@ -4240,7 +4256,51 @@ RETRY_TRY_BLOCK:
     SET_NIL_VALUE(regs[a+2]);
     goto L_SENDB_SYM;
 
-    CASE(OP_SENDB, BBB)
+    CASE_PC(OP_SENDB, BBB)
+    L_SENDB_BLK:
+    mid = irep->syms[b];
+    /* A block argument that is no Proc is converted by sending `to_proc`,
+       which the VM runs rather than a nested mrb_vm_exec.  The instruction
+       runs again when the send answers, and the send is built above the
+       argument rather than over it, so the second run still holds what was
+       sent to, which is what the TypeError names when a `to_proc` answers
+       with something other than a Proc.  An undef one register above tells
+       the two runs apart, and sits below the frame the send pushes.
+
+       Only the two instructions that can carry a written block arrive here,
+       so an ordinary call pays nothing, and they arrive before the keyword
+       arguments are packed, so a call carrying them is not packed twice.  A
+       call whose registers an older compiler did not reserve takes the nested
+       call, and so does one whose `to_proc` to_proc_send_p() leaves in C. */
+    {
+      mrb_int b0 = (c < CALL_MAXARGS) ? a+c+1 : a+mrb_bidx(c&0xf, (c>>4)&0xf);
+      mrb_callinfo *bci = mrb->c->ci;
+
+      if (!mrb_proc_p(bci->stack[b0]) && b0+3 < irep->nregs) {
+        if (mrb_undef_p(bci->stack[b0+1])) {
+          mrb_value ans = bci->stack[b0+2];
+          SET_NIL_VALUE(bci->stack[b0+1]);
+          SET_NIL_VALUE(bci->stack[b0+2]);
+          if (!mrb_proc_p(ans)) {
+            mrb_raisef(mrb, E_TYPE_ERROR, "%v cannot be converted to Proc by #%n",
+                       bci->stack[b0], MRB_SYM(to_proc));
+          }
+          bci->stack[b0] = ans;
+        }
+        else if (!mrb_nil_p(bci->stack[b0]) && to_proc_send_p(mrb, bci->stack[b0])) {
+          bci->stack[b0+1] = mrb_undef_value();
+          bci->stack[b0+2] = bci->stack[b0];
+          SET_NIL_VALUE(bci->stack[b0+3]);
+          bci->pc = pc0;
+          a = (uint32_t)(b0+2);
+          c = 0;
+          mid = MRB_SYM(to_proc);
+          goto L_SENDB_SYM;
+        }
+      }
+    }
+    goto L_SENDB_SYM;
+
     L_SENDB:
     mid = irep->syms[b];
     L_SENDB_SYM:
