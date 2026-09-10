@@ -132,6 +132,17 @@ print_args(uint16_t i, FILE *out)
 
 #define CASE(insn,ops) case insn: FETCH_ ## ops (); L_ ## insn
 
+/* The method `OP_STRFRZ` stands in for, as its `c` operand names it. */
+static const char*
+strfrz_guard_name(uint32_t guard)
+{
+  switch (guard) {
+  case MRB_STRFRZ_FREEZE: return "freeze";
+  case MRB_STRFRZ_UMINUS: return "-@";
+  default:                return "literal";
+  }
+}
+
 static void
 codedump(mrc_ccontext *c, const mrc_irep *irep, FILE *out)
 {
@@ -587,6 +598,14 @@ codedump(mrc_ccontext *c, const mrc_irep *irep, FILE *out)
     CASE(OP_STRING, BB):
       mrc_assert((irep->pool[b].tt&IREP_TT_NFLAG)==0);
       fprintf(out, "STRING\tR%d\tL[%d]", a, b);
+      if (irep->pool[b].u.str[0]) {
+        fprintf(out, "\t; %s", irep->pool[b].u.str);
+      }
+      print_lv_a(c, irep, a, out);
+      break;
+    CASE(OP_STRFRZ, BBB):
+      mrc_assert((irep->pool[b].tt&IREP_TT_NFLAG)==0);
+      fprintf(out, "STRFRZ\tR%d\tL[%d]\t%s", a, b, strfrz_guard_name(cc));
       if (irep->pool[b].u.str[0]) {
         fprintf(out, "\t; %s", irep->pool[b].u.str);
       }

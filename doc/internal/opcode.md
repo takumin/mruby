@@ -118,32 +118,33 @@ See also `OP_EXT1`, `OP_EXT2` and `OP_EXT3`.
 |  90 | `OP_INTERN`      | `B`          | `R[a] = intern(R[a])`                                             |
 |  91 | `OP_SYMBOL`      | `BB`         | `R[a] = intern(Pool[b])`                                          |
 |  92 | `OP_STRING`      | `BB`         | `R[a] = str_dup(Pool[b])`                                         |
-|  93 | `OP_STRCAT`      | `B`          | `str_cat(R[a],R[a+1])`                                            |
-|  94 | `OP_HASH`        | `BB`         | `R[a] = hash_new(R[a],R[a+1]..R[a+b*2-1])`                        |
-|  95 | `OP_HASHADD`     | `BB`         | `hash_push(R[a],R[a+1]..R[a+b*2])`                                |
-|  96 | `OP_HASHCAT`     | `B`          | `R[a] = hash_cat(R[a],R[a+1])`                                    |
-|  97 | `OP_LAMBDA`      | `BB`         | `R[a] = lambda(Irep[b],L_LAMBDA)`                                 |
-|  98 | `OP_BLOCK`       | `BB`         | `R[a] = lambda(Irep[b],L_BLOCK)`                                  |
-|  99 | `OP_METHOD`      | `BB`         | `R[a] = lambda(Irep[b],L_METHOD)`                                 |
-| 100 | `OP_RANGE_INC`   | `B`          | `R[a] = range_new(R[a],R[a+1],FALSE)`                             |
-| 101 | `OP_RANGE_EXC`   | `B`          | `R[a] = range_new(R[a],R[a+1],TRUE)`                              |
-| 102 | `OP_OCLASS`      | `B`          | `R[a] = ::Object`                                                 |
-| 103 | `OP_CLASS`       | `BB`         | `R[a] = newclass(R[a],Syms[b],R[a+1])`                            |
-| 104 | `OP_MODULE`      | `BB`         | `R[a] = newmodule(R[a],Syms[b])`                                  |
-| 105 | `OP_EXEC`        | `BB`         | `R[a] = blockexec(R[a],Irep[b])`                                  |
-| 106 | `OP_DEF`         | `BB`         | `R[a].newmethod(Syms[b],R[a+1]); R[a] = Syms[b]`                  |
-| 107 | `OP_TDEF`        | `BBB`        | `target_class.newmethod(Syms[b],Irep[c]); R[a] = Syms[b]`         |
-| 108 | `OP_SDEF`        | `BBB`        | `R[a].singleton_class.newmethod(Syms[b],Irep[c]); R[a] = Syms[b]` |
-| 109 | `OP_ALIAS`       | `BB`         | `alias_method(target_class,Syms[a],Syms[b])`                      |
-| 110 | `OP_UNDEF`       | `B`          | `undef_method(target_class,Syms[a])`                              |
-| 111 | `OP_SCLASS`      | `B`          | `R[a] = R[a].singleton_class`                                     |
-| 112 | `OP_TCLASS`      | `B`          | `R[a] = target_class`                                             |
-| 113 | `OP_DEBUG`       | `BBB`        | `print a,b,c`                                                     |
-| 114 | `OP_ERR`         | `B`          | `raise(LocalJumpError, Pool[a])`                                  |
-| 115 | `OP_EXT1`        | `Z`          | make 1st operand (a) 16 bit                                       |
-| 116 | `OP_EXT2`        | `Z`          | make 2nd operand (b) 16 bit                                       |
-| 117 | `OP_EXT3`        | `Z`          | make 1st and 2nd operands 16 bit                                  |
-| 118 | `OP_STOP`        | `Z`          | stop VM                                                           |
+|  93 | `OP_STRFRZ`      | `BBB`        | `R[a] = frozen_str(Pool[b])`; `c`: guarded method                 |
+|  94 | `OP_STRCAT`      | `B`          | `str_cat(R[a],R[a+1])`                                            |
+|  95 | `OP_HASH`        | `BB`         | `R[a] = hash_new(R[a],R[a+1]..R[a+b*2-1])`                        |
+|  96 | `OP_HASHADD`     | `BB`         | `hash_push(R[a],R[a+1]..R[a+b*2])`                                |
+|  97 | `OP_HASHCAT`     | `B`          | `R[a] = hash_cat(R[a],R[a+1])`                                    |
+|  98 | `OP_LAMBDA`      | `BB`         | `R[a] = lambda(Irep[b],L_LAMBDA)`                                 |
+|  99 | `OP_BLOCK`       | `BB`         | `R[a] = lambda(Irep[b],L_BLOCK)`                                  |
+| 100 | `OP_METHOD`      | `BB`         | `R[a] = lambda(Irep[b],L_METHOD)`                                 |
+| 101 | `OP_RANGE_INC`   | `B`          | `R[a] = range_new(R[a],R[a+1],FALSE)`                             |
+| 102 | `OP_RANGE_EXC`   | `B`          | `R[a] = range_new(R[a],R[a+1],TRUE)`                              |
+| 103 | `OP_OCLASS`      | `B`          | `R[a] = ::Object`                                                 |
+| 104 | `OP_CLASS`       | `BB`         | `R[a] = newclass(R[a],Syms[b],R[a+1])`                            |
+| 105 | `OP_MODULE`      | `BB`         | `R[a] = newmodule(R[a],Syms[b])`                                  |
+| 106 | `OP_EXEC`        | `BB`         | `R[a] = blockexec(R[a],Irep[b])`                                  |
+| 107 | `OP_DEF`         | `BB`         | `R[a].newmethod(Syms[b],R[a+1]); R[a] = Syms[b]`                  |
+| 108 | `OP_TDEF`        | `BBB`        | `target_class.newmethod(Syms[b],Irep[c]); R[a] = Syms[b]`         |
+| 109 | `OP_SDEF`        | `BBB`        | `R[a].singleton_class.newmethod(Syms[b],Irep[c]); R[a] = Syms[b]` |
+| 110 | `OP_ALIAS`       | `BB`         | `alias_method(target_class,Syms[a],Syms[b])`                      |
+| 111 | `OP_UNDEF`       | `B`          | `undef_method(target_class,Syms[a])`                              |
+| 112 | `OP_SCLASS`      | `B`          | `R[a] = R[a].singleton_class`                                     |
+| 113 | `OP_TCLASS`      | `B`          | `R[a] = target_class`                                             |
+| 114 | `OP_DEBUG`       | `BBB`        | `print a,b,c`                                                     |
+| 115 | `OP_ERR`         | `B`          | `raise(LocalJumpError, Pool[a])`                                  |
+| 116 | `OP_EXT1`        | `Z`          | make 1st operand (a) 16 bit                                       |
+| 117 | `OP_EXT2`        | `Z`          | make 2nd operand (b) 16 bit                                       |
+| 118 | `OP_EXT3`        | `Z`          | make 1st and 2nd operands 16 bit                                  |
+| 119 | `OP_STOP`        | `Z`          | stop VM                                                           |
 
 ## Notes
 
@@ -204,3 +205,35 @@ These instructions optimize `[]` and `[]=` access for Array, Hash, and String.
 - Index type is not supported (e.g., non-integer for Array)
 
 This allows subclasses to override `[]`/`[]=` while base classes remain optimized.
+
+### OP_STRFRZ
+
+Answers a frozen string literal without allocating one. The literals a program
+freezes are written once and read many times, so one string stands for every
+occurrence of the same text anywhere in the program: the first execution makes
+it, and every later one is handed the same object. `mrb_state` holds them in a
+table keyed by the text (see `string.c`), pinned for the life of the state.
+
+Hashing the text on every execution would cost more than the allocation the
+instruction saves, so a direct-mapped cache of `(irep, pool index) -> string`
+sits in front of the table, as `OP_GETCONST` has one in front of constant
+lookup. `MRB_STRFRZ_CACHE_SIZE` sizes it (32 entries by default) and
+`MRB_NO_STRFRZ_CACHE` leaves it out, which costs speed and nothing else. An
+entry is dropped only with the irep it was made for.
+
+Three ways of writing a frozen literal compile to it:
+
+- `"lit".freeze`
+- `-"lit"`
+- every string literal of a file carrying a `frozen_string_literal: true`
+  comment
+
+The `c` operand names the method the instruction stands in for, so that a
+program which replaces it is still sent the call: `MRB_STRFRZ_FREEZE` for
+`String#freeze`, `MRB_STRFRZ_UMINUS` for `String#-@`, and `MRB_STRFRZ_LITERAL`
+where the compiler froze the literal on its own and no method was written.
+While the named method is still the builtin -- which `mrb_state.idx_class`
+records, as it does for the index opcodes above -- the instruction answers with
+the shared string. Once it is not, the literal is made afresh and unfrozen, as
+it would have reached the replacement had the call been compiled as a send, and
+the send is performed.

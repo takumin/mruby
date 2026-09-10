@@ -3029,14 +3029,16 @@ mc_clear_by_id(mrb_state *mrb, mrb_sym id)
  * Guards for the inline index opcodes.
  *
  * `OP_GETIDX`, `OP_GETIDX0` and `OP_SETIDX` implement `[]` and `[]=` for an
- * Array, Hash or String receiver in C, without a method lookup, and `OP_ADD`
- * does the same for `+` on a String receiver.  They may only
- * do so while those classes still carry the builtin the opcode reimplements,
- * so each (class, operator) pair keeps a slot in `mrb->idx_class` that holds
- * the class while that is true and NULL once it is not.  The opcodes compare
- * the receiver's class against the slot instead of against the core class, so
- * a disarmed slot sends the operator like any other method and the check costs
- * nothing while nothing is redefined.
+ * Array, Hash or String receiver in C, without a method lookup, `OP_ADD` does
+ * the same for `+` on a String receiver, and `OP_STRFRZ` answers `freeze` and
+ * `-@` on a string literal with a shared frozen string.  They may only do so
+ * while those classes still carry the builtin the opcode reimplements, so each
+ * (class, operator) pair keeps a slot in `mrb->idx_class` that holds the class
+ * while that is true and NULL once it is not.  The index opcodes compare the
+ * receiver's class against the slot instead of against the core class, so a
+ * disarmed slot sends the operator like any other method and the check costs
+ * nothing while nothing is redefined; `OP_STRFRZ` has a literal for a receiver
+ * and reads only whether the slot is armed.
  *
  * Validity is the resolved method itself, not merely "was `[]` assigned to":
  * a slot is armed while `mid` resolves, from the core class, to exactly the
@@ -3059,8 +3061,13 @@ idx_op_class(mrb_state *mrb, int slot)
 static mrb_sym
 idx_op_mid(int slot)
 {
-  if (slot == MRB_IDX_OP_STR_ADD) return MRB_OPSYM(add);
-  return slot < MRB_IDX_OP_ARY_ASET ? MRB_OPSYM(aref) : MRB_OPSYM(aset);
+  switch (slot) {
+  case MRB_IDX_OP_STR_ADD:    return MRB_OPSYM(add);
+  case MRB_IDX_OP_STR_FREEZE: return MRB_SYM(freeze);
+  case MRB_IDX_OP_STR_UMINUS: return MRB_OPSYM(minus);
+  default:
+    return slot < MRB_IDX_OP_ARY_ASET ? MRB_OPSYM(aref) : MRB_OPSYM(aset);
+  }
 }
 
 static void

@@ -105,6 +105,7 @@ OPCODE(APOST,      BBB)      /* *R[a],R[a+1]..R[a+c] = R[a][b..] */
 OPCODE(INTERN,     B)        /* R[a] = intern(R[a]) */
 OPCODE(SYMBOL,     BB)       /* R[a] = intern(Pool[b]) */
 OPCODE(STRING,     BB)       /* R[a] = str_dup(Pool[b]) */
+OPCODE(STRFRZ,     BBB)      /* R[a] = frozen_str(Pool[b]); c: guarded method */
 OPCODE(STRCAT,     B)        /* str_cat(R[a],R[a+1]) */
 OPCODE(HASH,       BB)       /* R[a] = hash_new(R[a],R[a+1]..R[a+b*2-1]) */
 OPCODE(HASHADD,    BB)       /* hash_push(R[a],R[a+1]..R[a+b*2]) */

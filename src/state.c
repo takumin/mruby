@@ -167,6 +167,7 @@ mrb_irep_free(mrb_state *mrb, mrb_irep *irep)
   mrb_free(mrb, (void*)irep->lv);
   mrb_debug_info_free(mrb, irep->debug_info);
   mrb_const_cache_forget_irep(mrb, irep);
+  mrb_strfrz_cache_forget_irep(mrb, irep);
 #ifdef MRB_DEBUG
   memset(irep, -1, sizeof(*irep));
 #endif
@@ -199,6 +200,7 @@ mrb_close(mrb_state *mrb)
   mrb_free_shape(mrb);
   mrb_free_context(mrb, mrb->root_c);
   mrb_free_symtbl(mrb);
+  mrb_free_frozen_strings(mrb);
 
   /* free heap-allocated ROM method table wrappers */
   {

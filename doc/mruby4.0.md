@@ -147,6 +147,7 @@ New super-instructions that fuse common opcode sequences to reduce bytecode size
 - `OP_RETTRUE`/`OP_RETFALSE`: Single-byte instructions for `return true`/`return false` patterns ([0b15727](https://github.com/mruby/mruby/commit/0b15727))
 - `OP_MATCHERR`: Pattern matching error with conditional execution ([944168a](https://github.com/mruby/mruby/commit/944168a))
 - `OP_BLKCALL`: Direct block call for `yield`, bypassing method dispatch (13-17% faster) ([3aa2872](https://github.com/mruby/mruby/commit/3aa2872))
+- `OP_STRFRZ`: Frozen string literals (`"lit".freeze`, `-"lit"`, and every literal of a file carrying a `frozen_string_literal: true` comment) answered from a table of shared frozen strings, allocating nothing after the first execution
 
 Other optimizations:
 

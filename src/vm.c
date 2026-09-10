@@ -3704,6 +3704,13 @@ RETRY_TRY_BLOCK:
     SET_NIL_VALUE(regs[a+2]);
     goto L_SENDB_SYM;
 
+    L_SEND0_SYM:
+    c = 0;
+    /* push nil where a block would be; the frame carries the register because
+       the call this stands in for was compiled as a send */
+    SET_NIL_VALUE(regs[a+1]);
+    goto L_SENDB_SYM;
+
     CASE(OP_SENDB, BBB)
     L_SENDB:
     mid = irep->syms[b];
@@ -4598,6 +4605,51 @@ RETRY_TRY_BLOCK:
       }
       else {
         regs[a] = mrb_str_new(mrb, irep->pool[b].u.str, len);
+      }
+      mrb_gc_arena_restore(mrb, ai);
+      NEXT;
+    }
+
+    CASE(OP_STRFRZ, BBB) {
+      mrb_assert((irep->pool[b].tt&IREP_TT_NFLAG)==0);
+      if (mrb_unlikely(c != MRB_STRFRZ_LITERAL)) {
+        /* `"lit".freeze` and `-"lit"` are the literal's answer only while the
+           method each stands for is still the builtin.  Once a program has
+           replaced it, the literal is made afresh and unfrozen -- what the
+           replacement would have been handed had the call been compiled as
+           one -- and the call is sent. */
+        enum mrb_idx_op_slot slot = (c == MRB_STRFRZ_FREEZE)
+          ? MRB_IDX_OP_STR_FREEZE : MRB_IDX_OP_STR_UMINUS;
+        if (mrb_unlikely(mrb->idx_class[slot] == NULL)) {
+          mrb_int len = irep->pool[b].tt >> 2;
+          if (irep->pool[b].tt & IREP_TT_SFLAG) {
+            regs[a] = mrb_str_new_static(mrb, irep->pool[b].u.str, len);
+          }
+          else {
+            regs[a] = mrb_str_new(mrb, irep->pool[b].u.str, len);
+          }
+          mrb_gc_arena_restore(mrb, ai);
+          mid = (c == MRB_STRFRZ_FREEZE) ? MRB_SYM(freeze) : MRB_OPSYM(minus);
+          goto L_SEND0_SYM;
+        }
+      }
+#ifndef MRB_NO_STRFRZ_CACHE
+      uint32_t h = mrb_int_hash_func(mrb, ((intptr_t)irep) ^ b) & (MRB_STRFRZ_CACHE_SIZE-1);
+      struct mrb_strfrz_cache_entry *sc = &mrb->strfrz_cache[h];
+      if (sc->irep == irep && sc->idx == b) {
+        regs[a] = mrb_obj_value(sc->str);
+        NEXT;
+      }
+#endif
+      {
+        mrb_value str = mrb_str_frozen_literal(mrb, irep->pool[b].u.str,
+                                               (mrb_int)(irep->pool[b].tt >> 2));
+        regs[a] = str;
+#ifndef MRB_NO_STRFRZ_CACHE
+        sc->irep = irep;
+        sc->idx = b;
+        sc->str = mrb_basic_ptr(str);
+#endif
       }
       mrb_gc_arena_restore(mrb, ai);
       NEXT;

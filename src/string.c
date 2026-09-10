@@ -16,6 +16,7 @@
 #include <mruby/string.h>
 #include <mruby/numeric.h>
 #include <mruby/internal.h>
+#include <mruby/khash.h>
 #include <string.h>
 
 typedef struct mrb_shared_string {
@@ -27,6 +28,39 @@ typedef struct mrb_shared_string {
   mrb_int reserved;
   char *ptr;
 } mrb_shared_string;
+
+/*
+ * The frozen string literals `OP_STRFRZ` answers with.
+ *
+ * A literal the compiler froze -- `"lit".freeze`, `-"lit"`, or every literal
+ * of a file carrying a `frozen_string_literal: true` comment -- can never be
+ * written to, so one string stands for every occurrence of the same bytes
+ * anywhere in the program and the opcode allocates nothing after the first.
+ * This table is what makes that one string findable: the bytes of a literal to
+ * the frozen string carrying them.
+ *
+ * Keys point into the string they are stored with, whose bytes a frozen
+ * receiver keeps where they are for as long as it lives, and it lives as long
+ * as the state: the strings are pinned with mrb_gc_register() and never given
+ * back.  Nothing is lost to that.  What the table can be asked for is the text
+ * of the program being run, so what it holds is bounded by the literals
+ * written there.
+ */
+struct frzstr_key {
+  const char *ptr;
+  mrb_int len;
+};
+
+#define frzstr_hash_func(mrb,key) mrb_byte_hash((const uint8_t*)(key).ptr, (key).len)
+/* memcmp() takes no NULL, which the empty literal of an irep pool may be, so
+   equal lengths of zero answer before either pointer is read. */
+#define frzstr_hash_equal(mrb,a,b)                                      \
+  ((a).len == (b).len &&                                                \
+   ((a).len == 0 || memcmp((a).ptr, (b).ptr, (size_t)(a).len) == 0))
+
+KHASH_DECLARE(frzstr, struct frzstr_key, struct RString*, TRUE)
+KHASH_DEFINE(frzstr, struct frzstr_key, struct RString*, TRUE,
+             frzstr_hash_func, frzstr_hash_equal)
 
 const char mrb_digitmap[] = "0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -1842,6 +1876,69 @@ mrb_str_dup_frozen(mrb_state *mrb, mrb_value str)
     mrb_basic_ptr(str)->frozen = TRUE;
   }
   return str;
+}
+
+/* The frozen string standing for the `len` bytes at `p`, which `OP_STRFRZ`
+   answers a frozen literal with.  The first call for a given text makes the
+   string; every later one, wherever in the program the same text is written,
+   is answered with that same string.
+
+   The bytes are copied rather than shared with the literal they came from: the
+   table outlives every irep, and an irep read from a buffer its caller later
+   frees would leave both the string and the key it is found by pointing into
+   freed memory. */
+mrb_value
+mrb_str_frozen_literal(mrb_state *mrb, const char *p, mrb_int len)
+{
+  struct frzstr_key key = { p, len };
+
+  if (mrb->frozen_strings) {
+    khiter_t k = kh_get(frzstr, mrb, mrb->frozen_strings, key);
+    if (k != kh_end(mrb->frozen_strings)) {
+      return mrb_obj_value(kh_value(frzstr, mrb->frozen_strings, k));
+    }
+  }
+  else {
+    mrb->frozen_strings = kh_init(frzstr, mrb);
+  }
+
+  mrb_value str = mrb_str_new(mrb, p, len);
+  struct RString *s = mrb_str_ptr(str);
+  mrb_obj_freeze(mrb, str);
+  /* Pinned before the table is grown for it: growing allocates, allocating may
+     collect, and until the entry is in place nothing else holds the string. */
+  mrb_gc_register(mrb, str);
+  key.ptr = RSTR_PTR(s);
+  key.len = RSTR_LEN(s);
+  khiter_t k = kh_put(frzstr, mrb, mrb->frozen_strings, key);
+  kh_value(frzstr, mrb->frozen_strings, k) = s;
+  return str;
+}
+
+#ifndef MRB_NO_STRFRZ_CACHE
+/* Forget the entries of one irep before its memory is freed.  The cache is
+   keyed by the irep's address, so the next irep allocated at that address
+   would otherwise be answered with the strings of another scope's literals. */
+void
+mrb_strfrz_cache_forget_irep(mrb_state *mrb, const struct mrb_irep *irep)
+{
+  struct mrb_strfrz_cache_entry *sc = mrb->strfrz_cache;
+
+  for (int i=0; i<MRB_STRFRZ_CACHE_SIZE; sc++,i++) {
+    if (sc->irep == irep) sc->irep = NULL;
+  }
+}
+#endif
+
+/* Gives back the table itself.  The strings in it are the GC's to free, and
+   mrb_close() has already taken the heap down by the time this runs. */
+void
+mrb_free_frozen_strings(mrb_state *mrb)
+{
+  if (mrb->frozen_strings) {
+    kh_destroy(frzstr, mrb, mrb->frozen_strings);
+    mrb->frozen_strings = NULL;
+  }
 }
 
 enum str_convert_range {

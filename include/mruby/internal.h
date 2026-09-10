@@ -388,6 +388,13 @@ size_t mrb_gc_mark_range(mrb_state *mrb, struct RRange *r);
 
 void mrb_gc_free_str(mrb_state*, struct RString*);
 uint32_t mrb_str_hash(mrb_state *mrb, mrb_value str);
+mrb_value mrb_str_frozen_literal(mrb_state *mrb, const char *p, mrb_int len);
+void mrb_free_frozen_strings(mrb_state *mrb);
+#ifndef MRB_NO_STRFRZ_CACHE
+void mrb_strfrz_cache_forget_irep(mrb_state *mrb, const struct mrb_irep *irep);
+#else
+#define mrb_strfrz_cache_forget_irep(mrb, irep) ((void)0)
+#endif
 mrb_value mrb_str_dump(mrb_state *mrb, mrb_value str);
 mrb_value mrb_str_inspect(mrb_state *mrb, mrb_value str);
 mrb_bool mrb_str_beg_len(mrb_int str_len, mrb_int *begp, mrb_int *lenp);

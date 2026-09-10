@@ -2733,6 +2733,15 @@ mrb_mruby_string_ext_gem_init(mrb_state* mrb)
 
   MRB_MT_INIT_ROM(mrb, s, string_ext_rom_entries);
   mrb_define_method_id(mrb, mrb->integer_class, MRB_SYM(chr), int_chr, MRB_ARGS_NONE()|MRB_ARGS_OPT(1));
+
+  /* `OP_STRFRZ` answers `-"lit"` with the shared frozen literal, which it may
+     do only while `String#-@` is this `str_uminus()`.  Core initialization
+     armed the guard slots before this gem ran, and found no `-@` to arm this
+     one with, so the method it stands for is recorded here instead.  What the
+     opcode answers is what `str_uminus()` answers: a frozen string of the same
+     bytes, which the method is already documented to hand back pre-existing
+     where it can. */
+  mrb_idx_op_rearm(mrb, MRB_IDX_OP_STR_UMINUS);
 }
 
 void

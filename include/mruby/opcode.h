@@ -13,6 +13,18 @@ enum mrb_insn {
 #undef OPCODE
 };
 
+/* The `c` operand of `OP_STRFRZ`: the method whose redefinition the opcode has
+   to honor before it may answer with the shared frozen literal.  A literal
+   frozen by a `frozen_string_literal: true` comment is frozen by the compiler
+   and calls nothing, so it guards nothing; `"lit".freeze` and `-"lit"` each
+   stand in for a method that a program may replace, and name it here so the
+   opcode can send it instead when it has been. */
+enum mrb_strfrz_guard {
+  MRB_STRFRZ_LITERAL,           /* frozen_string_literal: true */
+  MRB_STRFRZ_FREEZE,            /* "lit".freeze */
+  MRB_STRFRZ_UMINUS             /* -"lit" */
+};
+
 /* backward compatibility aliases */
 #define OP_LOADT OP_LOADTRUE
 #define OP_LOADF OP_LOADFALSE
