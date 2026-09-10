@@ -310,6 +310,22 @@ end
 - Ignored if `MRB_NO_METHOD_CACHE` is defined.
 - Need to be the power of 2.
 
+`MRB_FROZEN_STRING_CACHE_SIZE`
+
+- Default value is `256`.
+- String literals frozen by `# frozen_string_literal: true` the table holds.
+- Need to be the power of 2.
+- Set to `0` to leave the table out. A literal is frozen where its file asked
+  for it either way, and is a new string on every run of it.
+- The table reaches `32 * this + 8` bytes on a 64-bit build and
+  `16 * this + 8` on a 32-bit one. It is taken on the first of those literals
+  and doubles as it fills, so a program pays for the literals it ran.
+
+| `MRB_FROZEN_STRING_CACHE_SIZE` |   1 |   4 |  16 |    64 |   256 |   1024 |
+| ------------------------------ | --: | --: | --: | ----: | ----: | -----: |
+| Bytes on a 64-bit build        |  40 | 136 | 520 | 2,056 | 8,200 | 32,776 |
+| Bytes on a 32-bit build        |  24 |  72 | 264 | 1,032 | 4,104 | 16,392 |
+
 `MRB_USE_ALL_SYMBOLS`
 
 - Make it available `Symbol.all_symbols` in `mrbgems/mruby-symbol-ext`

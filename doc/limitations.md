@@ -177,6 +177,36 @@ end
 carrying neither hook falls through rather than raising, both as CRuby
 does.
 
+## Frozen String Literals
+
+`# frozen_string_literal: true` freezes the string literals of the file that
+carries it, and `mrbc` reads the comment for each file it is given. Equal
+literals written in different methods are different objects, where CRuby
+answers one object for the whole program.
+
+#### CRuby
+
+```ruby
+# frozen_string_literal: true
+def a = "x"
+def b = "x"
+a.equal?(b)   # => true
+```
+
+#### mruby
+
+```ruby
+# frozen_string_literal: true
+def a = "x"
+def b = "x"
+a.equal?(b)   # => false
+```
+
+Which literals a program holds this way is not fixed:
+`MRB_FROZEN_STRING_CACHE_SIZE` sets how many, and a literal that first runs
+past that number answers a new frozen string each time. Where it is `0` every
+literal does.
+
 ## No Refinements
 
 Module refinements (`refine`, `using`) are not supported in mruby.
