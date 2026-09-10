@@ -2158,17 +2158,12 @@ fstr_lit_find(mrb_state *mrb, const char *p, mrb_int len, uint32_t enc, uint32_t
   return *fstr_lit_slot(l, p, len, enc, hash);
 }
 
-/* Intern one literal of a pool: the bytes stand in the irep, so the string
-   carries them where they are when they are the program's own read-only data
-   and copies them otherwise, in case the irep is freed before the state is.
-   A literal already interned is left as it stands. */
+/* Give a frozen string a slot among the literals, unless bytes like its own
+   already stand there. */
 static void
-fstr_lit_intern(mrb_state *mrb, const char *p, mrb_int len)
+fstr_lit_put(mrb_state *mrb, struct RString *s)
 {
-  mrb_value str = mrb_ro_data_p(p) ? mrb_str_new_static(mrb, p, len)
-                                   : mrb_str_new(mrb, p, len);
-  struct RString *s = mrb_str_ptr(str);
-  uint32_t hash = mrb_byte_hash((const uint8_t*)p, len);
+  uint32_t hash = mrb_byte_hash((const uint8_t*)RSTR_PTR(s), RSTR_LEN(s));
   struct mrb_fstr_literals *l = mrb->fstr_literals;
 
   if (l == NULL) {
@@ -2180,12 +2175,45 @@ fstr_lit_intern(mrb_state *mrb, const char *p, mrb_int len)
   }
   l = mrb->fstr_literals;
 
-  struct RString **slot = fstr_lit_slot(l, p, len, (uint32_t)RSTR_ENCODING(s), hash);
+  struct RString **slot = fstr_lit_slot(l, RSTR_PTR(s), RSTR_LEN(s),
+                                        (uint32_t)RSTR_ENCODING(s), hash);
   if (*slot) return;            /* the same bytes have been here before */
-  s->frozen = 1;
-  s->flags |= MRB_STR_FSTR;
   *slot = s;
   l->used++;
+}
+
+/* Intern one literal of a pool that arrives with no string of its own: the
+   bytes stand in the irep, so the string carries them where they are when
+   they are the program's own read-only data and copies them otherwise, in
+   case the irep is freed before the state is. */
+static void
+fstr_lit_intern(mrb_state *mrb, const char *p, mrb_int len)
+{
+  struct mrb_fstr_literals *l = mrb->fstr_literals;
+
+  if (l && *fstr_lit_slot(l, p, len, MRB_STR_ENCODING_DEFAULT,
+                          mrb_byte_hash((const uint8_t*)p, len))) {
+    return;                     /* the compiler wrote one for these bytes */
+  }
+
+  mrb_value str = mrb_ro_data_p(p) ? mrb_str_new_static(mrb, p, len)
+                                   : mrb_str_new(mrb, p, len);
+  struct RString *s = mrb_str_ptr(str);
+
+  s->frozen = 1;
+  s->flags |= MRB_STR_FSTR;
+  fstr_lit_put(mrb, s);
+}
+
+MRB_API void
+mrb_fstr_intern_static(mrb_state *mrb, const struct RString *const *strs, size_t len)
+{
+  /* The strings are the program's own and stand in its read-only data, so
+     there is nothing to make and nothing to free: what a state takes from
+     here is a pointer apiece. */
+  for (size_t i = 0; i < len; i++) {
+    fstr_lit_put(mrb, (struct RString*)strs[i]);
+  }
 }
 
 void
@@ -2214,6 +2242,15 @@ mrb_fstr_literals_free(mrb_state *mrb)
   mrb_free(mrb, mrb->fstr_literals);
   mrb->fstr_literals = NULL;
 }
+#else  /* the build interns no literals */
+
+MRB_API void
+mrb_fstr_intern_static(mrb_state *mrb, const struct RString *const *strs, size_t len)
+{
+  /* A build that interns no literals still links what the compiler's output
+     calls: it is handed the strings and leaves them where they stand. */
+}
+
 #endif  /* MRB_NO_FSTRING_LITERALS */
 
 
@@ -2289,6 +2326,13 @@ mrb_str_fstring(mrb_state *mrb, mrb_value str)
 }
 
 #else  /* the build carries no cache */
+
+MRB_API void
+mrb_fstr_intern_static(mrb_state *mrb, const struct RString *const *strs, size_t len)
+{
+  /* No cache, no literals to answer out of; the strings stay where the
+     compiler wrote them. */
+}
 
 MRB_API mrb_value
 mrb_str_fstring(mrb_state *mrb, mrb_value str)

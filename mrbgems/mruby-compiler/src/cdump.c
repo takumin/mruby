@@ -123,8 +123,110 @@ mrc_str_escape(mrc_ccontext *c, mrc_string *s)
 #define MRC_STRING_PTR(s) ((s)->ptr)
 #define MRC_STRING_LEN(s) ((s)->len)
 
+/* The distinct string literals of an irep tree. `mrbc` writes each of them
+   once, as bytes the pool entries point at rather than bytes repeated in
+   every entry, and gives each a frozen string of the read-only data
+   (MRB_ROM_STRING in mruby/string.h) for a state to answer with. */
+typedef struct cdump_lit {
+  const char *ptr;
+  int len;
+} cdump_lit;
+
+typedef struct cdump_literals {
+  cdump_lit *ary;
+  int len;
+  int capa;
+} cdump_literals;
+
+/* Where these bytes stand among the literals, adding them if this is the
+   first time they are met; -1 where there is no room for them. */
 static int
-cdump_pool(mrc_ccontext *c, const mrc_pool_value *p, FILE *fp)
+cdump_lit_index(mrc_ccontext *c, cdump_literals *literals, const char *ptr, int len)
+{
+  for (int i = 0; i < literals->len; i++) {
+    if (literals->ary[i].len == len && memcmp(literals->ary[i].ptr, ptr, (size_t)len) == 0) {
+      return i;
+    }
+  }
+  if (literals->len == literals->capa) {
+    int capa = literals->capa ? literals->capa * 2 : 16;
+    cdump_lit *ary = (cdump_lit*)mrc_realloc(c, literals->ary, sizeof(cdump_lit) * (size_t)capa);
+
+    if (ary == NULL) return -1;
+    literals->ary = ary;
+    literals->capa = capa;
+  }
+  literals->ary[literals->len].ptr = ptr;
+  literals->ary[literals->len].len = len;
+  return literals->len++;
+}
+
+/* Walk the tree before dumping any of it, so that the bytes are written
+   before the pool entries that point at them. */
+static int
+cdump_collect_literals(mrc_ccontext *c, const mrc_irep *irep, cdump_literals *literals)
+{
+  for (int i = 0; i < irep->plen; i++) {
+    const mrc_pool_value *p = &irep->pool[i];
+
+    if (p->tt & IREP_TT_NFLAG) continue;        /* a number, not a literal */
+    if (cdump_lit_index(c, literals, p->u.str, (int)(p->tt >> 2)) < 0) {
+      return MRC_DUMP_GENERAL_FAILURE;
+    }
+  }
+  for (int i = 0; i < irep->rlen; i++) {
+    int result = cdump_collect_literals(c, irep->reps[i], literals);
+
+    if (result != MRC_DUMP_OK) return result;
+  }
+  return MRC_DUMP_OK;
+}
+
+/* Whether the bytes are ASCII and nothing else, which is the one answer about
+   them that holds however they are read. A string of the read-only data
+   carries what is found here, since it cannot be written to later: anything
+   else is left unknown and read again whenever it is asked about. */
+static mrc_bool
+cdump_ascii_p(const cdump_lit *lit)
+{
+  for (int i = 0; i < lit->len; i++) {
+    if ((unsigned char)lit->ptr[i] >= 0x80) return FALSE;
+  }
+  return TRUE;
+}
+
+static void
+cdump_write_literals(const char *name, const cdump_literals *literals, FILE *fp)
+{
+  for (int i = 0; i < literals->len; i++) {
+    const cdump_lit *lit = &literals->ary[i];
+
+    fprintf(fp, "static const char %s_lit_%d[%d] = \"", name, i, lit->len + 1);
+    for (int j = 0; j < lit->len; j++) {
+      fprintf(fp, "\\x%02x", (int)lit->ptr[j] & 0xff);
+    }
+    fputs("\";\n", fp);
+  }
+  if (literals->len == 0) return;
+
+  /* The strings themselves, and the table a state takes them from. A build
+     that interns no literals is left with neither. */
+  fputs("#if MRB_FSTRING_LITERALS_P\n", fp);
+  for (int i = 0; i < literals->len; i++) {
+    fprintf(fp, "static const struct RString %s_fstr_%d = MRB_ROM_STRING(%s_lit_%d, %d, %s);\n",
+            name, i, name, i, literals->ary[i].len,
+            cdump_ascii_p(&literals->ary[i]) ? "MRB_STR_CODERANGE_7BIT"
+                                             : "MRB_STR_CODERANGE_UNKNOWN");
+  }
+  fprintf(fp, "static const struct RString *const %s_fstrs[%d] = {\n", name, literals->len);
+  for (int i = 0; i < literals->len; i++) {
+    fprintf(fp, "  &%s_fstr_%d,\n", name, i);
+  }
+  fputs("};\n#endif\n", fp);
+}
+
+static int
+cdump_pool(mrc_ccontext *c, const mrc_pool_value *p, const char *name, cdump_literals *literals, FILE *fp)
 {
   if (p->tt & IREP_TT_NFLAG) {  /* number */
     switch (p->tt) {
@@ -160,13 +262,13 @@ cdump_pool(mrc_ccontext *c, const mrc_pool_value *p, FILE *fp)
     }
   }
   else {                        /* string */
-    int i, len = p->tt>>2;
-    const char *s = p->u.str;
-    fprintf(fp, "{IREP_TT_STR|(%d<<2), {\"", len);
-    for (i=0; i<len; i++) {
-      fprintf(fp, "\\x%02x", (int)s[i]&0xff);
-    }
-    fputs("\"}},\n", fp);
+    int len = p->tt>>2;
+    int idx = cdump_lit_index(c, literals, p->u.str, len);
+
+    if (idx < 0) return MRC_DUMP_GENERAL_FAILURE;
+    /* Static, since the bytes are the program's own and outlive every string
+       made of them: a literal is read where it stands rather than copied. */
+    fprintf(fp, "{IREP_TT_SSTR|(%d<<2), {%s_lit_%d}},\n", len, name, idx);
   }
   return MRC_DUMP_OK;
 }
@@ -456,7 +558,7 @@ cdump_debug(mrc_ccontext *c, const char *name, int n, mrc_irep_debug_info *info,
 }
 
 static int
-cdump_irep_struct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE *fp, const char *name, int n, mrc_string *init_syms_code, int *mp)
+cdump_irep_struct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE *fp, const char *name, int n, mrc_string *init_syms_code, int *mp, cdump_literals *literals)
 {
   int i, len;
   int max = *mp;
@@ -466,7 +568,7 @@ cdump_irep_struct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE *fp
   if (0 < irep->rlen) {
     for (i=0,len=irep->rlen; i<len; i++) {
       *mp += len;
-      if (cdump_irep_struct(c, irep->reps[i], flags, fp, name, max+i, init_syms_code, mp) != MRC_DUMP_OK)
+      if (cdump_irep_struct(c, irep->reps[i], flags, fp, name, max+i, init_syms_code, mp, literals) != MRC_DUMP_OK)
         return MRC_DUMP_INVALID_ARGUMENT;
     }
     fprintf(fp,   "static const mrb_irep *%s_reps_%d[%d] = {\n", name, n, len);
@@ -480,7 +582,7 @@ cdump_irep_struct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE *fp
     len=irep->plen;
     fprintf(fp,   "static const mrb_irep_pool %s_pool_%d[%d] = {\n", name, n, len);
     for (i=0; i<len; i++) {
-      if (cdump_pool(c, &irep->pool[i], fp) != MRC_DUMP_OK)
+      if (cdump_pool(c, &irep->pool[i], name, literals, fp) != MRC_DUMP_OK)
         return MRC_DUMP_INVALID_ARGUMENT;
     }
     fputs("};\n", fp);
@@ -559,6 +661,7 @@ mrc_dump_irep_cstruct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE
                   "#include <mruby/debug.h>\n"
                   "#include <mruby/proc.h>\n"
                   "#include <mruby/presym.h>\n"
+                  "#include <mruby/string.h>\n"
                   "\n") < 0) {
     return MRC_DUMP_WRITE_FAULT;
   }
@@ -566,10 +669,25 @@ mrc_dump_irep_cstruct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE
   fputs("#define mrb_DEFINE_SYMS_VAR(name, len, syms, qualifier) \\\n", fp);
   fputs("  static qualifier mrb_sym name[len] = mrb_BRACED syms\n", fp);
   fputs("\n", fp);
+
+  /* The literals first: the pool entries below point at their bytes, and the
+     frozen strings written beside them are what the state answers with. */
+  cdump_literals literals = { NULL, 0, 0 };
+  int n = cdump_collect_literals(c, irep, &literals);
+  if (n != MRC_DUMP_OK) {
+    mrc_free(c, literals.ary);
+    return n;
+  }
+  cdump_write_literals(initname, &literals, fp);
+
   mrc_string *init_syms_code = mrc_str_new_capa(c, 1);
   int max = 1;
-  int n = cdump_irep_struct(c, irep, flags, fp, initname, 0, init_syms_code, &max);
-  if (n != MRC_DUMP_OK) return n;
+  n = cdump_irep_struct(c, irep, flags, fp, initname, 0, init_syms_code, &max, &literals);
+  if (n != MRC_DUMP_OK) {
+    mrc_free(c, literals.ary);
+    mrc_str_free(c, init_syms_code);
+    return n;
+  }
   fprintf(fp,
           "%s\n"
           "const struct RProc %s[] = {{\n",
@@ -583,8 +701,17 @@ mrc_dump_irep_cstruct(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, FILE
   fprintf(fp, "%s_init_syms(mrb_state *mrb)\n", initname);
   fputs("{\n", fp);
   fputs(MRC_STRING_PTR(init_syms_code), fp);
+  if (literals.len > 0) {
+    /* Where the state comes to answer with the strings above. It is handed
+       them before the code they belong to runs, so that the first ask after
+       the bytes of a literal is answered with the literal. */
+    fputs("#if MRB_FSTRING_LITERALS_P\n", fp);
+    fprintf(fp, "  mrb_fstr_intern_static(mrb, %s_fstrs, %d);\n", initname, literals.len);
+    fputs("#endif\n", fp);
+  }
   fputs("}\n", fp);
   mrc_str_free(c, init_syms_code);
+  mrc_free(c, literals.ary);
   return MRC_DUMP_OK;
 }
 #endif /* MRC_NO_STDIO */

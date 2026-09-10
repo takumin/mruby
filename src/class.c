@@ -3900,6 +3900,20 @@ mrb_obj_class(mrb_state *mrb, mrb_value obj)
   return mrb_class_real(mrb_class(mrb, obj));
 }
 
+/* What mrb_class() answers for an object of the read-only data: a frozen
+   string the compiler wrote into the binary is a String, a proc it wrote
+   there is a Proc, and nothing else is written there yet. The class cannot
+   stand in the object, since the object is older than the state. */
+MRB_API struct RClass*
+mrb_rom_obj_class(mrb_state *mrb, mrb_value v)
+{
+  switch (mrb_type(v)) {
+  case MRB_TT_STRING: return mrb->string_class;
+  case MRB_TT_PROC:   return mrb->proc_class;
+  default:            return mrb->object_class;
+  }
+}
+
 /*
  * Defines an alias for an existing method within a class or module `c`.
  * The new method `a` will be an alias of the old method `b`.

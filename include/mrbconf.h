@@ -207,9 +207,12 @@
    strings are held rather than cached -- a weak slot would let go of a
    literal the program is not holding -- so the cost is one string to a
    distinct literal, over the life of the state, and a build that would
-   rather answer with whichever string asked first says so here. What a
-   literal costs is its header alone where the bytes are the program's own
-   read-only data, which is where compiled-in code stands. */
+   rather answer with whichever string asked first says so here.
+
+   For code dumped as C, which is where compiled-in code stands, that string
+   is written into the read-only data beside the bytes and a state pays a
+   pointer for it; for code that arrives as a binary it is made as the code
+   is read. */
 /* #define MRB_NO_FSTRING_LITERALS */
 
 /* obsolete configurations */

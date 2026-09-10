@@ -1615,6 +1615,31 @@ assert('String#-@ and a frozen literal answer alike') do
   assert_true (-"asked for both ways").equal?("asked for both ways".freeze)
 end
 
+assert('a string of the read-only data answers as any other frozen string') do
+  s = __fstr_readonly_sample
+  assert_true __fstr_readonly?(s)
+  assert_equal String, s.class
+  assert_true s.frozen?
+  assert_true s.end_with?(" read-only")
+  # Reading the bytes of such a string cannot write back what it finds, which
+  # is what inspect and the character walks below ask for.
+  assert_include s.inspect, "read-only"
+  assert_operator s.length, :<=, s.bytesize
+  assert_equal s, s.dup
+  assert_equal s.bytesize, (-s).bytesize
+  assert_raise(FrozenError) { s << "x" }
+end
+
+assert('a literal of compiled-in code stands in the read-only data') do
+  skip unless GC.stat.key?(:fstring_literal_count)
+  # mrblib is dumped as C and built into the binary, so `mrbc` writes its
+  # literals into the read-only data and a state answers with them where they
+  # stand. This one is spelled in mrblib/enum.rb.
+  assert_true __fstr_readonly?(-"too many arguments")
+  # What the program builds for itself stands in the heap, as it must.
+  assert_false __fstr_readonly?(-("built at " + "run time"))
+end
+
 assert('String#-@ answers with the literal the source carries') do
   skip unless GC.stat.key?(:fstring_literal_count)
   own = "spelled out in this file as well".dup.freeze

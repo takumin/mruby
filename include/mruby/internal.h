@@ -7,6 +7,10 @@
 #ifndef MRUBY_INTERNAL_H
 #define MRUBY_INTERNAL_H
 
+/* For MRB_FSTRING_LITERALS_P, which the declarations below are written
+   against and which the C the compiler dumps asks for too. */
+#include <mruby/string.h>
+
 #ifdef MRUBY_ARRAY_H
 void mrb_ary_decref(mrb_state*, mrb_shared_array*);
 mrb_value mrb_ary_subseq(mrb_state *mrb, mrb_value ary, mrb_int beg, mrb_int len);
@@ -340,9 +344,15 @@ size_t mrb_gc_mark_range(mrb_state *mrb, struct RRange *r);
    another encoding. What is written is one of the four either way, spelled
    outright or read back out of another string's field, so nothing is left of
    this at -O3. */
+/* A string of the program's own read-only data is left as it stands: what
+   reading its bytes found cannot be written back to it, since the memory it
+   stands in may be read-only in earnest. What the compiler found when it
+   wrote the string is what such a string carries (MRB_ROM_STRING in
+   mruby/string.h), and reading it again costs the walk over the bytes. */
 # define RSTR_CODERANGE_SET(s, cr) \
-  ((s)->flags = ((s)->flags & ~MRB_STR_CODERANGE_MASK) | \
-                (((cr) & ((1 << MRB_STR_CODERANGE_BITS) - 1)) << MRB_STR_CODERANGE_SHIFT))
+  ((void)(RSTR_RO_P(s) ? (void)0 : \
+    (void)((s)->flags = ((s)->flags & ~MRB_STR_CODERANGE_MASK) | \
+                        (((cr) & ((1 << MRB_STR_CODERANGE_BITS) - 1)) << MRB_STR_CODERANGE_SHIFT))))
 #else
 /* A build that indexes by byte hands every byte back as a character and asks
    the bytes nothing, so every string in it stands where 7BIT stands and there
@@ -439,14 +449,13 @@ struct mrb_fstr_literals {
 
 void mrb_fstr_literals_free(mrb_state *mrb);
 void mrb_fstr_intern_irep(mrb_state *mrb, const struct mrb_irep *irep);
-#define MRB_FSTRING_LITERALS_P 1
 #endif
 #endif
 
 /* A build with no literals to intern -- either of the two knobs turns them
-   off -- reads the walk over an irep's pool as nothing at all. */
-#ifndef MRB_FSTRING_LITERALS_P
-#define MRB_FSTRING_LITERALS_P 0
+   off (MRB_FSTRING_LITERALS_P in mruby/string.h) -- reads the walk over an
+   irep's pool as nothing at all. */
+#if !MRB_FSTRING_LITERALS_P
 #define mrb_fstr_intern_irep(mrb, irep) ((void)0)
 #endif
 

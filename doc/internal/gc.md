@@ -363,24 +363,41 @@ entries, which costs deduplication and nothing else. `GC.stat` reports
 ### The interned literals
 
 Beside the cache stands a table of the string literals of every irep
-that has been loaded (`struct mrb_fstr_literals`, filled by
-`mrb_fstr_intern_irep()` as `read_irep()` and `mrb_load_proc()` hand
-code over). `mrb_str_fstring()` reads it before the cache, so a program
-that asks about the bytes of a literal is answered with the literal,
-which is what CRuby answers with: its compiler interns every literal it
+that has been loaded (`struct mrb_fstr_literals` in `src/string.c`).
+`mrb_str_fstring()` reads it before the cache, so a program that asks
+about the bytes of a literal is answered with the literal, which is
+what CRuby answers with: its compiler interns every literal it
 compiles.
 
-That table is **strong**, and is the one place these two differ.
-`root_scan_phase()` marks every slot, nothing is ever dropped, and the
-strings stand until the state is closed. It has to be: a weak slot
-would let go of a literal as soon as the program stopped holding one,
-and the source would stop answering for bytes it plainly still spells.
-What it costs is one string to a distinct literal -- a header alone
-where the bytes are read-only data, which is where code compiled into
-the binary stands -- and `MRB_NO_FSTRING_LITERALS` builds it out for a
-target that would rather not pay it. `GC.stat[:fstring_literal_count]`
-says how many stand there; a default build interns about a hundred
-before a line of the program runs.
+That table is **strong**, and is the one place the two differ.
+`root_scan_phase()` marks every slot, nothing is ever dropped, and what
+stands there stands until the state is closed. It has to be: a weak
+slot would let go of a literal as soon as the program stopped holding
+one, and the source would stop answering for bytes it plainly still
+spells. `MRB_NO_FSTRING_LITERALS` builds the whole of it out for a
+target that would rather answer with whichever string asked first, and
+`GC.stat[:fstring_literal_count]` says how many literals stand there; a
+default build interns about a hundred before a line of the program
+runs.
+
+The strings themselves are the compiler's where it can be: `mrbc`
+writes one for every distinct literal of the code it dumps as C
+(`cdump_lits_write()` in `mrbgems/mruby-compiler/src/cdump.c`), as a
+`struct RString` of the program's own read-only data, and the generated
+init hands them over with `mrb_fstr_intern_static()`. Such a string is
+made of what a literal already costs: the bytes are the pool's, which
+the pool entry now points at rather than repeating, and the header
+stands beside them in the same read-only data. It is the collector's
+red, so nothing marks it and nothing sweeps it, and it carries no class
+pointer, since the state that holds the String class is younger than it
+is -- `mrb_class()` answers for that through `mrb_rom_obj_class()`. A
+state pays a pointer for each, and not a byte more.
+
+Code that arrives as a binary has no such strings written for it, so
+`mrb_fstr_intern_irep()` makes them as the irep is read (`read_irep()`,
+and `mrb_load_proc()` for code the compiler dumped without them). Those
+are ordinary strings of the heap, made once and held by the table; the
+bytes are still the irep's where the irep stands in read-only data.
 
 ## Triggering GC
 

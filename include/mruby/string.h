@@ -121,6 +121,10 @@ struct RStringEmbed {
 #define RSTR_CAPA(s) (RSTR_EMBED_P(s) ? RSTRING_EMBED_LEN_MAX : (s)->as.heap.aux.capa)
 
 #define RSTR_FSTR_P(s) ((s)->flags & MRB_STR_FSTR)
+/* Whether the string stands in the program's own read-only data, which is
+   where `mrbc` writes the literals of the code it dumps as C. Nothing may be
+   written to such a string, not even what reading its bytes has found. */
+#define RSTR_RO_P(s) ((s)->gc_color == MRB_GC_RED)
 #define RSTR_SHARED_P(s) ((s)->flags & MRB_STR_SHARED)
 #define RSTR_FSHARED_P(s) ((s)->flags & MRB_STR_FSHARED)
 #define RSTR_NOFREE_P(s) ((s)->flags & MRB_STR_NOFREE)
@@ -188,6 +192,46 @@ struct RStringEmbed {
 /* Writing either field is in mruby/internal.h. What is read back here is what
    the bytes were found to be; what is written there is a claim about them,
    which only what can make good on it should be spelling. */
+
+/* Whether this build answers with the string literals of loaded code: the
+   cache has to be there for them to stand among, and a build may say no to
+   the memory they cost with MRB_NO_FSTRING_LITERALS (mrbconf.h). Written so
+   that the C the compiler dumps can ask, since what it writes for them is
+   worth nothing to a build that answers no. */
+#if MRB_FSTRING_CACHE_MAX > 0 && !defined(MRB_NO_FSTRING_LITERALS)
+# define MRB_FSTRING_LITERALS_P 1
+#else
+# define MRB_FSTRING_LITERALS_P 0
+#endif
+
+/* A frozen string standing in the program's own read-only data, written
+   there by the compiler: `mrbc` gives one to every distinct string literal of
+   the code it dumps as C, and mrb_fstr_intern_static() below is how a state
+   comes to answer with them (cdump.c in mruby-compiler). The bytes are the
+   program's own too, so the string carries a pointer to them and owns
+   nothing; it is the collector's red, which is to say it is never swept; and
+   it carries no class pointer, since the state that holds the String class is
+   younger than it is (mrb_rom_obj_class() in class.c answers for that).
+
+   The flag that says it stands among the shared strings is set here rather
+   than when it is registered, since what stands in read-only memory cannot be
+   written to afterwards. The coderange is given here for the same reason: a
+   string that cannot be written to cannot remember what reading its bytes
+   found, so the compiler hands over what it found itself. */
+#define MRB_ROM_STRING(bytes, len, coderange)                           \
+  { NULL, MRB_TT_STRING, MRB_GC_RED, MRB_OBJ_IS_FROZEN,                 \
+    MRB_STR_NOFREE | MRB_STR_FSTR |                                     \
+      (MRB_STR_ENCODING_DEFAULT << MRB_STR_ENCODING_SHIFT) |            \
+      ((coderange) << MRB_STR_CODERANGE_SHIFT),                         \
+    {{ (mrb_ssize)(len), { 0 }, (char*)(bytes) }} }
+
+/**
+ * Hand a state the frozen strings the compiler wrote into the binary, so that
+ * asking after the bytes of a literal answers with the one standing there
+ * rather than with a string built for the ask. Nothing is allocated: what the
+ * state keeps is a pointer apiece.
+ */
+MRB_API void mrb_fstr_intern_static(mrb_state *mrb, const struct RString *const *strs, size_t len);
 
 /**
  * Returns a pointer from a Ruby string
