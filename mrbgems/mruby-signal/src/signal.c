@@ -46,7 +46,7 @@ signal_s_signame(mrb_state *mrb, mrb_value self)
   mrb_int signo;
   const char *name;
 
-  mrb_get_args(mrb, "i", &signo);
+  mrb_get_args(mrb, "i~", &signo);
   if (signo == SIGNAL_EXIT_NUMBER) {
     return mrb_str_new_lit(mrb, SIGNAL_EXIT_NAME);
   }

@@ -122,7 +122,7 @@ status_initialize(mrb_state *mrb, mrb_value self)
 {
   mrb_int pid, raw_status;
 
-  mrb_get_args(mrb, "ii", &pid, &raw_status);
+  mrb_get_args(mrb, "i~i~", &pid, &raw_status);
   status_set(mrb, self, pid, raw_status);
   return self;
 }

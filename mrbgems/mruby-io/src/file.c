@@ -91,7 +91,7 @@ mrb_file_s_umask(mrb_state *mrb, mrb_value klass)
 {
   mrb_int mask, omask;
 
-  if (mrb_get_args(mrb, "|i", &mask) == 0) {
+  if (mrb_get_args(mrb, "|i~", &mask) == 0) {
     omask = mrb_hal_io_umask(mrb, -1);
   }
   else {
@@ -199,7 +199,7 @@ mrb_file_dirname(mrb_state *mrb, mrb_value klass)
 {
   const char *path;
   mrb_int level = 1;
-  mrb_get_args(mrb, "z~|i", &path, &level);
+  mrb_get_args(mrb, "z~|i~", &path, &level);
 
   if (level < 0) {
     mrb_raisef(mrb, E_ARGUMENT_ERROR, "negative level: %i", level);
@@ -662,7 +662,7 @@ mrb_file_flock(mrb_state *mrb, mrb_value self)
 {
   mrb_int operation;
 
-  mrb_get_args(mrb, "i", &operation);
+  mrb_get_args(mrb, "i~", &operation);
   int fd = mrb_io_fileno(mrb, self);
 
   while (mrb_hal_io_flock(mrb, fd, (int)operation) == -1) {
@@ -779,7 +779,7 @@ mrb_file_s_chmod(mrb_state *mrb, mrb_value klass)
   const mrb_value *filenames;
   int ai = mrb_gc_arena_save(mrb);
 
-  mrb_get_args(mrb, "i*", &mode, &filenames, &argc);
+  mrb_get_args(mrb, "i~*", &mode, &filenames, &argc);
   for (int i = 0; i < argc; i++) {
     mrb_ensure_string_type(mrb, filenames[i]);
     const char *utf8_path = RSTRING_CSTR(mrb, filenames[i]);

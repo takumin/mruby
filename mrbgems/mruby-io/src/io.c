@@ -587,7 +587,7 @@ io_init(mrb_state *mrb, mrb_value io)
   if (mrb_block_given_p(mrb)) {
     mrb_warn(mrb, "File.new() does not take block; use File.open() instead");
   }
-  mrb_get_args(mrb, "i|oH~", &fd, &mode, &opt);
+  mrb_get_args(mrb, "i~|oH~", &fd, &mode, &opt);
   switch (fd) {
     case 0: /* STDIN_FILENO */
     case 1: /* STDOUT_FILENO */
@@ -737,7 +737,7 @@ io_s_sysclose(mrb_state *mrb, mrb_value klass)
 {
   mrb_int fd;
   mrb->c->ci->mid = 0;
-  mrb_get_args(mrb, "i", &fd);
+  mrb_get_args(mrb, "i~", &fd);
   if (mrb_hal_io_close(mrb, (int)fd) == -1) {
     mrb_sys_fail(mrb, "close");
   }
@@ -786,7 +786,7 @@ io_s_sysopen(mrb_state *mrb, mrb_value klass)
   mrb_value mode = mrb_nil_value();
   mrb_int perm = -1;
 
-  mrb_get_args(mrb, "S~|oi", &path, &mode, &perm);
+  mrb_get_args(mrb, "S~|oi~", &path, &mode, &perm);
   if (perm < 0) {
     perm = 0666;
   }
@@ -852,7 +852,7 @@ io_sysread(mrb_state *mrb, mrb_value io)
   mrb_value buf = mrb_nil_value();
   mrb_int maxlen;
 
-  mrb_get_args(mrb, "i|S~", &maxlen, &buf);
+  mrb_get_args(mrb, "i~|S~", &maxlen, &buf);
 
   buf = io_sysread_buf(mrb, buf, maxlen);
   if (maxlen == 0) return buf;
@@ -879,7 +879,7 @@ static void
 io_seek_args(mrb_state *mrb, mrb_int *offset, mrb_int *whence)
 {
   *whence = -1;
-  mrb_get_args(mrb, "i|i", offset, whence);
+  mrb_get_args(mrb, "i~|i~", offset, whence);
   if (*whence < 0) {
     *whence = MRB_IO_SEEK_SET;
   }
@@ -1803,7 +1803,7 @@ io_pread(mrb_state *mrb, mrb_value io)
   mrb_value off;
   mrb_int maxlen;
 
-  mrb_get_args(mrb, "io|S~!", &maxlen, &off, &buf);
+  mrb_get_args(mrb, "i~o|S~!", &maxlen, &off, &buf);
 
   off_t offset = (off_t)mrb_as_int(mrb, off);
   buf = io_sysread_buf(mrb, buf, maxlen);
@@ -2116,7 +2116,7 @@ io_gets(mrb_state *mrb, mrb_value io)
   struct mrb_io *fptr = io_get_read_fptr(mrb, io);
   struct mrb_io_buf *buf = fptr->buf;
 
-  mrb_get_args(mrb, "|o?i?", &rs, &rs_given, &limit, &limit_given);
+  mrb_get_args(mrb, "|o?i~?", &rs, &rs_given, &limit, &limit_given);
 
   if (limit_given == FALSE) {
     if (rs_given) {

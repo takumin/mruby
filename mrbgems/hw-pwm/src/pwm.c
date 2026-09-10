@@ -38,7 +38,7 @@ static mrb_value
 mrb_pwm_m_period_us(mrb_state *mrb, mrb_value self)
 {
   mrb_int us;
-  mrb_get_args(mrb, "i", &us);
+  mrb_get_args(mrb, "i~", &us);
   mrb_float freq = 1000000.0 / us;
   mrb_iv_set(mrb, self, MRB_IVSYM(frequency), mrb_float_value(mrb, freq));
   apply_freq_duty(mrb, self);
@@ -63,7 +63,7 @@ static mrb_value
 mrb_pwm_m_pulse_width_us(mrb_state *mrb, mrb_value self)
 {
   mrb_int pw;
-  mrb_get_args(mrb, "i", &pw);
+  mrb_get_args(mrb, "i~", &pw);
   mrb_float freq = mrb_as_float(mrb, mrb_iv_get(mrb, self, MRB_IVSYM(frequency)));
   mrb_float duty = (mrb_float)pw / 10000.0 * freq;
   if (duty < 0.0) duty = 0.0;

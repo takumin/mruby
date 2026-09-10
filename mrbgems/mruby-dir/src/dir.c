@@ -193,7 +193,7 @@ mrb_dir_mkdir(mrb_state *mrb, mrb_value klass)
   const char *path;
 
   mode = 0777;
-  mrb_get_args(mrb, "z~|i", &path, &mode);
+  mrb_get_args(mrb, "z~|i~", &path, &mode);
   if (mrb_hal_dir_mkdir(mrb, path, (int)mode) == -1) {
     mrb_sys_fail(mrb, path);
   }
@@ -397,7 +397,7 @@ mrb_dir_seek(mrb_state *mrb, mrb_value self)
   if (!mdir->handle) {
     mrb_raise(mrb, E_IO_ERROR, "closed directory");
   }
-  mrb_get_args(mrb, "i", &pos);
+  mrb_get_args(mrb, "i~", &pos);
   if (mrb_hal_dir_seek(mrb, mdir->handle, (long)pos) == -1) {
     mrb_sys_fail(mrb, "seekdir");
   }

@@ -729,7 +729,7 @@ time_gm(mrb_state *mrb, mrb_value self)
 {
   mrb_int ayear = 0, amonth = 1, aday = 1, ahour = 0, amin = 0, asec = 0, ausec = 0;
 
-  mrb_get_args(mrb, "i|iiiiii",
+  mrb_get_args(mrb, "i~|i~i~i~i~i~i~",
                 &ayear, &amonth, &aday, &ahour, &amin, &asec, &ausec);
   return time_wrap(mrb, mrb_class_ptr(self),
           time_mktime(mrb, ayear, amonth, aday, ahour, amin, asec, ausec, MRB_TIMEZONE_UTC));
@@ -755,7 +755,7 @@ time_local(mrb_state *mrb, mrb_value self)
 {
   mrb_int ayear = 0, amonth = 1, aday = 1, ahour = 0, amin = 0, asec = 0, ausec = 0;
 
-  mrb_get_args(mrb, "i|iiiiii",
+  mrb_get_args(mrb, "i~|i~i~i~i~i~i~",
                 &ayear, &amonth, &aday, &ahour, &amin, &asec, &ausec);
   return time_wrap(mrb, mrb_class_ptr(self),
           time_mktime(mrb, ayear, amonth, aday, ahour, amin, asec, ausec, MRB_TIMEZONE_LOCAL));
@@ -1214,7 +1214,7 @@ time_init(mrb_state *mrb, mrb_value self)
   mrb_int ayear = 0, amonth = 1, aday = 1, ahour = 0,
   amin = 0, asec = 0, ausec = 0;
 
-  mrb_int n = mrb_get_args(mrb, "|iiiiiii", /* year, month, day, hour, minute, second, microsecond (all optional) */
+  mrb_int n = mrb_get_args(mrb, "|i~i~i~i~i~i~i~", /* year, month, day, hour, minute, second, microsecond (all optional) */
                            &ayear, &amonth, &aday, &ahour, &amin, &asec, &ausec);
   struct mrb_time *tm = (struct mrb_time*)DATA_PTR(self);
 

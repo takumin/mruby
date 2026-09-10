@@ -36,7 +36,7 @@ mrb_f_caller(mrb_state *mrb, mrb_value self)
   mrb_value bt, v;
   mrb_int bt_len, argc, lev, n;
 
-  argc = mrb_get_args(mrb, "|oi", &v, &n);
+  argc = mrb_get_args(mrb, "|oi~", &v, &n);
 
   bt = mrb_get_backtrace(mrb);
   bt_len = RARRAY_LEN(bt);
@@ -161,7 +161,7 @@ mrb_f_integer(mrb_state *mrb, mrb_value self)
   mrb_value val, tmp;
   mrb_int base = 0;
 
-  mrb_get_args(mrb, "o|i", &val, &base);
+  mrb_get_args(mrb, "o|i~", &val, &base);
   if (mrb_nil_p(val)) {
     if (base != 0) arg_error(mrb);
     mrb_raise(mrb, E_TYPE_ERROR, "can't convert nil into Integer");

@@ -525,7 +525,7 @@ regexp_match(mrb_state *mrb, mrb_value self)
   mrb_int pos = 0;
   mrb_value md;
 
-  mrb_get_args(mrb, "o|i&", &str, &pos, &block);
+  mrb_get_args(mrb, "o|i~&", &str, &pos, &block);
   if (mrb_nil_p(str)) {
     clear_match_globals(mrb);
     return mrb_nil_value();
@@ -633,7 +633,7 @@ regexp_match_p(mrb_state *mrb, mrb_value self)
 {
   mrb_value str;
   mrb_int pos = 0;
-  mrb_get_args(mrb, "o|i", &str, &pos);
+  mrb_get_args(mrb, "o|i~", &str, &pos);
   return exec_match_p(mrb, self, str, pos);
 }
 
@@ -1185,6 +1185,11 @@ md_aref(mrb_state *mrb, mrb_value self, mrb_value arg)
     idx = matchdata_name_to_group(mrb, md, arg);
   }
   else {
+    /* A name and a Range answer before the type does, so the format reads
+       `o` and the request for `to_int` is made here. */
+    if (mrb_unlikely(!mrb_integer_convertible_p(arg))) {
+      mrb_convert_arg(mrb, 0, MRB_CONV_TO_INT);
+    }
     idx = mrb_as_int(mrb, arg);
     if (idx < 0) {
       /* A negative index counts back from the last group. CRuby's

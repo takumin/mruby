@@ -226,7 +226,7 @@ ary_slice_bang(mrb_state *mrb, mrb_value self)
     }
   }
   else {
-    mrb_get_args(mrb, "ii", &i, &len);
+    mrb_get_args(mrb, "i~i~", &i, &len);
   }
 
   mrb_int alen = ARY_LEN(a);
@@ -321,7 +321,7 @@ static mrb_value
 ary_rotate(mrb_state *mrb, mrb_value self)
 {
   mrb_int count=1;
-  mrb_get_args(mrb, "|i", &count);
+  mrb_get_args(mrb, "|i~", &count);
 
   mrb_value ary = mrb_ary_new(mrb);
   mrb_int len = RARRAY_LEN(self);
@@ -374,7 +374,7 @@ static mrb_value
 ary_rotate_bang(mrb_state *mrb, mrb_value self)
 {
   mrb_int count=1;
-  mrb_get_args(mrb, "|i", &count);
+  mrb_get_args(mrb, "|i~", &count);
 
   struct RArray *a = mrb_ary_ptr(self);
   mrb_int len = ARY_LEN(a);
@@ -1121,7 +1121,7 @@ ary_fill_exec(mrb_state *mrb, mrb_value self)
   mrb_value obj;
   mrb_int start, length;
 
-  mrb_get_args(mrb, "iio", &start, &length, &obj);
+  mrb_get_args(mrb, "i~i~o", &start, &length, &obj);
 
   if (start < 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "negative start index");
@@ -1326,7 +1326,7 @@ static mrb_value
 ary_flatten(mrb_state *mrb, mrb_value self)
 {
   mrb_int level = -1;
-  mrb_get_args(mrb, "|i", &level);
+  mrb_get_args(mrb, "|i~", &level);
   mrb_bool modified; // dummy
   return flatten_internal(mrb, self, level, &modified);
 }
@@ -1421,7 +1421,7 @@ static mrb_value
 ary_flatten_bang(mrb_state *mrb, mrb_value self)
 {
   mrb_int level = -1;
-  mrb_get_args(mrb, "|i", &level);
+  mrb_get_args(mrb, "|i~", &level);
 
   mrb_ary_modify(mrb, mrb_ary_ptr(self));
   mrb_bool modified;
@@ -1458,7 +1458,7 @@ ary_insert(mrb_state *mrb, mrb_value self)
   const mrb_value *argv;
   mrb_int argc;
 
-  mrb_get_args(mrb, "i*", &idx, &argv, &argc);
+  mrb_get_args(mrb, "i~*", &idx, &argv, &argc);
 
   if (argc == 0) {
     /* Inserting nothing is still an insert, and this returns ahead of the

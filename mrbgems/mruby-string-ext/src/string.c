@@ -2153,7 +2153,7 @@ str_ljust_core(mrb_state *mrb, mrb_value self)
   mrb_int width;
   mrb_value padstr = mrb_str_new_lit(mrb, " ");
 
-  mrb_get_args(mrb, "i|S~", &width, &padstr);
+  mrb_get_args(mrb, "i~|S~", &width, &padstr);
 
   if (RSTRING_LEN(padstr) == 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "zero width padding");
@@ -2203,7 +2203,7 @@ str_rjust_core(mrb_state *mrb, mrb_value self)
   mrb_int width;
   mrb_value padstr = mrb_str_new_lit(mrb, " ");
 
-  mrb_get_args(mrb, "i|S~", &width, &padstr);
+  mrb_get_args(mrb, "i~|S~", &width, &padstr);
 
   if (RSTRING_LEN(padstr) == 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "zero width padding");
@@ -2259,7 +2259,7 @@ str_center_core(mrb_state *mrb, mrb_value self)
   mrb_int width;
   mrb_value padstr = mrb_str_new_lit(mrb, " ");
 
-  mrb_get_args(mrb, "i|S~", &width, &padstr);
+  mrb_get_args(mrb, "i~|S~", &width, &padstr);
 
   if (RSTRING_LEN(padstr) == 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "zero width padding");
@@ -2575,7 +2575,7 @@ str_insert(mrb_state *mrb, mrb_value self)
 {
   mrb_int idx;
   mrb_value str_to_insert;
-  mrb_get_args(mrb, "iS~", &idx, &str_to_insert);
+  mrb_get_args(mrb, "i~S~", &idx, &str_to_insert);
 
   struct RString *s = mrb_str_ptr(self);
   mrb_int self_len = RSTR_LEN(s);

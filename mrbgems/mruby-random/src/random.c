@@ -313,7 +313,7 @@ random_m_init(mrb_state *mrb, mrb_value self)
   mrb_int seed;
   rand_state *t = random_ptr(self);
 
-  if (mrb_get_args(mrb, "|i", &seed) == 0) {
+  if (mrb_get_args(mrb, "|i~", &seed) == 0) {
     rand_init(t);
   }
   else {
@@ -365,7 +365,7 @@ random_m_srand(mrb_state *mrb, mrb_value self)
   mrb_int i;
   rand_state *t = random_ptr(self);
 
-  if (mrb_get_args(mrb, "|i", &i) == 0) {
+  if (mrb_get_args(mrb, "|i~", &i) == 0) {
     seed = (uint32_t)time(NULL) ^ rand_uint32(t) ^ (uint32_t)(uintptr_t)t;
   }
   else {
@@ -504,7 +504,7 @@ mrb_ary_sample(mrb_state *mrb, mrb_value ary)
   mrb_value r;
   const mrb_kwargs kw = {1, 0, &kname, &r, NULL};
 
-  mrb_get_args(mrb, "|i?:", &n, &given, &kw);
+  mrb_get_args(mrb, "|i~?:", &n, &given, &kw);
   rand_state *random = check_random_arg(mrb, r);
   mrb_int len = RARRAY_LEN(ary);
   if (!given) {                 /* pick one element */

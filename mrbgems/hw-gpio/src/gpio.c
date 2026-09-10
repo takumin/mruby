@@ -17,7 +17,7 @@ static mrb_value
 mrb_gpio_s_set_dir_at(mrb_state *mrb, mrb_value klass)
 {
   mrb_int pin, flags;
-  mrb_get_args(mrb, "ii", &pin, &flags);
+  mrb_get_args(mrb, "i~i~", &pin, &flags);
   mrb_gpio_set_dir((uint8_t)pin, (uint8_t)flags);
   return mrb_nil_value();
 }
@@ -27,7 +27,7 @@ static mrb_value
 mrb_gpio_s_pull_up_at(mrb_state *mrb, mrb_value klass)
 {
   mrb_int pin;
-  mrb_get_args(mrb, "i", &pin);
+  mrb_get_args(mrb, "i~", &pin);
   mrb_gpio_pull_up((uint8_t)pin);
   return mrb_nil_value();
 }
@@ -37,7 +37,7 @@ static mrb_value
 mrb_gpio_s_pull_down_at(mrb_state *mrb, mrb_value klass)
 {
   mrb_int pin;
-  mrb_get_args(mrb, "i", &pin);
+  mrb_get_args(mrb, "i~", &pin);
   mrb_gpio_pull_down((uint8_t)pin);
   return mrb_nil_value();
 }
@@ -47,7 +47,7 @@ static mrb_value
 mrb_gpio_s_open_drain_at(mrb_state *mrb, mrb_value klass)
 {
   mrb_int pin;
-  mrb_get_args(mrb, "i", &pin);
+  mrb_get_args(mrb, "i~", &pin);
   mrb_gpio_open_drain((uint8_t)pin);
   return mrb_nil_value();
 }
@@ -57,7 +57,7 @@ static mrb_value
 mrb_gpio_s_read_at(mrb_state *mrb, mrb_value klass)
 {
   mrb_int pin;
-  mrb_get_args(mrb, "i", &pin);
+  mrb_get_args(mrb, "i~", &pin);
   return mrb_fixnum_value(mrb_gpio_read((uint8_t)pin));
 }
 
@@ -66,7 +66,7 @@ static mrb_value
 mrb_gpio_s_write_at(mrb_state *mrb, mrb_value klass)
 {
   mrb_int pin, val;
-  mrb_get_args(mrb, "ii", &pin, &val);
+  mrb_get_args(mrb, "i~i~", &pin, &val);
   if (val != 0 && val != 1) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "value must be 0 or 1");
   }
@@ -87,7 +87,7 @@ static mrb_value
 mrb_gpio_m_write(mrb_state *mrb, mrb_value self)
 {
   mrb_int val;
-  mrb_get_args(mrb, "i", &val);
+  mrb_get_args(mrb, "i~", &val);
   if (val != 0 && val != 1) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "value must be 0 or 1");
   }

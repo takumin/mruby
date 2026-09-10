@@ -101,7 +101,7 @@ mrb_i2c_m_write(mrb_state *mrb, mrb_value self)
   mrb_value kw_values[1];
   mrb_kwargs kwargs = { 1, 0, kw_names, kw_values, NULL };
 
-  mrb_get_args(mrb, "i*:", &addr, &args, &argc, &kwargs);
+  mrb_get_args(mrb, "i~*:", &addr, &args, &argc, &kwargs);
 
   mrb_int timeout_ms = get_timeout(mrb, self, kw_values[0]);
   mrb_int unit = mrb_integer(mrb_iv_get(mrb, self, MRB_IVSYM(unit_num)));
@@ -129,7 +129,7 @@ mrb_i2c_m_read(mrb_state *mrb, mrb_value self)
   mrb_value kw_values[1];
   mrb_kwargs kwargs = { 1, 0, kw_names, kw_values, NULL };
 
-  mrb_get_args(mrb, "ii*:", &addr, &len, &args, &argc, &kwargs);
+  mrb_get_args(mrb, "i~i~*:", &addr, &len, &args, &argc, &kwargs);
 
   if (len <= 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "read length must be positive");

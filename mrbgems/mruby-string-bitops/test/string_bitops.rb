@@ -28,15 +28,14 @@ assert('String#bit_get') do
     assert_raise(RangeError) { s.bit_get(huge) }
   end
 
-  # Unlike CRuby's rb_to_int, an offset is not converted with to_int:
-  # mruby has no implicit conversion protocol in core, so an object
-  # that only defines to_int is rejected here exactly as it is by
-  # Array.new(obj), ary[obj] and "s" * obj.
+  # The offset takes an implicit conversion, as `ary[obj]` and `"s" * obj`
+  # do. It shares its format with the `lsb_first` keyword, so the request is
+  # made by the method rather than by a mark in the format.
   o = Object.new
   def o.to_int
     1
   end
-  assert_raise(TypeError) { s.bit_get(o) }
+  assert_equal 1, s.bit_get(o)
   assert_raise(TypeError) { s.bit_get("1") }
 
 end

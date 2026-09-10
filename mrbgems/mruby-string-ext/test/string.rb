@@ -1625,3 +1625,11 @@ assert('String#start_with? and String#partition take an implicit conversion') do
   assert_equal(["hel", "l", "o"], "hello".rpartition(o))
   assert_raise(TypeError) { "hello".partition(Object.new) }
 end
+
+assert('a String width takes an implicit conversion') do
+  o = Class.new { def to_int; 3; end }.new
+  assert_equal "a  ", "a".ljust(o)
+  assert_equal "  a", "a".rjust(o)
+  assert_equal " a ", "a".center(o)
+  assert_raise(TypeError) { "a".ljust(Object.new) }
+end

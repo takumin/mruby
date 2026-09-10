@@ -1292,7 +1292,7 @@ mrb_task_set_priority(mrb_state *mrb, mrb_value self)
 
   TASK_GET_PTR_OR_RAISE(t, self);
 
-  mrb_get_args(mrb, "i", &priority);
+  mrb_get_args(mrb, "i~", &priority);
 
   if (priority < 0 || priority > 255) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "priority must be 0-255");
