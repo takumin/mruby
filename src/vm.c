@@ -3167,20 +3167,24 @@ static const mrb_code coerce_iseq[] = {
    object rather than building it again — which means the converted value has
    to be written into the array, not into a register.  This frame is pushed
    clear of the caller's registers so that the block and the keyword
-   dictionary the send also re-reads survive it, and it hands its answer to
-   the array itself.  `Class#new` is the send that makes this worth having:
-   it passes what it was given straight to `initialize`, packed. */
+   dictionary the send also re-reads survive it.  `Class#new` is the send
+   that makes this worth having: it passes what it was given straight to
+   `initialize`, packed.
+
+   The array and the index travel to `__ensure`, which stores the value it
+   has just checked.  Storing it here instead, with `OP_SETIDX`, would run a
+   redefined `Array#[]=` and would need the array's class put back, which
+   `mrb_get_args()` cleared to keep it out of `ObjectSpace.each_object`. */
 static const mrb_code coerce_packed_iseq[] = {
   OP_ENTER, 0x0c, 0x00, 0x00,   /* 3:0:0:0:0:0:0 */
-  OP_MOVE, 4, 0,                /* R4 = self */
-  OP_SEND, 4, 0, 0,             /* R4 = R4.to_xxx */
-  OP_MOVE, 5, 1,                /* R5 = the class */
-  OP_MOVE, 6, 4,                /* R6 = what came back */
-  OP_MOVE, 7, 0,                /* R7 = the object that was asked */
-  OP_LOADSYM, 8, 0,             /* R8 = :to_xxx */
-  OP_SEND, 5, 1, 3,             /* R5 = R5.__ensure(R6, R7, R8) */
-  OP_MOVE, 4, 5,                /* R4 = the value it passed */
-  OP_SETIDX, 2,                 /* R2[R3] = R4 */
+  OP_MOVE, 5, 0,                /* R5 = self */
+  OP_SEND, 5, 0, 0,             /* R5 = R5.to_xxx */
+  OP_MOVE, 4, 1,                /* R4 = the class */
+  OP_MOVE, 6, 0,                /* R6 = the object that was asked */
+  OP_LOADSYM, 7, 0,             /* R7 = :to_xxx */
+  OP_MOVE, 8, 2,                /* R8 = the packed arguments */
+  OP_MOVE, 9, 3,                /* R9 = where the argument sits in them */
+  OP_SEND, 4, 1, 5,             /* R4 = R4.__ensure(R5, R6, R7, R8, R9) */
   OP_RETURN, 4,
 };
 
@@ -3199,7 +3203,7 @@ static const mrb_code coerce_packed_iseq[] = {
     { &coerce_##name##_irep }, NULL, { NULL }                           \
   };                                                                    \
   static const mrb_irep coerce_##name##_packed_irep = {                 \
-    4, 10, 0, MRB_IREP_STATIC,                                          \
+    4, 11, 0, MRB_IREP_STATIC,                                          \
     coerce_packed_iseq, NULL, coerce_##name##_syms, NULL, NULL, NULL,   \
     sizeof(coerce_packed_iseq), 0, 2, 0, 0,                             \
   };                                                                    \
@@ -3605,12 +3609,6 @@ mrb_convert_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv)
     packed = mrb_ary_ptr(ci->stack[1]);
     if (argidx < 0 || argidx >= ARY_LEN(packed)) return FALSE;
     arg = ARY_PTR(packed)[argidx];
-    /* `mrb_get_args()` clears the class of an array it reads arguments out
-       of, to keep it out of `ObjectSpace.each_object`.  The store below is
-       an instruction, and an instruction asks the class what `[]=` means, so
-       the array carries its own again while the conversion runs; reading the
-       arguments a second time hides it as before. */
-    packed->c = mrb->array_class;
   }
   else {
     /* The keyword dictionary is built by the send itself, out of registers

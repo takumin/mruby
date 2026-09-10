@@ -1726,6 +1726,13 @@ assert('Module#__ensure checks its argument and names the object that was asked'
   # a check ON the argument, never a dispatch TO it
   assert_raise(TypeError) { Array.__ensure(ModEnsureHasToAry.new, bad, :to_ary) }
 
+  # the five-argument form is the one the trampoline uses for an argument
+  # that reached its method packed: it stores what it checked into the array
+  # it was handed, which is what the restarted send reads again
+  packed = [bad]
+  assert_equal "s", String.__ensure("s", bad, :to_str, packed, 0)
+  assert_equal ["s"], packed
+
   assert_raise(ArgumentError) { Array.__ensure([1], bad) }
   assert_raise(ArgumentError) { Array.__ensure([1], bad, :to_ary, bad) }
 end

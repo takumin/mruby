@@ -5123,7 +5123,7 @@ static const mrb_mt_entry cls_rom_entries[] = {
 };
 
 /*
- * Module#__ensure(val, obj, conv) -> val
+ * Module#__ensure(val, obj, conv[, args, idx]) -> val
  *
  * Internal. Checks that `val` is an instance of the receiver, as a check ON
  * its argument rather than a dispatch TO it. The coercion trampoline in the
@@ -5141,11 +5141,19 @@ mod_ensure(mrb_state *mrb, mrb_value self)
   mrb_int argc = mrb_get_argc(mrb);
   const mrb_value *argv = mrb_get_argv(mrb);
 
-  if (argc != 3) mrb_argnum_error(mrb, argc, 3, 3);
+  if (argc != 3 && argc != 5) mrb_argnum_error(mrb, argc, 3, 5);
   if (!mrb_obj_is_kind_of(mrb, argv[0], mrb_class_ptr(self))) {
     mrb_raisef(mrb, E_TYPE_ERROR, "can't convert %Y to %C (%Y#%n gives %Y)",
                argv[1], mrb_class_ptr(self), argv[1],
                mrb_symbol(argv[2]), argv[0]);
+  }
+  /* An argument that reached its method packed is converted where it sits,
+     since that is what the restarted send reads again.  The store is here
+     rather than in the trampoline's bytecode so that it neither runs a
+     redefined `Array#[]=` nor needs the array's class, which
+     `mrb_get_args()` cleared to keep the array out of `ObjectSpace`. */
+  if (argc == 5) {
+    mrb_ary_set(mrb, argv[3], mrb_integer(argv[4]), argv[0]);
   }
   return argv[0];
 }
@@ -5188,7 +5196,7 @@ static const mrb_mt_entry mod_rom_entries[] = {
   /* Last on purpose: the table is scanned in order, and everything above
      is a name programs call.  Boot cost 743 instructions more with this
      entry second. */
-  MRB_MT_ENTRY(mod_ensure,              MRB_SYM(__ensure),         MRB_ARGS_REQ(3)),
+  MRB_MT_ENTRY(mod_ensure,              MRB_SYM(__ensure),         MRB_ARGS_ARG(3,2)),
 };
 
 void
