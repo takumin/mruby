@@ -137,6 +137,25 @@ mrb_irep_catch_handler_table(const struct mrb_irep *irep)
     return (const struct mrb_irep_catch_handler*)NULL;
   }
 }
+
+/* The string a pool entry stands for, frozen. `mrb_str_new_frozen()` asks
+   whether what it is handed is an immediate, is frozen already, and is a
+   singleton; a string made here is none of the three. */
+static inline mrb_value
+mrb_frozen_str_new(mrb_state *mrb, const struct mrb_irep_pool *pool)
+{
+  mrb_int len = (mrb_int)(pool->tt >> 2);
+  mrb_value str;
+
+  if (pool->tt & IREP_TT_SFLAG) {
+    str = mrb_str_new_static(mrb, pool->u.str, len);
+  }
+  else {
+    str = mrb_str_new(mrb, pool->u.str, len);
+  }
+  mrb_basic_ptr(str)->frozen = 1;
+  return str;
+}
 #endif
 
 /* numeric */
