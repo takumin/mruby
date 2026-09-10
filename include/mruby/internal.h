@@ -110,10 +110,98 @@ struct mrb_backtrace_location {
 };
 
 /* gc */
+struct mrb_irep_pool;
 size_t mrb_gc_mark_mt(mrb_state*, struct RClass*);
 int mrb_equal_in_c(mrb_state*, mrb_value, mrb_value);
 void mrb_gc_each_live_object(mrb_state*, int (*)(mrb_state*, struct RBasic*, void*), void*);
 void mrb_gc_free_mt(mrb_state*, struct RClass*);
+
+#ifdef MRUBY_IREP_H
+/* The string a pool entry stands for, frozen. `mrb_str_new_frozen()` asks
+   whether what it is handed is an immediate, is frozen already, and is a
+   singleton; a string made here is none of the three. */
+static inline mrb_value
+mrb_frozen_str_new(mrb_state *mrb, const struct mrb_irep_pool *pool)
+{
+  mrb_int len = (mrb_int)(pool->tt >> 2);
+  mrb_value str;
+
+  if (pool->tt & IREP_TT_SFLAG) {
+    str = mrb_str_new_static(mrb, pool->u.str, len);
+  }
+  else {
+    str = mrb_str_new(mrb, pool->u.str, len);
+  }
+  mrb_basic_ptr(str)->frozen = 1;
+  return str;
+}
+#endif
+
+#if MRB_FROZEN_STRING_CACHE_SIZE > 0
+mrb_value mrb_frozen_str_lit_miss(mrb_state*, const struct mrb_irep_pool*);
+void mrb_frozen_str_forget_irep(mrb_state*, const struct mrb_irep*);
+
+struct mrb_fstr_entry {
+  const struct mrb_irep_pool *key; /* never dereferenced through this table */
+  struct RString *val;
+};
+
+/* The string each frozen literal hands out; see gc.c. The slots are in the
+   same allocation as the header, so reaching them costs an offset rather than
+   a second pointer to load. */
+struct mrb_fstr_tbl {
+  uint32_t mask;                   /* slots - 1 */
+  uint32_t size;                   /* entries held */
+  struct mrb_fstr_entry slot[];    /* mask+1 of them */
+};
+
+#ifdef MRUBY_IREP_H
+/* Where `key` belongs. What the address is divided by is what stands in for a
+   hash of it: the keys of one irep are the elements of one array, so counting
+   the address in entries lands them in as many slots as there are of them,
+   while a hash could put two of them in the same slot. Dividing by anything
+   larger, the shift a power of two width invites among them, would leave one
+   irep only a fraction of the table to spread over. */
+static inline size_t
+mrb_fstr_slot(const struct mrb_fstr_tbl *t, const struct mrb_irep_pool *key)
+{
+  return ((size_t)((uintptr_t)key / sizeof(*key))) & (size_t)t->mask;
+}
+
+/* The slot holding `key`, or the empty one it belongs in. Terminates because
+   the table is never filled past half. */
+static inline size_t
+mrb_fstr_find(const struct mrb_fstr_tbl *t, const struct mrb_irep_pool *key)
+{
+  const struct mrb_fstr_entry *slot = t->slot;
+  size_t i = mrb_fstr_slot(t, key);
+
+  while (slot[i].key && slot[i].key != key) {
+    i = (i+1) & (size_t)t->mask;
+  }
+  return i;
+}
+
+/* The string that `pool` hands out. This is the whole of what a literal that
+   has run before costs; everything else the table does is in gc.c. */
+static inline mrb_value
+mrb_frozen_str_lit(mrb_state *mrb, const struct mrb_irep_pool *pool)
+{
+  const struct mrb_fstr_tbl *t = mrb->gc.fstr;
+
+  if (t) {
+    const struct mrb_fstr_entry *e = t->slot + mrb_fstr_find(t, pool);
+    if (e->key) return mrb_obj_value(e->val);
+  }
+  return mrb_frozen_str_lit_miss(mrb, pool);
+}
+#endif
+#else
+/* A build without the table builds the string every time a literal runs, and
+   builds it here rather than calling out to do it. */
+#define mrb_frozen_str_forget_irep(mrb, irep) ((void)0)
+#define mrb_frozen_str_lit(mrb, pool) mrb_frozen_str_new(mrb, pool)
+#endif
 
 /* hash */
 size_t mrb_hash_memsize(mrb_value obj);

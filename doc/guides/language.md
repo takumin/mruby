@@ -182,6 +182,16 @@ heredoc = <<~HEREDOC
 HEREDOC
 ```
 
+A file that carries the magic comment freezes its string literals:
+
+```ruby
+# frozen_string_literal: true
+"a literal".frozen?               # => true
+"an #{interpolation} one".frozen? # => false
+```
+
+`mrbc` reads the comment for each file it is given.
+
 ### Regular Expressions
 
 Regular expressions require an external gem such as `mruby-regexp-pcre`
@@ -394,6 +404,21 @@ directly.
 
 For small hashes, `#hash` is not called on keys. Custom `#hash`
 methods may not execute for small hash tables.
+
+### Frozen String Literals
+
+Equal frozen literals written in different methods are different objects,
+where CRuby answers one object for the whole program:
+
+```ruby
+# frozen_string_literal: true
+def a = "x"
+def b = "x"
+a.equal?(b)   # CRuby: true, mruby: false
+```
+
+`MRB_FROZEN_STRING_CACHE_SIZE` sets how many literals a program holds this
+way. Past it, a literal answers a new frozen string each time.
 
 ### No Refinements
 
