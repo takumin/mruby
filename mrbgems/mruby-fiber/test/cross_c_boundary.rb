@@ -96,21 +96,18 @@ assert_cross(:ok, 'Array#join sending to_s')    { [CrossStr.new].join }
 assert_cross(:ok, 'const_missing')              { CrossConst::NoSuch }
 assert_cross(:ok, 'const_missing on a bare name') { CrossBareConst.new.read }
 
-# The sends below are not ones the continuation protocol reaches, each for a
-# reason of its own.
-#
+# Sent by an instruction that needs the answer to finish its own work, rather
+# than by a method with a frame to be resumed on. The answer replaces what the
+# instruction reads, so the instruction runs again and sends nothing the
+# second time, and the compiler reserves the registers each send is built in.
+assert_cross(:ok, 'string interpolation sending to_s') { "#{CrossStr.new}" }
+assert_cross(:ok, '&obj sending to_proc')       { [1].map(&CrossProc.new) }
+
 # `hash` is asked from inside the table's own walk over its buckets, whose
-# place is a C iterator rather than an index a resumed method could carry.
-#
-# The last two are sent by an instruction, which has no frame of its own to be
-# resumed on. A constant read is where that costs nothing: what the hook
-# answers is the read's own result, so the send returns into the register the
-# instruction was going to write and the instruction does not run again. These
-# two need the value back in the middle of their instruction, and running that
-# instruction again after the send would send again.
+# place is a C iterator rather than an index a resumed method could carry, and
+# the answer feeds the arithmetic that picks the bucket rather than being the
+# result of anything. The continuation protocol does not reach it.
 assert_cross(:ng, 'Hash#[] sending hash')       { ({CrossEq.new => 1})[CrossEq.new] }
-assert_cross(:ng, 'string interpolation sending to_s') { "#{CrossStr.new}" }
-assert_cross(:ng, '&obj sending to_proc')       { [1].map(&CrossProc.new) }
 
 # --- the API a conversion is written with ----------------------------------
 # Not a method of its own: this is mrb_funcall_tail() driven from the test
