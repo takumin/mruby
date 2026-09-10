@@ -620,6 +620,12 @@ mrb_gc_destroy(mrb_state *mrb, mrb_gc *gc)
     kh_destroy(gcroot, mrb, gc->root);
     gc->root = NULL;
   }
+#if MRB_FROZEN_STRING_CACHE_SIZE > 0
+  if (gc->fstr) {
+    mrb_free(mrb, gc->fstr);
+    gc->fstr = NULL;
+  }
+#endif
   free_heap(mrb, gc);
   /* free region descriptors (buffer memory belongs to the caller) */
   {
@@ -676,15 +682,177 @@ mrb_gc_protect(mrb_state *mrb, mrb_value obj)
   gc_protect(mrb, &mrb->gc, p);
 }
 
-/* Mark every pinned object. Like the arena, this table takes no write
-   barrier, so the marking phase reads it twice: once at the start of a cycle
-   and once atomically at its end, which is what covers a registration made
-   while the cycle was running. */
+/* The string a frozen literal hands out, built once for the pool entry it was
+   compiled from. Keying on the pool entry rather than on the bytes is what
+   lets the lookup be a load and a compare; two literals with the same content
+   in different places are two objects.
+
+   The table is open addressed with linear probing, taken from the heap at two
+   slots on the first frozen literal and doubled whenever the next entry would
+   fill it past half: a program pays for the literals it ran, while a build for
+   a device still reads its ceiling off MRB_FROZEN_STRING_CACHE_SIZE rather
+   than off how far the program got. Holding that many, it stops accepting
+   entries, and a literal arriving after that builds a string every time, as
+   every literal does without the table. Nothing is evicted, so a literal that
+   is in the table keeps handing out the same object until its irep is freed.
+
+   Where a literal is looked up is `mrb_frozen_str_lit` in internal.h, which
+   is inline so that a hit costs the probe and nothing else. */
+#if MRB_FROZEN_STRING_CACHE_SIZE > 0
+
+static struct mrb_fstr_tbl*
+fstr_tbl_new(mrb_state *mrb, size_t slots)
+{
+  struct mrb_fstr_tbl *t;
+
+  t = (struct mrb_fstr_tbl*)mrb_calloc(mrb, 1, sizeof(struct mrb_fstr_tbl) +
+                                       slots * sizeof(struct mrb_fstr_entry));
+  t->mask = (uint32_t)(slots - 1);
+  return t;
+}
+
+/* Move to a table of twice the slots. Every entry lands somewhere else, since
+   where a key belongs is the mask applied to its address, so they are put in
+   one by one rather than copied.
+
+   The new table is taken first and installed last: an allocation can collect,
+   and until it is installed the old one is still what the marking walks. What
+   is moved over is read from `mrb->gc.fstr` after that allocation rather than
+   from a pointer held across it, since an irep freed by the collection takes
+   its entries out and the table with them if it is left with none. */
+static struct mrb_fstr_tbl*
+fstr_grow(mrb_state *mrb)
+{
+  size_t slots = ((size_t)mrb->gc.fstr->mask+1) * 2;
+  struct mrb_fstr_tbl *t = fstr_tbl_new(mrb, slots);
+  struct mrb_fstr_tbl *old = mrb->gc.fstr;
+
+  if (old) {
+    struct mrb_fstr_entry *from = old->slot;
+    struct mrb_fstr_entry *to = t->slot;
+
+    for (size_t i = 0; i <= (size_t)old->mask; i++) {
+      if (from[i].key) {
+        to[mrb_fstr_find(t, from[i].key)] = from[i];
+      }
+    }
+    t->size = old->size;
+    mrb_free(mrb, old);
+  }
+  mrb->gc.fstr = t;
+  return t;
+}
+
+/* Take out slot `i` and close the gap behind it, so that the table carries no
+   tombstone for a probe to walk over. Deletion happens when an irep is freed,
+   which is off every path this table is meant to be fast on. */
+static void
+fstr_delete(mrb_state *mrb, struct mrb_fstr_tbl *t, size_t i)
+{
+  struct mrb_fstr_entry *slot = t->slot;
+  size_t j = i;
+
+  t->size--;
+  for (;;) {
+    slot[i].key = NULL;
+    slot[i].val = NULL;
+    for (;;) {
+      j = (j+1) & (size_t)t->mask;
+      if (!slot[j].key) return;
+      size_t k = mrb_fstr_slot(t, slot[j].key);
+      /* j cannot move back to i while its own slot lies between them */
+      if (i <= j ? (i < k && k <= j) : (i < k || k <= j)) continue;
+      break;
+    }
+    slot[i] = slot[j];
+    i = j;
+  }
+}
+
+/* Drop what one irep put in the table, before its pool is freed. The keys are
+   pool entry addresses, so the next pool allocated there would otherwise be
+   handed the strings of the one before it.
+
+   Each entry of the pool is looked up rather than the table walked for the
+   ones that fall inside it: an address is only ordered against another in the
+   same array, and a key in the table came from some other pool. */
+void
+mrb_frozen_str_forget_irep(mrb_state *mrb, const mrb_irep *irep)
+{
+  struct mrb_fstr_tbl *t = mrb->gc.fstr;
+
+  if (!t || !irep->pool) return;
+  for (size_t n = 0; n < irep->plen; n++) {
+    const mrb_irep_pool *key = &irep->pool[n];
+    size_t i = mrb_fstr_find(t, key);
+
+    if (t->slot[i].key == key) {
+      fstr_delete(mrb, t, i);
+    }
+  }
+  if (t->size == 0) {
+    /* the last irep holding a frozen literal is on its way out */
+    mrb_free(mrb, t);
+    mrb->gc.fstr = NULL;
+  }
+}
+
+static void
+mark_frozen_str(mrb_state *mrb, mrb_gc *gc)
+{
+  struct mrb_fstr_tbl *t = gc->fstr;
+
+  if (!t) return;
+  for (size_t i = 0; i <= (size_t)t->mask; i++) {
+    if (t->slot[i].key) {
+      mrb_gc_mark(mrb, (struct RBasic*)t->slot[i].val);
+    }
+  }
+}
+
+/* The string that `pool` will hand out, reached when the table had none for
+   it: it has not run before, or it arrived when the table was already full.
+
+   Where the table is is read after the string is built and not before: the
+   string is taken from the heap, an irep freed by the collection that can
+   follow takes its entries out of the table, and a table left with none is
+   freed. A table taken here is taken after that for the same reason. */
+mrb_value
+mrb_frozen_str_lit_miss(mrb_state *mrb, const mrb_irep_pool *pool)
+{
+  mrb_value str = mrb_frozen_str_new(mrb, pool);
+  struct mrb_fstr_tbl *t = mrb->gc.fstr;
+
+  if (!t) {
+    t = mrb->gc.fstr = fstr_tbl_new(mrb, 2);
+  }
+  if (t->size < MRB_FROZEN_STRING_CACHE_SIZE) {
+    if ((size_t)(t->size+1) * 2 > (size_t)t->mask + 1) {
+      t = fstr_grow(mrb);
+    }
+    /* looked up only now: growing the table moves the entries in it */
+    struct mrb_fstr_entry *e = t->slot + mrb_fstr_find(t, pool);
+    e->key = pool;
+    e->val = mrb_str_ptr(str);
+    t->size++;
+  }
+  return str;
+}
+
+#else
+#define mark_frozen_str(mrb, gc) ((void)0)
+#endif
+
+/* Mark every pinned object, and every frozen string literal. Like the arena,
+   neither table takes a write barrier, so the marking phase reads them twice:
+   once at the start of a cycle and once atomically at its end, which is what
+   covers a registration made while the cycle was running. */
 static void
 mark_gc_roots(mrb_state *mrb, mrb_gc *gc)
 {
   kh_gcroot_t *h = gc->root;
 
+  mark_frozen_str(mrb, gc);
   if (!h) return;
   for (khiter_t k = kh_begin(h); k != kh_end(h); k++) {
     if (kh_exist(gcroot, h, k)) {

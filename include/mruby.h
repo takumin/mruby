@@ -288,6 +288,10 @@ struct mrb_iv_cache_entry {
 };
 #endif
 
+#if MRB_FROZEN_STRING_CACHE_SIZE > 0
+mrb_static_assert_powerof2(MRB_FROZEN_STRING_CACHE_SIZE);
+#endif
+
 #ifdef MRB_CONST_CACHE_SIZE
 # undef MRB_NO_CONST_CACHE
 mrb_static_assert_powerof2(MRB_CONST_CACHE_SIZE);

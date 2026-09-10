@@ -50,6 +50,9 @@ typedef struct mrb_gc_prof_hist {
 
 typedef struct mrb_gc {
   struct kh_gcroot *root;          /* mrb_gc_register()ed objects -> pin count */
+#if MRB_FROZEN_STRING_CACHE_SIZE > 0
+  struct mrb_fstr_tbl *fstr;       /* pool entry -> the frozen literal it hands out */
+#endif
   struct mrb_heap_page *heaps;     /* all heaps pages */
   struct mrb_heap_page *free_heaps;/* heaps for allocation */
   struct mrb_heap_page *sweeps;    /* page where sweep starts */

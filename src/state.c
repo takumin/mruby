@@ -144,6 +144,7 @@ mrb_irep_free(mrb_state *mrb, mrb_irep *irep)
   mrb_bool consolidated;
 
   if (irep->flags & MRB_IREP_NO_FREE) return;
+  mrb_frozen_str_forget_irep(mrb, irep);
   consolidated = (irep->flags & MRB_IREP_CONSOLIDATED) != 0;
   if (!(irep->flags & MRB_ISEQ_NO_FREE))
     mrb_free(mrb, (void*)irep->iseq);

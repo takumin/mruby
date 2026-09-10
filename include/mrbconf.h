@@ -179,6 +179,16 @@
 #define MRB_SYMBOL_MAX 4096
 #endif
 
+/* String literals a file compiled with `# frozen_string_literal: true` may
+   hold, as MRB_METHOD_CACHE_SIZE is methods; a power of two, since the table
+   reaches twice as many slots. Holding one costs 32 bytes there, but the
+   table is taken on the first literal and doubles as it fills, so a program
+   pays for the literals it ran rather than for this number. Set to 0 to leave
+   the table out. */
+#ifndef MRB_FROZEN_STRING_CACHE_SIZE
+#define MRB_FROZEN_STRING_CACHE_SIZE 256
+#endif
+
 /* obsolete configurations */
 #if defined(DISABLE_STDIO) || defined(MRB_DISABLE_STDIO)
 # define MRB_NO_STDIO
