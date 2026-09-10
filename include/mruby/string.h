@@ -53,7 +53,8 @@ struct RStringEmbed {
      bit 4-8    the embedded length
      bit 9-10   the coderange
      bit 11-12  the encoding index
-     bit 13-19  free
+     bit 13     stands in the frozen string cache
+     bit 14-19  free
 
    The order is the one that leaves what is free in a single run rather than in
    pieces, and puts the field likeliest to widen at the top of what is used. A
@@ -81,6 +82,13 @@ struct RStringEmbed {
 #define MRB_STR_ENCODING_SHIFT 11
 #define MRB_STR_ENCODING_BITS 2
 #define MRB_STR_ENCODING_MASK (((1 << MRB_STR_ENCODING_BITS) - 1) << MRB_STR_ENCODING_SHIFT)
+
+/* Set while the string occupies a slot of the frozen string cache, which is
+   what `String#-@` answers out of (see mrb_str_fstring() in string.c). It
+   spares that path the hash and the byte compare that would find the string
+   where it already stands, and it tells the cache which strings it may still
+   be named by: a string dropped from the cache has it cleared again. */
+#define MRB_STR_FSTR (1 << 13)
 
 #define RSTR_EMBED_P(s) ((s)->flags & MRB_STR_EMBED)
 #define RSTR_SET_EMBED_FLAG(s) ((s)->flags |= MRB_STR_EMBED)
@@ -112,6 +120,7 @@ struct RStringEmbed {
 #define RSTR_LEN(s) ((RSTR_EMBED_P(s)) ? RSTR_EMBED_LEN(s) : (s)->as.heap.len)
 #define RSTR_CAPA(s) (RSTR_EMBED_P(s) ? RSTRING_EMBED_LEN_MAX : (s)->as.heap.aux.capa)
 
+#define RSTR_FSTR_P(s) ((s)->flags & MRB_STR_FSTR)
 #define RSTR_SHARED_P(s) ((s)->flags & MRB_STR_SHARED)
 #define RSTR_FSHARED_P(s) ((s)->flags & MRB_STR_FSHARED)
 #define RSTR_NOFREE_P(s) ((s)->flags & MRB_STR_NOFREE)
@@ -453,6 +462,23 @@ MRB_API mrb_value mrb_str_dup(mrb_state *mrb, mrb_value str);
  * @return [mrb_value] Ruby frozen string.
  */
 MRB_API mrb_value mrb_str_dup_frozen(mrb_state *mrb, mrb_value str);
+
+/**
+ * Returns a frozen string with the given string's bytes, shared with whoever
+ * else has asked for those bytes. This is what `String#-@` answers with.
+ *
+ * The string that comes back is the caller's own only by chance: two calls
+ * with equal bytes answer with one object where the cache still holds it, and
+ * with separate objects where it does not (the build carries no cache, the
+ * bytes are those of a String subclass, or the entry was dropped to stay
+ * inside the cache's bound). What is promised is a frozen string equal to the
+ * one passed in, never that it is the same object as any earlier answer.
+ *
+ * @param mrb The current mruby state.
+ * @param str A Ruby string.
+ * @return [mrb_value] A frozen Ruby string equal to `str`.
+ */
+MRB_API mrb_value mrb_str_fstring(mrb_state *mrb, mrb_value str);
 
 /**
  * Returns a symbol from a passed in Ruby string.

@@ -620,6 +620,11 @@ mrb_gc_destroy(mrb_state *mrb, mrb_gc *gc)
     kh_destroy(gcroot, mrb, gc->root);
     gc->root = NULL;
   }
+#if MRB_FSTRING_CACHE_MAX > 0
+  /* Before the heap goes, so that the strings freed below find no cache to
+     take themselves out of: every slot is about to be meaningless anyway. */
+  mrb_fstr_cache_free(mrb);
+#endif
   free_heap(mrb, gc);
   /* free region descriptors (buffer memory belongs to the caller) */
   {
@@ -1494,6 +1499,39 @@ clear_error_object(mrb_state *mrb, struct RObject *obj)
   err->backtrace = NULL;
 }
 
+#if MRB_FSTRING_CACHE_MAX > 0
+/* Empty the slots of the frozen string cache whose strings this cycle did not
+   reach, which is what makes the cache hold them weakly: the string is swept
+   as any other unreached string is, and the cache is left naming none of what
+   the sweep frees.
+ *
+ * It runs where marking has settled and the sweep has not started, so an
+ * unreached string is one that is really unreachable, and no lookup between
+ * here and the sweep can answer with a string the sweep is about to free.
+ *
+ * Strings of the read-only heap are skipped rather than emptied: nothing
+ * marks them and nothing sweeps them, so unreached says nothing about them,
+ * and the flag this would clear stands in memory that may be read-only in
+ * earnest. mrb_str_fstring() refuses them a slot for the same reason, which
+ * leaves this the counterpart of that refusal rather than a case of its
+ * own. */
+static void
+sweep_fstr_cache(mrb_state *mrb, mrb_gc *gc)
+{
+  struct mrb_fstr_cache *c = mrb->fstr_cache;
+
+  if (c == NULL) return;
+  for (uint32_t i = 0; i < c->capa; i++) {
+    struct RString *s = c->slots[i];
+    if (s && !is_red((struct RBasic*)s) && is_dead(gc, (struct RBasic*)s)) {
+      s->flags &= ~MRB_STR_FSTR;
+      c->slots[i] = NULL;
+      c->used--;
+    }
+  }
+}
+#endif
+
 static void
 final_marking_phase(mrb_state *mrb, mrb_gc *gc)
 {
@@ -1531,6 +1569,12 @@ final_marking_phase(mrb_state *mrb, mrb_gc *gc)
 #endif
 
   gc_mark_gray_list(mrb, gc);
+
+#if MRB_FSTRING_CACHE_MAX > 0
+  /* Last, with every reachable string marked: what is unmarked now stays
+     unmarked through the sweep. */
+  sweep_fstr_cache(mrb, gc);
+#endif
 }
 
 static void
@@ -2424,6 +2468,7 @@ mrb_objspace_page_slot_size(void)
  *  Returns a Hash with GC statistics.
  *  Keys: :live, :debt, :state, :generational, :full,
  *        :step_limit, :malloc_increase, :malloc_threshold
+ *  With the frozen string cache: :fstring_count, :fstring_capa
  *  With MRB_GC_STATS: :total, :minor, :major
  *
  */
@@ -2444,6 +2489,15 @@ gc_stat(mrb_state *mrb, mrb_value self)
   mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(malloc_threshold)), mrb_int_value(mrb, (mrb_int)gc->malloc_threshold));
   mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(symbol_count)), mrb_int_value(mrb, (mrb_int)(mrb_presym_max() + mrb->symidx)));
   mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(dynamic_symbol_count)), mrb_int_value(mrb, (mrb_int)mrb->dynamic_sym_count));
+#if MRB_FSTRING_CACHE_MAX > 0
+  {
+    struct mrb_fstr_cache *c = mrb->fstr_cache;
+    mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(fstring_count)),
+                 mrb_int_value(mrb, c ? (mrb_int)c->used : 0));
+    mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(fstring_capa)),
+                 mrb_int_value(mrb, c ? (mrb_int)c->capa : 0));
+  }
+#endif
 
 #ifdef MRB_GC_STATS
   mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(total)), mrb_int_value(mrb, (mrb_int)gc->gc_total_count));

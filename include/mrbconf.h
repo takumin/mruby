@@ -179,6 +179,23 @@
 #define MRB_SYMBOL_MAX 4096
 #endif
 
+/* Frozen string cache configuration */
+/* Upper bound on the entries the cache behind `String#-@` holds. An entry is
+   one pointer and nothing else, and the cache holds no string of its own, so
+   what a build spends on it never passes
+   MRB_FSTRING_CACHE_MAX * sizeof(void*) bytes -- 2KB on a 64-bit target at
+   the default, 1KB on a 32-bit one. The table is allocated on the first
+   `String#-@` and grows toward the bound only as strings collide in it, so a
+   program that dedups a handful of strings pays for a handful.
+
+   Reaching the bound costs deduplication, not correctness: an insertion into
+   a full row drops an entry, and the string it named is deduplicated again
+   the next time it is asked for. Set to 0 to build without the cache, where
+   `String#-@` answers with a frozen copy every time. */
+#ifndef MRB_FSTRING_CACHE_MAX
+#define MRB_FSTRING_CACHE_MAX 256
+#endif
+
 /* obsolete configurations */
 #if defined(DISABLE_STDIO) || defined(MRB_DISABLE_STDIO)
 # define MRB_NO_STDIO

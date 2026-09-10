@@ -388,6 +388,34 @@ size_t mrb_gc_mark_range(mrb_state *mrb, struct RRange *r);
 
 void mrb_gc_free_str(mrb_state*, struct RString*);
 uint32_t mrb_str_hash(mrb_state *mrb, mrb_value str);
+
+#if MRB_FSTRING_CACHE_MAX > 0
+/* The cache mrb_str_fstring() answers `String#-@` out of.
+ *
+ * It is a table of slots, each holding a frozen string or nothing, addressed
+ * by the hash of the bytes. A hash names a row of MRB_FSTR_CACHE_WAYS
+ * neighbouring slots rather than a single one, and a string may stand
+ * anywhere in its row; every lookup reads the whole row, so a slot is emptied
+ * by writing NULL over it and nothing else has to be repaired.
+ *
+ * The table holds no string of its own: what it costs is its slots, which is
+ * why the bound (MRB_FSTRING_CACHE_MAX, in include/mrbconf.h) is written in
+ * slots. Nor does a slot keep its string alive -- the collector empties the
+ * slot of a string it is about to sweep, in sweep_fstr_cache() -- so a string
+ * the program has dropped leaves the cache along with the memory it held.
+ */
+#define MRB_FSTR_CACHE_WAYS 4
+
+struct mrb_fstr_cache {
+  uint32_t capa;                /* slots, a power of two, never past the bound */
+  uint32_t used;                /* slots holding a string */
+  uint32_t victim;              /* which way of a full row the next insertion takes */
+  struct RString **slots;       /* capa of them, NULL where empty */
+};
+
+void mrb_fstr_cache_free(mrb_state *mrb);
+#endif
+
 mrb_value mrb_str_dump(mrb_state *mrb, mrb_value str);
 mrb_value mrb_str_inspect(mrb_state *mrb, mrb_value str);
 mrb_bool mrb_str_beg_len(mrb_int str_len, mrb_int *begp, mrb_int *lenp);

@@ -1786,16 +1786,19 @@ str_uplus(mrb_state *mrb, mrb_value str)
  * call-seq:
  *   -string -> frozen_string
  *
- * Returns a frozen, possibly pre-existing copy of the string.
+ * Returns a frozen string with the receiver's bytes.
  *
+ * Two strings with the same bytes are usually answered with one string, the
+ * one the frozen string cache holds for those bytes, which makes
+ * `(-a).equal?(-b)` normally true. It is not promised: the cache holds what
+ * it holds inside a bound (MRB_FSTRING_CACHE_MAX), and a build may carry no
+ * cache at all. An instance of a subclass is answered with a frozen copy of
+ * its own.
  */
 static mrb_value
 str_uminus(mrb_state *mrb, mrb_value str)
 {
-  if (mrb_frozen_p(mrb_obj_ptr(str))) {
-    return str;
-  }
-  return mrb_obj_freeze(mrb, mrb_str_dup(mrb, str));
+  return mrb_str_fstring(mrb, str);
 }
 
 /* Internal helper for String#ascii_only? - checks if string contains only ASCII characters */

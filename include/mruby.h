@@ -456,6 +456,13 @@ struct mrb_state {
   char symbuf[8];                         /* buffer for small symbol names */
 #endif
 
+#if MRB_FSTRING_CACHE_MAX > 0
+  /* Where `String#-@` finds the string it answers with, when one is already
+     there. Nothing here keeps a string alive; see struct mrb_fstr_cache in
+     mruby/internal.h. NULL until the first `String#-@`. */
+  struct mrb_fstr_cache *fstr_cache;
+#endif
+
 #ifdef MRB_USE_DEBUG_HOOK
   void (*code_fetch_hook)(mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs);
   void (*debug_op_hook)(mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs);

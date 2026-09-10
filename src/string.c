@@ -308,9 +308,19 @@ check_null_byte(mrb_state *mrb, struct RString *str)
   }
 }
 
+#if MRB_FSTRING_CACHE_MAX > 0
+static void fstr_cache_del(mrb_state *mrb, struct RString *s);
+#endif
+
 void
 mrb_gc_free_str(mrb_state *mrb, struct RString *str)
 {
+#if MRB_FSTRING_CACHE_MAX > 0
+  /* Asked before the bytes are freed, since finding the slot means hashing
+     them. The collector has normally emptied the slot already, in the pass it
+     makes in front of the sweep, which leaves this flag clear. */
+  if (RSTR_FSTR_P(str)) fstr_cache_del(mrb, str);
+#endif
   if (RSTR_EMBED_P(str))
     /* no code */;
   else if (RSTR_SHARED_P(str))
@@ -1843,6 +1853,241 @@ mrb_str_dup_frozen(mrb_state *mrb, mrb_value str)
   }
   return str;
 }
+
+/* ------------------------------------------------------------------------
+ * The frozen string cache
+ *
+ * `String#-@` hands back a frozen string with the bytes it was asked about,
+ * and a program that asks about the same bytes over and over -- a key it
+ * reads out of a message, a name it parses out of a line -- wants one string
+ * back rather than a copy per ask. The cache is what makes that so: a lookup
+ * that finds the bytes answers with the string already standing for them, and
+ * only a lookup that finds nothing puts a string there.
+ *
+ * Two things keep it inside a bound that an embedded build can afford. It
+ * holds pointers and no strings, so its whole cost is its slots, and the
+ * count of those never passes MRB_FSTRING_CACHE_MAX; an insertion that finds
+ * no room drops an entry to make room. And it holds those pointers weakly:
+ * the collector empties the slot of a string it is about to sweep
+ * (sweep_fstr_cache() in gc.c), so what the cache remembers of a program's
+ * strings dies with them rather than growing with them. Nothing here reaches
+ * for the platform: the bound and the weakness are the collector's own, which
+ * is why the same source serves a microcontroller and a workstation.
+ * ------------------------------------------------------------------------ */
+
+#if MRB_FSTRING_CACHE_MAX > 0
+
+#if MRB_FSTRING_CACHE_MAX < MRB_FSTR_CACHE_WAYS
+# error MRB_FSTRING_CACHE_MAX is too small to hold one row of the frozen string cache
+#endif
+
+/* What the first `String#-@` allocates, or the bound where that is smaller.
+   Starting under the bound is what keeps a program that dedups a handful of
+   strings from paying for one that dedups hundreds; a row that fills is what
+   asks for the rest, up to the bound. */
+#define FSTR_CACHE_INIT_SLOTS 64
+
+/* The `way`th slot of the row a hash names. The capacity is a power of two,
+   so the wrap is a mask. */
+#define FSTR_SLOT(c, hash, way) ((c)->slots[((hash) + (way)) & ((c)->capa - 1)])
+
+static uint32_t
+fstr_cache_hash(struct RString *s)
+{
+  return mrb_byte_hash((const uint8_t*)RSTR_PTR(s), RSTR_LEN(s));
+}
+
+static struct mrb_fstr_cache*
+fstr_cache_new(mrb_state *mrb, uint32_t capa)
+{
+  size_t size = sizeof(struct mrb_fstr_cache) + (size_t)capa * sizeof(struct RString*);
+  /* mrb_malloc_simple() rather than mrb_malloc(): a cache that cannot be
+     allocated leaves `String#-@` copying, which is what it did before there
+     was a cache, and raising from a memory saving measure would be a poor
+     trade for the program that has just run short of memory. */
+  struct mrb_fstr_cache *c = (struct mrb_fstr_cache*)mrb_malloc_simple(mrb, size);
+
+  if (c == NULL) return NULL;
+  memset(c, 0, size);
+  c->capa = capa;
+  c->slots = (struct RString**)(c + 1);
+  return c;
+}
+
+/* Move to a table of twice the slots, so that a row which filled has room
+   again. Answers whether the move happened: where the memory is not there,
+   the caller keeps the table it has and drops an entry instead. */
+static mrb_bool
+fstr_cache_grow(mrb_state *mrb)
+{
+  uint32_t capa = mrb->fstr_cache->capa * 2;
+  struct mrb_fstr_cache *c = fstr_cache_new(mrb, capa);
+
+  if (c == NULL) return FALSE;
+
+  /* Read the old table only now: allocating may have collected, and a
+     collection empties the slots of the strings it sweeps. */
+  struct mrb_fstr_cache *old = mrb->fstr_cache;
+  for (uint32_t i = 0; i < old->capa; i++) {
+    struct RString *s = old->slots[i];
+    if (s == NULL) continue;
+    uint32_t hash = fstr_cache_hash(s), way;
+    for (way = 0; way < MRB_FSTR_CACHE_WAYS; way++) {
+      struct RString **slot = &FSTR_SLOT(c, hash, way);
+      if (*slot == NULL) {
+        *slot = s;
+        c->used++;
+        break;
+      }
+    }
+    /* A row that is full even after the move keeps the strings it already
+       holds; this one leaves the cache as an eviction would. */
+    if (way == MRB_FSTR_CACHE_WAYS) s->flags &= ~MRB_STR_FSTR;
+  }
+  mrb->fstr_cache = c;
+  mrb_free(mrb, old);
+  return TRUE;
+}
+
+/* The string standing for these bytes, or NULL where none does. The whole row
+   is read: a slot emptied by the collector is a hole in the middle of it, not
+   the end of it. */
+static struct RString*
+fstr_cache_find(struct mrb_fstr_cache *c, const char *p, mrb_int len, uint32_t enc, uint32_t hash)
+{
+  for (uint32_t way = 0; way < MRB_FSTR_CACHE_WAYS; way++) {
+    struct RString *s = FSTR_SLOT(c, hash, way);
+    if (s && RSTR_LEN(s) == len && (uint32_t)RSTR_ENCODING(s) == enc &&
+        memcmp(RSTR_PTR(s), p, (size_t)len) == 0) {
+      return s;
+    }
+  }
+  return NULL;
+}
+
+/* Give `s` a slot of its row, having found that no string there stands for
+   its bytes. Where the row is full, the table grows if the bound leaves room
+   for it, and otherwise one of the row's strings gives up its slot: the ways
+   are given up in turn, so no single slot carries the cost of a busy row. */
+static void
+fstr_cache_put(mrb_state *mrb, struct RString *s, uint32_t hash)
+{
+  struct mrb_fstr_cache *c = mrb->fstr_cache;
+
+  for (;;) {
+    for (uint32_t way = 0; way < MRB_FSTR_CACHE_WAYS; way++) {
+      struct RString **slot = &FSTR_SLOT(c, hash, way);
+      if (*slot == NULL) {
+        *slot = s;
+        c->used++;
+        s->flags |= MRB_STR_FSTR;
+        return;
+      }
+    }
+    if (c->capa * 2 > (uint32_t)MRB_FSTRING_CACHE_MAX) break;
+    if (!fstr_cache_grow(mrb)) break;
+    c = mrb->fstr_cache;
+  }
+
+  struct RString **victim = &FSTR_SLOT(c, hash, c->victim++ & (MRB_FSTR_CACHE_WAYS - 1));
+  (*victim)->flags &= ~MRB_STR_FSTR;
+  *victim = s;
+  s->flags |= MRB_STR_FSTR;
+}
+
+/* Empty the slot a string about to be freed stands in. The collector has
+   normally emptied it already, in the pass it makes before sweeping; this is
+   for a string freed on a path that pass does not run in front of. The bytes
+   are still there to be hashed, since mrb_gc_free_str() asks before it frees
+   them. */
+static void
+fstr_cache_del(mrb_state *mrb, struct RString *s)
+{
+  struct mrb_fstr_cache *c = mrb->fstr_cache;
+  if (c == NULL) return;
+
+  uint32_t hash = fstr_cache_hash(s);
+  for (uint32_t way = 0; way < MRB_FSTR_CACHE_WAYS; way++) {
+    struct RString **slot = &FSTR_SLOT(c, hash, way);
+    if (*slot == s) {
+      *slot = NULL;
+      c->used--;
+      break;
+    }
+  }
+  s->flags &= ~MRB_STR_FSTR;
+}
+
+void
+mrb_fstr_cache_free(mrb_state *mrb)
+{
+  mrb_free(mrb, mrb->fstr_cache);
+  mrb->fstr_cache = NULL;
+}
+
+MRB_API mrb_value
+mrb_str_fstring(mrb_state *mrb, mrb_value str)
+{
+  struct RString *s = mrb_str_ptr(str);
+
+  /* Already the string its bytes are cached under, so it is its own answer. */
+  if (RSTR_FSTR_P(s)) return str;
+  /* Only a plain String of the collected heap is shared between callers. An
+     instance of a subclass and a string carrying a singleton class each answer
+     for more than their bytes, and handing one of them to the next caller with
+     the same bytes would hand over that too; a string of the read-only heap
+     cannot be given the flag that says which strings the cache holds, since
+     the memory it stands in may be read-only in earnest. */
+  if (s->c != mrb->string_class || s->gc_color == MRB_GC_RED) {
+    return mrb_str_dup_frozen(mrb, str);
+  }
+
+  const char *p = RSTR_PTR(s);
+  mrb_int len = RSTR_LEN(s);
+  uint32_t enc = (uint32_t)RSTR_ENCODING(s);
+  uint32_t hash = mrb_byte_hash((const uint8_t*)p, len);
+  struct mrb_fstr_cache *c = mrb->fstr_cache;
+
+  if (c == NULL) {
+    uint32_t capa = FSTR_CACHE_INIT_SLOTS;
+    while (capa > (uint32_t)MRB_FSTRING_CACHE_MAX) capa >>= 1;
+    c = mrb->fstr_cache = fstr_cache_new(mrb, capa);
+    if (c == NULL) return mrb_str_dup_frozen(mrb, str);
+  }
+  else {
+    struct RString *found = fstr_cache_find(c, p, len, enc, hash);
+    if (found) {
+      /* The slot the string stands in is no reason for the collector to keep
+         it, so the caller's reference has to be one: it goes into the arena,
+         as a string this call had allocated would have. */
+      mrb_value fstr = mrb_obj_value(found);
+      mrb_gc_protect(mrb, fstr);
+      return fstr;
+    }
+  }
+
+  if (!mrb_frozen_p(s)) {
+    /* A copy that owns its bytes, rather than mrb_str_dup()'s, which shares
+       the buffer of a long string: sharing would hold that buffer, spare
+       capacity and all, for as long as the cached copy stands. */
+    struct RString *dup = str_new(mrb, p, len);
+    RSTR_ENC_CR_COPY(dup, s);
+    dup->frozen = 1;
+    s = dup;
+  }
+  fstr_cache_put(mrb, s, hash);
+  return mrb_obj_value(s);
+}
+
+#else  /* the build carries no cache */
+
+MRB_API mrb_value
+mrb_str_fstring(mrb_state *mrb, mrb_value str)
+{
+  return mrb_str_dup_frozen(mrb, str);
+}
+
+#endif  /* MRB_FSTRING_CACHE_MAX > 0 */
 
 enum str_convert_range {
   /* `beg` and `len` are byte unit in `0 ... str.bytesize` */

@@ -1586,3 +1586,88 @@ assert('String#chars of a multibyte receiver longer than the GC arena') do
   assert_equal 300, ("\u3042" * 300).chars.size
   assert_equal "\u3042", ("\u3042" * 300).chars.last
 end if UTF8STRING
+
+assert('String#-@') do
+  s = "a string longer than one that embeds itself"
+  frozen = -s
+  assert_true frozen.frozen?
+  assert_equal s, frozen
+  assert_false s.frozen?
+  assert_true (-frozen).equal?(frozen)
+
+  empty = -""
+  assert_true empty.frozen?
+  assert_equal "", empty
+end
+
+assert('String#-@ answers equal strings with one string') do
+  skip unless GC.stat.key?(:fstring_count)
+  a = -"shared between the two"
+  b = -("shared between" + " the two")
+  assert_true a.equal?(b)
+  assert_false a.equal?("shared between the two")
+end
+
+assert('String#-@ keeps a subclass out of the shared strings') do
+  cls = Class.new(String)
+  sub = -cls.new("as a subclass")
+  assert_true sub.frozen?
+  assert_equal "as a subclass", sub
+  # A subclass instance answers for more than its bytes, so it is neither
+  # handed to a later caller nor answered with what one left behind.
+  assert_false sub.equal?(-"as a subclass")
+  assert_false (-cls.new("as a subclass")).equal?(sub)
+end
+
+assert('String#-@ tells the encodings apart') do
+  skip unless "".respond_to?(:b)
+  a = -"bytes"
+  b = -"bytes".b
+  assert_equal a, b
+  assert_false a.equal?(b)
+end
+
+assert('the frozen string cache lets go of what nothing refers to') do
+  skip unless GC.stat.key?(:fstring_count)
+  # A string reachable only from the cache is collected like any other, and
+  # the slot it stood in is emptied by the collection that frees it. The
+  # strings are held while they are counted, since a build that collects on
+  # every allocation would otherwise have taken them back before the count.
+  held_strings = []
+  i = 0
+  while i < 200
+    held_strings << -"transient #{i}"
+    i += 1
+  end
+  held = GC.stat[:fstring_count]
+  assert_operator held, :>, 0
+  held_strings = nil
+  GC.start
+  assert_operator GC.stat[:fstring_count], :<, held
+end
+
+assert('the frozen string cache keeps what is still referred to') do
+  skip unless GC.stat.key?(:fstring_count)
+  kept = -"still referred to across a collection"
+  GC.start
+  assert_true (-"still referred to across a collection").equal?(kept)
+end
+
+assert('the frozen string cache stops growing at its bound') do
+  skip unless GC.stat.key?(:fstring_count)
+  live = []
+  i = 0
+  while i < 600
+    live << -"bounded #{i}"
+    i += 1
+  end
+  bound = GC.stat[:fstring_capa]
+  while i < 1200
+    live << -"bounded #{i}"
+    i += 1
+  end
+  # Six hundred more strings than the first batch, and not one slot more.
+  assert_equal bound, GC.stat[:fstring_capa]
+  assert_operator GC.stat[:fstring_count], :<=, bound
+  assert_equal 1200, live.size
+end

@@ -299,6 +299,46 @@ From Ruby: `GC.generational_mode = true/false`.
 
 The object's type is set to `MRB_TT_FREE` after freeing.
 
+## Weak Slots: the Frozen String Cache
+
+`String#-@` answers with a frozen string shared between the callers
+that ask about the same bytes, and the table it answers out of
+(`struct mrb_fstr_cache` in `include/mruby/internal.h`, implemented in
+`src/string.c`) is the collector's one **weak** client: a slot naming
+a string is not a reason to keep that string alive.
+
+Three rules make that safe, and all three live in the collector:
+
+1. **Nothing marks a slot.** `gc_mark_children()` never walks the
+   table, so a string reachable only from the cache is unreached and
+   is collected like any other unreachable string.
+2. **A slot is emptied before its string is swept.**
+   `sweep_fstr_cache()` runs at the end of `final_marking_phase()`,
+   which is the one point where marking has settled and sweeping has
+   not started. Every slot naming an unmarked string is emptied there,
+   so no lookup between that point and the sweep can answer with a
+   string the sweep is about to free.
+3. **A string freed on any other path takes itself out.**
+   `mrb_gc_free_str()` empties the slot of a string carrying
+   `MRB_STR_FSTR`, before the bytes the slot would be found by are
+   freed. Rule 2 leaves that flag clear on everything it empties, so
+   this is a backstop rather than a second pass.
+
+A lookup that finds a string puts it in the **arena**
+(`mrb_gc_protect()`), exactly as a lookup that found nothing would
+have put the string it allocated there. Without that, a string held
+only by the C caller and by a slot would be unreached at the next
+final marking, and rule 2 would drop it while the caller still held
+it.
+
+The table costs one pointer per slot and holds no string of its own,
+so its whole cost is `MRB_FSTRING_CACHE_MAX * sizeof(void*)` bytes,
+reached only by a program that fills it. It is allocated on the first
+`String#-@`, doubles when a row fills, and stops at the bound; an
+insertion into a full row past the bound drops one of the row's
+entries, which costs deduplication and nothing else. `GC.stat` reports
+`:fstring_count` and `:fstring_capa`.
+
 ## Triggering GC
 
 ### Debt Model
@@ -358,16 +398,17 @@ From Ruby: `GC.start`.
 
 ### Compile-Time
 
-| Macro                          | Default | Description                             |
-| ------------------------------ | ------- | --------------------------------------- |
-| `MRB_HEAP_PAGE_SIZE`           | 1024    | Objects per heap page                   |
-| `MRB_GRAY_STACK_SIZE`          | 1024    | Gray stack capacity                     |
-| `MRB_GC_ARENA_SIZE`            | 100     | Arena size (fixed mode) or initial size |
-| `MRB_GC_FIXED_ARENA`           | off     | Use fixed-size arena                    |
-| `MRB_GC_TURN_OFF_GENERATIONAL` | off     | Disable generational mode               |
-| `MRB_GC_STRESS`                | off     | Full GC on every allocation (debug)     |
-| `MRB_GC_STATS`                 | off     | Enable GC statistics counters           |
-| `MRB_USE_MALLOC_TRIM`          | off     | Call `malloc_trim()` after full GC      |
+| Macro                          | Default | Description                              |
+| ------------------------------ | ------- | ---------------------------------------- |
+| `MRB_HEAP_PAGE_SIZE`           | 1024    | Objects per heap page                    |
+| `MRB_GRAY_STACK_SIZE`          | 1024    | Gray stack capacity                      |
+| `MRB_GC_ARENA_SIZE`            | 100     | Arena size (fixed mode) or initial size  |
+| `MRB_GC_FIXED_ARENA`           | off     | Use fixed-size arena                     |
+| `MRB_GC_TURN_OFF_GENERATIONAL` | off     | Disable generational mode                |
+| `MRB_GC_STRESS`                | off     | Full GC on every allocation (debug)      |
+| `MRB_GC_STATS`                 | off     | Enable GC statistics counters            |
+| `MRB_USE_MALLOC_TRIM`          | off     | Call `malloc_trim()` after full GC       |
+| `MRB_FSTRING_CACHE_MAX`        | 256     | Slots of the frozen string cache (0=off) |
 
 ### Runtime
 
@@ -399,8 +440,13 @@ GC.stat
 #   :step_limit => 0,           # current step limit setting
 #   :malloc_increase => 8192,   # malloc bytes since last cycle
 #   :malloc_threshold => 16777216, # current malloc threshold setting
+#   :fstring_count => 12,       # strings the frozen string cache holds
+#   :fstring_capa => 64,        # slots it holds them in
 # }
 ```
+
+The last two keys are absent from a build made with
+`MRB_FSTRING_CACHE_MAX=0`, which carries no cache.
 
 With `MRB_GC_STATS` enabled, additional keys are available:
 
@@ -504,5 +550,6 @@ decrease it.
 | File                 | Contents                          |
 | -------------------- | --------------------------------- |
 | `src/gc.c`           | GC implementation                 |
+| `src/string.c`       | Frozen string cache (weak slots)  |
 | `include/mruby/gc.h` | `mrb_gc` structure, public GC API |
 | `include/mruby.h`    | Arena save/restore macros         |
