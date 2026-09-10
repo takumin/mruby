@@ -1608,6 +1608,13 @@ assert('String#-@ answers equal strings with one string') do
   assert_false a.equal?("shared between the two")
 end
 
+assert('String#-@ and a frozen literal answer alike') do
+  skip unless GC.stat.key?(:fstring_count)
+  # `"lit".freeze` is compiled as a call answered out of the same cache, so
+  # the two ways of asking for a frozen string with those bytes meet there.
+  assert_true (-"asked for both ways").equal?("asked for both ways".freeze)
+end
+
 assert('String#-@ keeps a subclass out of the shared strings') do
   cls = Class.new(String)
   sub = -cls.new("as a subclass")

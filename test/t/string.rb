@@ -1589,3 +1589,21 @@ assert('String#bytesplice on a shared buffer') do
   assert_equal 2000, d.bytesize
   assert_equal "0123456789012345678901234567890123456789", d.byteslice(-40, 40)
 end
+
+# `"lit".freeze` is compiled as a call that answers with the string the frozen
+# string cache holds for those bytes: the literal is a string the expression
+# has just made, so what it is frozen into may as well be that one, as it is
+# in CRuby.
+assert('a frozen string literal is answered out of the frozen string cache') do
+  skip unless GC.stat.key?(:fstring_count)
+  assert_true "a literal frozen twice".freeze.equal?("a literal frozen twice".freeze)
+  assert_true "a literal frozen twice".freeze.frozen?
+end
+
+assert('freezing a string answers with that string') do
+  # Only a literal is folded, since only a literal is a string nothing else
+  # can be holding: `freeze` on a receiver of its own answers with it.
+  s = "a string of its own".dup
+  assert_true s.freeze.equal?(s)
+  assert_true s.frozen?
+end

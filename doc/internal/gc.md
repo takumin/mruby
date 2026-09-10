@@ -307,16 +307,26 @@ that ask about the same bytes, and the table it answers out of
 `src/string.c`) is the collector's one **weak** client: a slot naming
 a string is not a reason to keep that string alive.
 
-Two paths fill it, both of them through `src/string.c`:
+Three paths fill it, all of them through `src/string.c`:
 
-| Path                              | Entry point                             | What it does                                                               |
-| --------------------------------- | --------------------------------------- | -------------------------------------------------------------------------- |
-| `String#-@`                       | `mrb_str_fstring()`                     | answers with the string the cache holds for those bytes, or puts one there |
-| a `String` key stored in a `Hash` | `mrb_str_fstring()`, from `h_key_for()` | stores the shared frozen string as the key rather than a private copy      |
+| Path                              | Entry point                             | What it does                                                                  |
+| --------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------- |
+| `String#-@`                       | `mrb_str_fstring()`                     | answers with the string the cache holds for those bytes, or puts one there    |
+| a `String` key stored in a `Hash` | `mrb_str_fstring()`, from `h_key_for()` | stores the shared frozen string as the key rather than a private copy         |
+| a frozen string literal           | `mrb_str_fstring()`, from `__fstring`   | `"lit".freeze` is compiled as a call to `__fstring`, which asks for the bytes |
 
-Either is free to answer with a string other than the one it was
-handed, since what they promise is a frozen string with those bytes and
-nothing about which one.
+Each of the three is free to answer with a string other than the one it
+was handed, since what they promise is a frozen string with those bytes
+and nothing about which one. Freezing a string is not among them, as it
+is not in CRuby: `freeze` answers with the string that was frozen, so
+that string cannot be exchanged for the cache's, and putting it in the
+cache would hand it to every later ask about those bytes. A frozen
+literal reaches the cache through the first path rather than through
+`freeze`: the compiler folds `"lit".freeze` into `__fstring("lit")`
+(`gen_call()` in `mrbgems/mruby-compiler/src/codegen.c`), which it may
+do because the string the literal makes is one nothing else can be
+holding, so a literal frozen inside a loop hands back one string rather
+than one per pass.
 
 Three rules make that safe, and all three live in the collector:
 

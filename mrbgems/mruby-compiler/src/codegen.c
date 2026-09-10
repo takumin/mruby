@@ -2598,11 +2598,43 @@ attr_assign_simple_args(pm_call_node_t *cast)
   return TRUE;
 }
 
+/* Call one of the private methods compiled code is answered by
+   (bob_compiled_rom_entries in src/kernel.c), with `self` as the receiver and
+   one argument. They stand on BasicObject, so the call carries wherever
+   compiled code runs; OP_SSEND fills the receiver register itself. */
+static void
+gen_compiled_call(mrc_codegen_scope *s, mrc_sym sym, mrc_node *arg, int val)
+{
+  genop_1(s, OP_LOADSELF, cursp());
+  push();
+  codegen(s, arg, VAL);
+  push();                       /* reserve the block slot (nregs) */
+  pop_n(3);
+  genop_3(s, OP_SSEND, cursp(), new_sym(s, sym), 1);
+  if (val) push();
+}
+
 static void
 gen_call(mrc_codegen_scope *s, mrc_node *tree, int val, int safe, int recv_ready)
 {
   CAST(call);
   const mrc_sym sym = cast->name;
+
+  /* `"lit".freeze` is compiled as `__fstring("lit")`, which answers with the
+     string the frozen string cache holds for those bytes: a literal frozen
+     inside a loop then hands back one string rather than one per pass.
+     Nothing can tell the two apart, since freezing answers with its receiver
+     and the receiver here is a string this expression has just made; CRuby
+     folds the same call for the same reason. What the fold gives up is a
+     redefined `String#freeze`, as the arithmetic below gives up a redefined
+     `Integer#+`, and --no-optimize leaves both alone. */
+  if (sym == MRC_SYM_1(freeze) && !no_optimize(s) && !safe && !recv_ready &&
+      cast->receiver && nint(cast->receiver) == PM_STRING_NODE &&
+      (cast->arguments == NULL || cast->arguments->arguments.size == 0) &&
+      cast->block == NULL) {
+    gen_compiled_call(s, MRC_SYM_1(__fstring), cast->receiver, val);
+    return;
+  }
 
   if (val && (cast->base.flags & PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE) &&
       attr_assign_simple_args(cast)) {

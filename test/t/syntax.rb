@@ -1953,17 +1953,19 @@ end
 
 DEFINED_TEST_CONST = 1
 
-assert('defined? inside a BasicObject') do
-  # What the compiler cannot work out for itself it asks for at run time, and
-  # a BasicObject has none of Kernel's methods, so what it asks has to be a
-  # method every object has.
+assert('defined? and a frozen literal inside a BasicObject') do
+  # What compiled code asks for at run time it asks of whatever self it is
+  # given, and a BasicObject has none of Kernel's methods, so what it asks has
+  # to be a method every object has.
   cls = Class.new(BasicObject) do
     def answer; defined?(::String); end
     def missing; defined?(::NoSuchConstantAnywhere); end
+    def frozen_literal; "frozen inside a BasicObject".freeze; end
   end
   obj = cls.new
   assert_equal "constant", obj.answer
   assert_nil obj.missing
+  assert_true obj.frozen_literal.frozen?
 end
 
 assert('defined? on operands resolved at run time') do

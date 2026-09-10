@@ -911,13 +911,26 @@ obj_pat_values(mrb_state *mrb, mrb_value self)
   return mrb_nil_value();       /* not reached */
 }
 
+/* What `"lit".freeze` is compiled as: the string the frozen string cache
+   holds for the bytes it is handed (gen_call() in codegen.c). `String#-@`,
+   which mruby-string-ext defines, is what a program written in Ruby asks the
+   same question with. */
+static mrb_value
+mrb_f_fstring(mrb_state *mrb, mrb_value self)
+{
+  mrb_value str;
+
+  mrb_get_args(mrb, "S", &str);
+  return mrb_str_fstring(mrb, str);
+}
+
 /* What compiled code calls, and nothing else is meant to: the answers of
-   `defined?` that the compiler cannot work out for itself. They stand on
-   BasicObject rather than on Kernel because compiled code runs with whatever
-   self it is given, and a BasicObject has none of Kernel's methods --
-   `defined?(::String)` written inside one raised NoMethodError while these
-   stood on Kernel. They are private because the name a program writes for the
-   same question is `defined?` itself. */
+   `defined?` that the compiler cannot work out for itself, and the string a
+   frozen literal is frozen into. They stand on BasicObject rather than on
+   Kernel because compiled code runs with whatever self it is given, and a
+   BasicObject has none of Kernel's methods. They are private because the
+   names a program writes for the same questions are `defined?` itself and
+   `String#-@`. */
 static const mrb_mt_entry bob_compiled_rom_entries[] = {
   MRB_MT_ENTRY(mrb_f_defined_const_path, MRB_SYM_Q(__defined_const_path), MRB_ARGS_REQ(2) | MRB_MT_PRIVATE),
   MRB_MT_ENTRY(mrb_f_defined_method, MRB_SYM_Q(__defined_method), MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
@@ -928,6 +941,7 @@ static const mrb_mt_entry bob_compiled_rom_entries[] = {
   MRB_MT_ENTRY(mrb_f_defined_gvar,   MRB_SYM_Q(__defined_gvar),   MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
   MRB_MT_ENTRY(mrb_f_defined_cvar,   MRB_SYM_Q(__defined_cvar),   MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
   MRB_MT_ENTRY(mrb_f_defined_super,  MRB_SYM_Q(__defined_super),  MRB_ARGS_NONE() | MRB_MT_PRIVATE),
+  MRB_MT_ENTRY(mrb_f_fstring,        MRB_SYM(__fstring),        MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
 };
 
 static const mrb_mt_entry kernel_rom_entries[] = {
