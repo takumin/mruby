@@ -1609,7 +1609,7 @@ assert('a String method that counts takes an implicit conversion') do
   assert_equal 2, "10".to_i(o)
   assert_equal 99, "abc".getbyte(o)
   assert_equal ["a", "b,c"], "a,b,c".split(",", o)
-  assert_equal "abab", "ab" * 2.9
+  assert_equal "abab", "ab" * 2.9 if Object.const_defined?(:Float)
   assert_raise(TypeError) { "ab" * Object.new }
   assert_raise(TypeError) { "ab" * Class.new { def to_int; "2"; end }.new }
 end
