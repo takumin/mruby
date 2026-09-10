@@ -1953,6 +1953,19 @@ end
 
 DEFINED_TEST_CONST = 1
 
+assert('defined? inside a BasicObject') do
+  # What the compiler cannot work out for itself it asks for at run time, and
+  # a BasicObject has none of Kernel's methods, so what it asks has to be a
+  # method every object has.
+  cls = Class.new(BasicObject) do
+    def answer; defined?(::String); end
+    def missing; defined?(::NoSuchConstantAnywhere); end
+  end
+  obj = cls.new
+  assert_equal "constant", obj.answer
+  assert_nil obj.missing
+end
+
 assert('defined? on operands resolved at run time') do
   # constants (in the lexical scope of this method)
   assert_equal 'constant', defined?(DEFINED_TEST_CONST)
