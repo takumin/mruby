@@ -411,6 +411,20 @@ pop_n_(mrc_codegen_scope *s, int n)
 #define pop_n(n) pop_n_(s,n)
 #define cursp() (s->sp)
 
+/* A part of a string interpolation that is no String is converted by sending
+   `to_s`, which the instruction builds in dst+3 and dst+4 and marks in dst+2.
+   None of the three belongs to the concatenation itself, so the frame's
+   high-water mark is raised to cover them.  Nothing is emitted for any of
+   them, and a concatenation whose registers do not fit falls back to calling
+   `to_s` on a nested VM. */
+static void
+genop_strcat(mrc_codegen_scope *s, uint16_t dst)
+{
+  genop_1(s, OP_STRCAT, dst);
+  int high = (int)dst + 5;
+  if (high <= 0xffff && (int)s->nregs < high) s->nregs = (uint16_t)high;
+}
+
 /* A constant read that finds no name hands it to `const_missing` as a real
    send, which the VM builds in dst+1 and dst+2.  Neither register belongs to
    the read itself, so the frame's high-water mark is raised to cover them.
@@ -5703,7 +5717,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
           pop();
           if (str_begin || 0 < i) {
             pop();
-            genop_1(s, OP_STRCAT, cursp());
+            genop_strcat(s, cursp());
           }
           push();
         }
@@ -5811,7 +5825,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
           pop();
           if (str_begin || 0 < i) {
             pop();
-            genop_1(s, OP_STRCAT, cursp());
+            genop_strcat(s, cursp());
           }
           push();
         }
@@ -5880,7 +5894,7 @@ codegen(mrc_codegen_scope *s, mrc_node *tree, int val)
         pop();
         if (str_begin || 0 < i) {
           pop();
-          genop_1(s, OP_STRCAT, cursp());
+          genop_strcat(s, cursp());
         }
         push();
       }
