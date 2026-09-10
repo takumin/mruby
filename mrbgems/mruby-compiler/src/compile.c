@@ -96,6 +96,95 @@ lex_nesting_check(mrc_ccontext *c, pm_token_t *token)
   }
 }
 
+/* Whether nothing but comments and space stands between two points of the
+   source, which is what the head of a file is made of.
+
+   The comments are the ones the parse of the joined source lexed, so a line
+   that reads like one but was the body of a heredoc is not among them.  One
+   of them can begin further up than `from`, an `=begin` block the file before
+   opened being that.
+
+   `*at` walks the list, and only forwards: the caller asks about one head
+   after another and a list of comments is in the order they were lexed, so
+   what a later head is made of is further along than what an earlier one was.
+   A comment the walk has already gone past therefore answers no, which is the
+   answer that leaves a literal alone. */
+static mrc_bool
+prologue_p(const pm_parser_t *p, const pm_comment_t **at, uint32_t from, uint32_t to)
+{
+  const uint8_t *cursor = p->start + from;
+  const uint8_t *end = p->start + to;
+
+  /* prism steps over a byte order mark at the head of the source */
+  if (from == 0 && 3 <= end - cursor &&
+      cursor[0] == 0xef && cursor[1] == 0xbb && cursor[2] == 0xbf) {
+    cursor += 3;
+  }
+  while (cursor < end) {
+    if (pm_char_is_whitespace(*cursor)) {
+      cursor++;
+      continue;
+    }
+    while (*at && (*at)->location.end <= cursor) {
+      *at = (const pm_comment_t *)(*at)->node.next;
+    }
+    if (*at == NULL || cursor < (*at)->location.start) return FALSE;
+    cursor = (*at)->location.end;
+  }
+  return TRUE;
+}
+
+/* What each file's own `# frozen_string_literal` comment asked for.
+
+   Prism records every magic comment it lexes, whether or not the source was
+   still in front of it when it read one, so the parse of the joined source
+   carries all of them and where each one begins says which file it belongs
+   to.  Taking them from there rather than from a parse of each file on its
+   own is what makes a file boundary that falls inside a token come out right:
+   a line that reads like the comment is one only where the lexer of the parse
+   that compiles the source made a comment of it, and the body of a heredoc
+   the file before opened, or anything after `__END__`, is not that.
+
+   Prism takes such a comment only before the first semantic token of the
+   whole source; for a file it is the head of that file. */
+static void
+frozen_string_literal_scan(mrc_ccontext *c)
+{
+  const pm_comment_t *at = (const pm_comment_t *)c->p->comment_list.head;
+  const pm_magic_comment_t *m;
+
+  for (m = (const pm_magic_comment_t *)c->p->magic_comment_list.head;
+       m; m = (const pm_magic_comment_t *)m->node.next) {
+    uint8_t key[21];
+
+    if (m->key_length != sizeof(key)) continue;
+    /* recorded as written, where prism matched it with each `-` read as `_` */
+    for (uint32_t k = 0; k < sizeof(key); k++) {
+      key[k] = m->key_start[k] == '-' ? '_' : m->key_start[k];
+    }
+    if (pm_strncasecmp(key, (const uint8_t *)"frozen_string_literal", sizeof(key)) != 0) {
+      continue;
+    }
+    uint32_t pos = (uint32_t)(m->key_start - c->p->start);
+    uint16_t i = mrc_filename_index(c->filename_table, c->filename_table_length, pos);
+    if (!prologue_p(c->p, &at, c->filename_table[i].start, pos)) continue;
+    /* what prism reads the value as, which is the whole of what it can be */
+    if (m->value_length == 4 &&
+        pm_strncasecmp(m->value_start, (const uint8_t *)"true", 4) == 0) {
+      c->filename_table[i].frozen_string_literal = TRUE;
+    }
+    else if (m->value_length == 5 &&
+             pm_strncasecmp(m->value_start, (const uint8_t *)"false", 5) == 0) {
+      c->filename_table[i].frozen_string_literal = FALSE;
+    }
+    else {
+      /* prism said as much; the comment asks for nothing */
+      continue;
+    }
+    c->filename_table[i].frozen_comment = pos;
+  }
+}
+
 static void
 partial_hook(void *data, pm_parser_t *p, pm_token_t *token)
 {
@@ -249,6 +338,8 @@ mrc_pm_parse(mrc_ccontext *cc)
 {
   mrc_node *node = pm_parse(cc->p);
 
+  frozen_string_literal_scan(cc);
+
 #if defined(PICORB_VM_MRUBYC)
   // Workaround: save top-level locals for PicoRuby(mruby/c) IRB
   pm_program_node_t *program = (pm_program_node_t *)node;
@@ -386,6 +477,8 @@ read_input_files(mrc_ccontext *c, const char **filenames, uint8_t **source, mrc_
     }
     filename_table[i].filename = filenames[i];
     filename_table[i].start = pos;
+    filename_table[i].frozen_comment = MRC_POS_NONE;
+    filename_table[i].frozen_string_literal = FALSE;
     if (filename[0] == '-' && filename[1] == '\0') {
       each_size = append_from_stdin(c, source, length);
       if (each_size < 0) {
@@ -489,6 +582,8 @@ mrc_parse_string_cxt(mrc_ccontext *c, const uint8_t **source, size_t length)
   c->filename_table = (mrc_filename_table *)mrc_malloc(c, sizeof(mrc_filename_table));
   c->filename_table[0].filename = c->filename ? c->filename : "-e";
   c->filename_table[0].start = 0;
+  c->filename_table[0].frozen_comment = MRC_POS_NONE;
+  c->filename_table[0].frozen_string_literal = FALSE;
   c->filename_table_length = 1;
   c->current_filename_index = 0;
   mrc_pm_parser_init(c->p, (uint8_t **)source, length, c);
