@@ -1589,3 +1589,16 @@ assert('String#bytesplice on a shared buffer') do
   assert_equal 2000, d.bytesize
   assert_equal "0123456789012345678901234567890123456789", d.byteslice(-40, 40)
 end
+
+assert('String literal freeze answers one frozen string') do
+  a = 'abc'.freeze
+  assert_predicate a, :frozen?
+  assert_equal 'abc', a
+  # The text alone decides the answer, so every literal of it, wherever it is
+  # written, is the same string.
+  assert_same a, 'abc'.freeze
+  assert_same ''.freeze, ''.freeze
+  # A literal that was not frozen is still a string written afresh each time.
+  assert_not_same a, 'abc'
+  assert_not_same 'abc', 'abc'
+end

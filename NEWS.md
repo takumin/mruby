@@ -88,6 +88,13 @@ the rest. It is not in `default`, so a build asks for it.
 - `String#succ` carries across characters and steps the Unicode letters ([#7288](https://github.com/mruby/mruby/pull/7288))
 - `String#scrub` was added ([#6859](https://github.com/mruby/mruby/issues/6859))
 - `Regexp.escape` escapes whitespace, `#` and `-` ([#7047](https://github.com/mruby/mruby/pull/7047))
+- A `# frozen_string_literal: true` comment freezes the string literals of the
+  file it is written in
+- **_NOTE_**: a frozen string literal is shared: `"lit".freeze`, `-"lit"` and
+  every literal of a file frozen by the comment above answer with one string
+  per text, so two of the same text are the same object and running the line
+  again allocates nothing. An unfrozen literal is still a string of its own
+  each time
 
 # Changes in mrbgems
 
