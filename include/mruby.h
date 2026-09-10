@@ -1159,7 +1159,7 @@ MRB_API struct RClass* mrb_define_module_under_id(mrb_state *mrb, struct RClass 
  * | `a`  | {Array}        | const {mrb_value} *, {mrb_int} | Receive two arguments; `a!` gives (`NULL`,`0`) for `nil`; when `~` follows, `to_ary` is asked for |
  * | `c`  | {Class}/{Module} | strcut RClass * | `c!` gives `NULL` for `nil`                        |
  * | `f`  | {Integer}/{Float} | {mrb_float}    |                                                    |
- * | `i`  | {Integer}/{Float} | {mrb_int}      |                                                    |
+ * | `i`  | {Integer}/{Float} | {mrb_int}      | when `~` follows, `to_int` is asked for where none of the numeric types reads the value |
  * | `b`  | boolean        | {mrb_bool}        |                                                    |
  * | `n`  | {String}/{Symbol} | {mrb_sym}         |                                                    |
  * | `d`  | data           | void *, {mrb_data_type} const | 2nd argument will be used to check data type so it won't be modified; when `!` follows, the value may be `nil` |
@@ -1178,7 +1178,7 @@ MRB_API struct RClass* mrb_define_module_under_id(mrb_state *mrb, struct RClass 
  * |:----:|-----------------------------------------------------------------------------------------|
  * | `!`  | Switch to the alternate mode; The behaviour changes depending on the format specifier   |
  * | `+`  | Request a not frozen object; However, except nil value                                  |
- * | `~`  | Only for `S`, `A`, `H`, `s`, `z` and `a`: take an implicit conversion (`to_str`, `to_ary`, `to_hash`) |
+ * | `~`  | Only for `S`, `A`, `H`, `s`, `z`, `a` and `i`: take an implicit conversion (`to_str`, `to_ary`, `to_hash`, `to_int`) |
  */
 typedef const char *mrb_args_format;
 
@@ -1291,7 +1291,8 @@ MRB_API mrb_value mrb_get_arg1(mrb_state *mrb);
  *
  * The method has read its arguments and found one of the wrong type where
  * a conversion could answer, and asks for it here.  `conv` is one of
- * `MRB_CONV_TO_STR`, `MRB_CONV_TO_ARY` and `MRB_CONV_TO_HASH`, and `argidx`
+ * `MRB_CONV_TO_STR`, `MRB_CONV_TO_ARY`, `MRB_CONV_TO_HASH` and
+ * `MRB_CONV_TO_INT`, and `argidx`
  * numbers the argument from zero.
  *
  * On success the call does not return: the send that reached this method is

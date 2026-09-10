@@ -212,15 +212,14 @@ arbitrary-precision integers when included.
 `ObjectSpace.each_object` has limited functionality compared
 to CRuby.
 
-## Implicit Type Conversion Reaches `to_str`, `to_ary` and `to_hash`, not `to_int`
+## What Bounds the Implicit Type Conversion
 
-mruby consults `to_str`, `to_ary` and `to_hash` where a built-in operation
-is written to take the conversion, so a user-defined class can duck-type as
-a String, an Array or a Hash in those places. `to_int` is consulted
-nowhere: an argument that names an integer still has to be one.
+mruby consults `to_str`, `to_ary`, `to_hash` and `to_int` where a built-in
+operation is written to take the conversion, so a user-defined class can
+duck-type as a String, an Array, a Hash or an Integer in those places.
 
 ```ruby
-class MyInt;  def to_int; 42; end;      end
+class MyInt;  def to_int; 2; end;       end
 class MyStr;  def to_str; "x"; end;     end
 class MyAry;  def to_ary; [1,2,3]; end; end
 ```
@@ -229,18 +228,23 @@ class MyAry;  def to_ary; [1,2,3]; end; end
 "a" + MyStr.new         # => "ax"            (to_str)
 [0].replace(MyAry.new)  # => [1, 2, 3]       (to_ary)
 a, b, c = MyAry.new     # => a=1, b=2, c=3   (to_ary)
-
-[1,2,3][MyInt.new]      # TypeError          (to_int is not consulted)
-"ab" * MyInt.new        # TypeError
+[1,2,3][MyInt.new]      # => 3               (to_int)
+"ab" * MyInt.new        # => "abab"          (to_int)
 ```
 
 Which arguments take a conversion is written down rather than implied by
 the type a method wants. A method written in C marks the argument with `~`
-in its `mrb_get_args()` format (`S~`, `A~`, `H~`, and `s~`, `z~`, `a~` for
-the specifiers that hand out a pointer), or asks for the conversion itself
-with `mrb_convert_arg()` where the format reads `o` and the method decides
-the type. An unmarked specifier demands its type as it always did, so a
-format nobody edited keeps refusing what it always refused.
+in its `mrb_get_args()` format (`S~`, `A~`, `H~`, `i~`, and `s~`, `z~`,
+`a~` for the specifiers that hand out a pointer), or asks for the
+conversion itself with `mrb_convert_arg()` where the format reads `o` and
+the method decides the type. An unmarked specifier reads what it always
+read, so a format nobody edited keeps refusing what it always refused.
+
+`i` is the one specifier that already read more than a single type: it
+takes a Float, and a Bignum, a Rational and a Complex where the build has
+them. The mark leaves all of that alone and adds `to_int` at the end, where
+the specifier used to raise, so `"ab" * 2.9` is still truncated in C rather
+than dispatched to.
 
 The conversion runs as ordinary bytecode: the instruction or the send that
 met the wrong type rewinds and runs again once the conversion has answered.
@@ -252,6 +256,11 @@ itself: a call taking a block, a call whose arguments a splat packed,
 kin all raise `TypeError` as before. `Class#new` reaches `initialize` that
 way, so `File.open(obj)` and `Dir.new(obj)` raise where `File.basename(obj)`
 converts.
+
+A conversion is answered by a method lookup, not by a question put to the
+object, so overriding `respond_to?` steers nothing. One consequence is that
+a `to_int` reached only through `method_missing` is not found, which is
+what CRuby's `respond_to?` answers for it as well.
 
 Identity versions of `to_int`, `to_str`, `to_sym`, and `to_hash`
 remain defined on the corresponding built-in types so that
