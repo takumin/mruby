@@ -387,6 +387,11 @@ size_t mrb_gc_mark_range(mrb_state *mrb, struct RRange *r);
                            ? MRB_STR_CODERANGE_7BIT : MRB_STR_CODERANGE_UNKNOWN))
 
 void mrb_gc_free_str(mrb_state*, struct RString*);
+
+/* How many strings `defined?` has to answer with, which is the length of
+   mrb->defined_answers: the collector marks them (root_scan_phase() in gc.c)
+   and defined_answer_str() in kernel.c fills them in. */
+#define MRB_DEFINED_ANSWER_COUNT 14
 uint32_t mrb_str_hash(mrb_state *mrb, mrb_value str);
 
 #if MRB_FSTRING_CACHE_MAX > 0

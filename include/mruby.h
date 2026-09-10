@@ -464,6 +464,12 @@ struct mrb_state {
   struct mrb_fstr_cache *fstr_cache;
 #endif
 
+  /* The strings `defined?` answers with, one to an answer, made as they are
+     first asked for and kept until the state is closed: a question asked
+     twice is answered with one string. NULL until the first `defined?`
+     answers with something; see defined_answer_str() in src/kernel.c. */
+  struct RString **defined_answers;
+
 #ifdef MRB_USE_DEBUG_HOOK
   void (*code_fetch_hook)(mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs);
   void (*debug_op_hook)(mrb_state* mrb, const struct mrb_irep *irep, const mrb_code *pc, mrb_value *regs);

@@ -625,6 +625,10 @@ mrb_gc_destroy(mrb_state *mrb, mrb_gc *gc)
      take themselves out of: every slot is about to be meaningless anyway. */
   mrb_fstr_cache_free(mrb);
 #endif
+  /* The answers themselves are strings of the heap and go with it; what is
+     freed here is the table naming them. */
+  mrb_free(mrb, mrb->defined_answers);
+  mrb->defined_answers = NULL;
   free_heap(mrb, gc);
   /* free region descriptors (buffer memory belongs to the caller) */
   {
@@ -1412,6 +1416,15 @@ root_scan_phase(mrb_state *mrb, mrb_gc *gc)
 
   mrb_gc_mark(mrb, (struct RBasic*)mrb->eException_class);
   mrb_gc_mark(mrb, (struct RBasic*)mrb->eStandardError_class);
+
+  /* mark the strings `defined?` answers with: they are held by the state
+     rather than by the program, which may have let go of every answer it was
+     given and ask again. */
+  if (mrb->defined_answers) {
+    for (i = 0; i < MRB_DEFINED_ANSWER_COUNT; i++) {
+      mrb_gc_mark(mrb, (struct RBasic*)mrb->defined_answers[i]);
+    }
+  }
 
   /* mark top_self */
   mrb_gc_mark(mrb, (struct RBasic*)mrb->top_self);

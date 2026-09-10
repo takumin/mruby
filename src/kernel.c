@@ -732,6 +732,62 @@ mrb_p_m(mrb_state *mrb, mrb_value self)
    undefined. The compiler emits calls to these for `defined?(...)` operands
    whose kind can only be resolved at run time. */
 
+/* The strings `defined?` answers with. A question asked twice is answered
+   with one string, as it is in CRuby, so each of these is made on its first
+   ask and kept for the life of the state; the answers the compiler knows
+   without asking come from here too, through `__defined_answer`
+   (gen_defined_literal() in codegen.c), so that both ways of arriving at
+   "constant" arrive at the same string.
+
+   They are made rather than taken from the frozen string cache, and so stand
+   outside it: CRuby's answers stand outside its table of interned literals in
+   the same way, and a program that freezes "constant" of its own is left with
+   a string of its own. */
+static const char *const defined_answer_text[MRB_DEFINED_ANSWER_COUNT] = {
+  "expression", "nil", "true", "false", "self", "local-variable",
+  "assignment", "global-variable", "instance-variable", "class variable",
+  "constant", "method", "super", "yield",
+};
+
+static mrb_value
+defined_answer_str(mrb_state *mrb, const char *p, mrb_int len)
+{
+  for (int i = 0; i < MRB_DEFINED_ANSWER_COUNT; i++) {
+    const char *text = defined_answer_text[i];
+
+    if ((mrb_int)strlen(text) != len || memcmp(text, p, (size_t)len) != 0) continue;
+    if (mrb->defined_answers == NULL) {
+      mrb->defined_answers = (struct RString**)mrb_calloc(mrb, MRB_DEFINED_ANSWER_COUNT,
+                                                          sizeof(struct RString*));
+    }
+    if (mrb->defined_answers[i] == NULL) {
+      /* The bytes belong to the program itself, so the string carries them
+         where they stand rather than a copy of them. */
+      mrb_value answer = mrb_str_new_static(mrb, text, len);
+      mrb_obj_freeze(mrb, answer);
+      mrb->defined_answers[i] = mrb_str_ptr(answer);
+    }
+    return mrb_obj_value(mrb->defined_answers[i]);
+  }
+  /* Not one of the answers, which only a caller of `__defined_answer` written
+     by hand can ask for: a frozen string of its own, shared with nobody. */
+  return mrb_str_new_frozen(mrb, p, len);
+}
+
+#define defined_answer(mrb, lit) defined_answer_str(mrb, lit, (mrb_int)(sizeof(lit)-1))
+
+/* What the compiler asks for the answers it knows without asking: it hands
+   over the answer it has and gets the string that stands for it. */
+static mrb_value
+mrb_f_defined_answer(mrb_state *mrb, mrb_value self)
+{
+  const char *p;
+  mrb_int len;
+
+  mrb_get_args(mrb, "s", &p, &len);
+  return defined_answer_str(mrb, p, len);
+}
+
 /* `defined?(meth)`, a call on self with no receiver written: the answer is
    what `respond_to?(:meth, true)` says, asked of the caller's own self, the
    way CRuby's `rb_obj_respond_to` decides it.  A `respond_to?` the object
@@ -751,7 +807,7 @@ mrb_f_defined_method(mrb_state *mrb, mrb_value self)
   else {
     found = mrb_test(mrb_funcall_argv2(mrb, self, rt_id, mrb_symbol_value(sym), mrb_true_value()));
   }
-  if (found) return mrb_str_new_lit_frozen(mrb, "method");
+  if (found) return defined_answer(mrb, "method");
   return mrb_nil_value();
 }
 
@@ -760,7 +816,7 @@ mrb_f_defined_ivar(mrb_state *mrb, mrb_value self)
 {
   mrb_sym sym;
   mrb_get_args(mrb, "n", &sym);
-  if (mrb_iv_defined(mrb, self, sym)) return mrb_str_new_lit_frozen(mrb, "instance-variable");
+  if (mrb_iv_defined(mrb, self, sym)) return defined_answer(mrb, "instance-variable");
   return mrb_nil_value();
 }
 
@@ -773,7 +829,7 @@ mrb_f_defined_const(mrb_state *mrb, mrb_value self)
   mrb_callinfo *ci = &mrb->c->ci[-1];
   if (ci >= mrb->c->cibase && ci->proc &&
       mrb_vm_const_defined_p(mrb, ci, sym)) {
-    return mrb_str_new_lit_frozen(mrb, "constant");
+    return defined_answer(mrb, "constant");
   }
   return mrb_nil_value();
 }
@@ -782,7 +838,7 @@ static mrb_value
 mrb_f_defined_yield(mrb_state *mrb, mrb_value self)
 {
   /* mrb_f_block_given_p_m inspects ci[-1], i.e. the frame that used defined? */
-  if (mrb_test(mrb_f_block_given_p_m(mrb, self))) return mrb_str_new_lit_frozen(mrb, "yield");
+  if (mrb_test(mrb_f_block_given_p_m(mrb, self))) return defined_answer(mrb, "yield");
   return mrb_nil_value();
 }
 
@@ -791,7 +847,7 @@ mrb_f_defined_gvar(mrb_state *mrb, mrb_value self)
 {
   mrb_sym sym;
   mrb_get_args(mrb, "n", &sym);
-  if (mrb_gv_defined(mrb, sym)) return mrb_str_new_lit_frozen(mrb, "global-variable");
+  if (mrb_gv_defined(mrb, sym)) return defined_answer(mrb, "global-variable");
   return mrb_nil_value();
 }
 
@@ -804,7 +860,7 @@ mrb_f_defined_cvar(mrb_state *mrb, mrb_value self)
   mrb_callinfo *ci = &mrb->c->ci[-1];
   if (ci >= mrb->c->cibase && ci->proc &&
       mrb_vm_cv_defined_p(mrb, ci->proc, sym)) {
-    return mrb_str_new_lit_frozen(mrb, "class variable");
+    return defined_answer(mrb, "class variable");
   }
   return mrb_nil_value();
 }
@@ -820,7 +876,7 @@ mrb_f_defined_super(mrb_state *mrb, mrb_value self)
   if (mid != 0 && tc != NULL && tc->super != NULL) {
     struct RClass *c = tc->super;
     mrb_method_t m = mrb_method_search_vm(mrb, &c, mid);
-    if (!MRB_METHOD_UNDEF_P(m)) return mrb_str_new_lit_frozen(mrb, "super");
+    if (!MRB_METHOD_UNDEF_P(m)) return defined_answer(mrb, "super");
   }
   return mrb_nil_value();
 }
@@ -862,7 +918,7 @@ mrb_f_defined_const_path(mrb_state *mrb, mrb_value self)
     outer = mrb_const_get_noraise(mrb, mrb_class_ptr(outer), mrb_symbol(RARRAY_PTR(path)[i]));
     if (mrb_undef_p(outer)) return mrb_nil_value();
   }
-  return mrb_str_new_lit_frozen(mrb, "constant");
+  return defined_answer(mrb, "constant");
 }
 
 /* `defined?(recv.meth)`: the caller has evaluated the receiver and hands it
@@ -883,7 +939,7 @@ mrb_f_defined_method_on(mrb_state *mrb, mrb_value self)
     if (!mrb_func_basic_p(mrb, recv, rtm_id, mrb_false) && mrb_respond_to(mrb, recv, rtm_id)) {
       mrb_value v = mrb_funcall_argv2(mrb, recv, rtm_id,
                                       mrb_symbol_value(sym), mrb_false_value());
-      if (mrb_test(v)) return mrb_str_new_lit_frozen(mrb, "method");
+      if (mrb_test(v)) return defined_answer(mrb, "method");
     }
     return mrb_nil_value();
   }
@@ -895,7 +951,7 @@ mrb_f_defined_method_on(mrb_state *mrb, mrb_value self)
   if ((m.flags & MRB_METHOD_PROTECTED_FL) && !mrb_obj_is_kind_of(mrb, self, c)) {
     return mrb_nil_value();
   }
-  return mrb_str_new_lit_frozen(mrb, "method");
+  return defined_answer(mrb, "method");
 }
 
 /* ---------------------------*/
@@ -941,6 +997,7 @@ static const mrb_mt_entry bob_compiled_rom_entries[] = {
   MRB_MT_ENTRY(mrb_f_defined_gvar,   MRB_SYM_Q(__defined_gvar),   MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
   MRB_MT_ENTRY(mrb_f_defined_cvar,   MRB_SYM_Q(__defined_cvar),   MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
   MRB_MT_ENTRY(mrb_f_defined_super,  MRB_SYM_Q(__defined_super),  MRB_ARGS_NONE() | MRB_MT_PRIVATE),
+  MRB_MT_ENTRY(mrb_f_defined_answer, MRB_SYM(__defined_answer), MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
   MRB_MT_ENTRY(mrb_f_fstring,        MRB_SYM(__fstring),        MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),
 };
 
