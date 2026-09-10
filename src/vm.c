@@ -2728,6 +2728,7 @@ prepare_tagged_break(mrb_state *mrb, uint32_t tag, const mrb_callinfo *return_ci
 
 #define INIT_DISPATCH for (;;) { CALL_CODE_HOOKS(); switch (insn) {
 #define CASE(insn,ops) case insn: DECODE_OPERANDS(ops); L_ ## insn ## _BODY:
+#define CASE_PC(insn,ops) case insn: pc0 = ci->pc; DECODE_OPERANDS(ops); L_ ## insn ## _BODY:
 #define NEXT goto L_END_DISPATCH
 #define JUMP NEXT
 #define END_DISPATCH L_END_DISPATCH: RETURN_IF_TASK_STOPPED(mrb);}}
@@ -2736,6 +2737,7 @@ prepare_tagged_break(mrb_state *mrb, uint32_t tag, const mrb_callinfo *return_ci
 
 #define INIT_DISPATCH JUMP; return mrb_nil_value();
 #define CASE(insn,ops) L_ ## insn: DECODE_OPERANDS(ops); L_ ## insn ## _BODY:
+#define CASE_PC(insn,ops) L_ ## insn: pc0 = ci->pc; DECODE_OPERANDS(ops); L_ ## insn ## _BODY:
 #define NEXT RETURN_IF_TASK_STOPPED(mrb); CALL_CODE_HOOKS(); goto *optable[insn]
 #define JUMP NEXT
 #define END_DISPATCH RETURN_IF_TASK_STOPPED(mrb)
@@ -3362,6 +3364,23 @@ const_missing_send_p(mrb_state *mrb, mrb_value mod)
   return TRUE;
 }
 
+/* Whether OP_STRCAT sends `to_s` through the VM rather than calling it from
+   C.  A `to_s` written in C runs in C either way, so the send is worth
+   building only for one the program wrote, and one it declared private or
+   protected keeps the nested call, which dispatched it however it was
+   declared. */
+static mrb_bool
+str_cat_send_p(mrb_state *mrb, mrb_value v)
+{
+  struct RClass *c = mrb_class(mrb, v);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(to_s));
+
+  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_NOTIMPL_P(m)) return FALSE;
+  if (MRB_METHOD_VISIBILITY(m) != 0) return FALSE;
+  if (MRB_METHOD_FUNC_P(m)) return FALSE;
+  return !MRB_PROC_CFUNC_P(MRB_METHOD_PROC(m));
+}
+
 /* OP_GETMCNST: the constant `Mod::NAME` names.  A name the module does not
    hold goes to `const_missing` as a real send, so a `Fiber.yield` written in
    the hook can suspend.  The receiver already sits in regs[a], which is where
@@ -3704,6 +3723,7 @@ mrb_vm_exec(mrb_state *mrb, const struct RProc *begin_proc, const mrb_code *iseq
   uint16_t b;
   uint16_t c;
   mrb_sym mid;
+  const mrb_code *pc0 = NULL;
   const struct mrb_irep_catch_handler *ch;
 
 #ifndef MRB_USE_VM_SWITCH_DISPATCH
@@ -5140,9 +5160,54 @@ RETRY_TRY_BLOCK:
       NEXT;
     }
 
-    CASE(OP_STRCAT, B) {
+    CASE_PC(OP_STRCAT, B) {
+      /* A part that is no String is converted by sending `to_s`, which the VM
+         runs rather than a nested mrb_vm_exec.  The instruction runs again
+         when the send answers, and the answer is left in a register of its
+         own, so the second run still holds what was sent to: that is what
+         mrb_any_to_s() answers for when a `to_s` answers with something other
+         than a String, as mrb_type_convert() does.  An undef in regs[a+2]
+         tells the second run from the first, and sits below the frame the
+         send pushes, which is what keeps the callee from writing over it.  A
+         concatenation whose registers an older compiler did not reserve takes
+         the nested call, and so does a part whose `to_s` str_cat_send_p()
+         leaves in C. */
+      mrb_value part = regs[a+1];
+
       mrb_ensure_string_type(mrb, regs[a]);
-      mrb_str_concat(mrb, regs[a], regs[a+1]);
+      switch (mrb_type(part)) {
+      case MRB_TT_STRING:
+        break;
+      default:
+        if (a+4 < irep->nregs) {
+          if (mrb_undef_p(regs[a+2])) {
+            mrb_value ans = regs[a+3];
+            SET_NIL_VALUE(regs[a+2]);
+            SET_NIL_VALUE(regs[a+3]);
+            part = (mrb_type(ans) == MRB_TT_STRING) ? ans : mrb_any_to_s(mrb, part);
+            ci = mrb->c->ci;
+            break;
+          }
+          if (str_cat_send_p(mrb, part)) {
+            regs[a+2] = mrb_undef_value();
+            regs[a+3] = part;
+            SET_NIL_VALUE(regs[a+4]);
+            ci->pc = pc0;
+            a += 3;
+            c = 0;
+            mid = MRB_SYM(to_s);
+            goto L_SENDB_SYM;
+          }
+        }
+        /* fall through */
+      case MRB_TT_SYMBOL: case MRB_TT_INTEGER:
+      case MRB_TT_SCLASS: case MRB_TT_CLASS: case MRB_TT_MODULE:
+        /* the types mrb_obj_as_string() answers for itself never sent one */
+        part = mrb_obj_as_string(mrb, part);
+        ci = mrb->c->ci;
+        break;
+      }
+      mrb_str_cat_str(mrb, regs[a], part);
       ci = mrb->c->ci;
       NEXT;
     }
@@ -5380,6 +5445,7 @@ RETRY_TRY_BLOCK:
 
     CASE(OP_EXT1, Z) {
       const mrb_code *pc = ci->pc;
+      pc0 = ci->pc - 1;
       insn = READ_B();
       switch (insn) {
 #define OPCODE(insn,ops) case OP_ ## insn: FETCH_ ## ops ## _1(); ci->pc = pc; goto L_OP_ ## insn ## _BODY;
@@ -5390,6 +5456,7 @@ RETRY_TRY_BLOCK:
     }
     CASE(OP_EXT2, Z) {
       const mrb_code *pc = ci->pc;
+      pc0 = ci->pc - 1;
       insn = READ_B();
       switch (insn) {
 #define OPCODE(insn,ops) case OP_ ## insn: FETCH_ ## ops ## _2(); ci->pc = pc; goto L_OP_ ## insn ## _BODY;
@@ -5400,6 +5467,7 @@ RETRY_TRY_BLOCK:
     }
     CASE(OP_EXT3, Z) {
       const mrb_code *pc = ci->pc;
+      pc0 = ci->pc - 1;
       insn = READ_B();
       switch (insn) {
 #define OPCODE(insn,ops) case OP_ ## insn: FETCH_ ## ops ## _3(); ci->pc = pc; goto L_OP_ ## insn ## _BODY;
