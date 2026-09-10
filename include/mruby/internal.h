@@ -421,6 +421,33 @@ struct mrb_fstr_cache {
 };
 
 void mrb_fstr_cache_free(mrb_state *mrb);
+
+#ifndef MRB_NO_FSTRING_LITERALS
+/* The interned literals: the string every literal of every loaded irep is
+ * answered with, so that a program handed the bytes of a literal is handed
+ * the literal, as it is in CRuby. Unlike the cache above it holds its strings
+ * rather than naming them -- the collector marks every slot, and nothing is
+ * ever dropped -- so what it costs is one string to a distinct literal, and a
+ * build says no to that with MRB_NO_FSTRING_LITERALS. Open addressing, and
+ * never more than three quarters full, so a walk over a row ends at a hole.
+ */
+struct mrb_fstr_literals {
+  uint32_t capa;                /* slots, a power of two */
+  uint32_t used;                /* slots holding a string */
+  struct RString **slots;       /* capa of them, NULL where empty */
+};
+
+void mrb_fstr_literals_free(mrb_state *mrb);
+void mrb_fstr_intern_irep(mrb_state *mrb, const struct mrb_irep *irep);
+#define MRB_FSTRING_LITERALS_P 1
+#endif
+#endif
+
+/* A build with no literals to intern -- either of the two knobs turns them
+   off -- reads the walk over an irep's pool as nothing at all. */
+#ifndef MRB_FSTRING_LITERALS_P
+#define MRB_FSTRING_LITERALS_P 0
+#define mrb_fstr_intern_irep(mrb, irep) ((void)0)
 #endif
 
 mrb_value mrb_str_dump(mrb_state *mrb, mrb_value str);

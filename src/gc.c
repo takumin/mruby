@@ -624,6 +624,9 @@ mrb_gc_destroy(mrb_state *mrb, mrb_gc *gc)
   /* Before the heap goes, so that the strings freed below find no cache to
      take themselves out of: every slot is about to be meaningless anyway. */
   mrb_fstr_cache_free(mrb);
+#if MRB_FSTRING_LITERALS_P
+  mrb_fstr_literals_free(mrb);
+#endif
 #endif
   /* The answers themselves are strings of the heap and go with it; what is
      freed here is the table naming them. */
@@ -1416,6 +1419,18 @@ root_scan_phase(mrb_state *mrb, mrb_gc *gc)
 
   mrb_gc_mark(mrb, (struct RBasic*)mrb->eException_class);
   mrb_gc_mark(mrb, (struct RBasic*)mrb->eStandardError_class);
+
+#if MRB_FSTRING_LITERALS_P
+  /* mark the interned literals: what holds a literal is the state, so that
+     the source keeps answering for its bytes however little of it the
+     program is still holding. */
+  if (mrb->fstr_literals) {
+    struct mrb_fstr_literals *tbl = mrb->fstr_literals;
+    for (uint32_t i = 0; i < tbl->capa; i++) {
+      mrb_gc_mark(mrb, (struct RBasic*)tbl->slots[i]);
+    }
+  }
+#endif
 
   /* mark the strings `defined?` answers with: they are held by the state
      rather than by the program, which may have let go of every answer it was
@@ -2482,6 +2497,7 @@ mrb_objspace_page_slot_size(void)
  *  Keys: :live, :debt, :state, :generational, :full,
  *        :step_limit, :malloc_increase, :malloc_threshold
  *  With the frozen string cache: :fstring_count, :fstring_capa
+ *  With the interned literals: :fstring_literal_count
  *  With MRB_GC_STATS: :total, :minor, :major
  *
  */
@@ -2510,6 +2526,13 @@ gc_stat(mrb_state *mrb, mrb_value self)
     mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(fstring_capa)),
                  mrb_int_value(mrb, c ? (mrb_int)c->capa : 0));
   }
+#if MRB_FSTRING_LITERALS_P
+  {
+    struct mrb_fstr_literals *l = mrb->fstr_literals;
+    mrb_hash_set(mrb, hash, mrb_symbol_value(MRB_SYM(fstring_literal_count)),
+                 mrb_int_value(mrb, l ? (mrb_int)l->used : 0));
+  }
+#endif
 #endif
 
 #ifdef MRB_GC_STATS

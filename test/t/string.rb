@@ -1600,6 +1600,28 @@ assert('a frozen string literal is answered out of the frozen string cache') do
   assert_true "a literal frozen twice".freeze.frozen?
 end
 
+# Every literal of every irep is interned as the irep is loaded, as CRuby
+# interns the literals it compiles: the source carried the bytes before the
+# program ran, so it is the source that answers for them.
+assert('a literal answers for its bytes before the program does') do
+  skip unless GC.stat.key?(:fstring_literal_count)
+  own = "carried by the source of this file".dup.freeze
+  assert_true own.frozen?
+  assert_false "carried by the source of this file".freeze.equal?(own)
+  assert_true "carried by the source of this file".freeze.equal?(
+    "carried by the source of this file".freeze)
+end
+
+assert('an interned literal is held rather than cached') do
+  skip unless GC.stat.key?(:fstring_literal_count)
+  # Nothing but the source may be holding a literal, and a collection leaves
+  # every one of them where it stands.
+  interned = GC.stat[:fstring_literal_count]
+  assert_operator interned, :>, 0
+  GC.start
+  assert_equal interned, GC.stat[:fstring_literal_count]
+end
+
 assert('freezing a string answers with that string') do
   # Only a literal is folded, since only a literal is a string nothing else
   # can be holding: `freeze` on a receiver of its own answers with it.

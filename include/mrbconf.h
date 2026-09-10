@@ -182,20 +182,35 @@
 /* Frozen string cache configuration */
 /* Upper bound on the entries the cache of frozen strings holds. It is what
    `String#-@` answers out of, and where a `String` key stored in a `Hash`
-   comes from. An entry is one pointer and nothing else, and the cache holds no
-   string of its own, so what a build spends on it never passes
-   MRB_FSTRING_CACHE_MAX * sizeof(void*) bytes -- 2KB on a 64-bit target at the
-   default, 1KB on a 32-bit one. The table is allocated the first time one of
-   those paths reaches it and grows toward the bound only as strings collide in
-   it, so a program that shares a handful of strings pays for a handful.
+   comes from. An entry is one
+   pointer and nothing else, and the cache holds no string of its own, so what
+   a build spends on it never passes MRB_FSTRING_CACHE_MAX * sizeof(void*)
+   bytes -- 2KB on a 64-bit target at the default, 1KB on a 32-bit one. The
+   table is allocated the first time one of those paths reaches it and grows
+   toward the bound only as strings collide in it, so a program that shares a
+   handful of strings pays for a handful.
 
-   Reaching the bound costs deduplication, not correctness: an insertion into
-   a full row drops an entry, and the string it named is deduplicated again
-   the next time it is asked for. Set to 0 to build without the cache, where
-   `String#-@` answers with a frozen copy every time. */
+   Reaching the bound costs sharing, not correctness: an insertion into a full
+   row drops an entry, and the string it named is shared again the next time
+   it is asked for. Set to 0 to build without the cache, where each of those
+   paths answers with a frozen copy of its own. */
 #ifndef MRB_FSTRING_CACHE_MAX
 #define MRB_FSTRING_CACHE_MAX 256
 #endif
+
+/* Define to leave the string literals of loaded code uninterned.
+
+   Every literal of every irep is otherwise interned as the irep is loaded,
+   which is what CRuby's compiler does with the literals it compiles, and what
+   makes the source answer for the bytes it spells: `-s` on a string the
+   program built with the bytes of a literal answers with the literal. Those
+   strings are held rather than cached -- a weak slot would let go of a
+   literal the program is not holding -- so the cost is one string to a
+   distinct literal, over the life of the state, and a build that would
+   rather answer with whichever string asked first says so here. What a
+   literal costs is its header alone where the bytes are the program's own
+   read-only data, which is where compiled-in code stands. */
+/* #define MRB_NO_FSTRING_LITERALS */
 
 /* obsolete configurations */
 #if defined(DISABLE_STDIO) || defined(MRB_DISABLE_STDIO)

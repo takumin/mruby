@@ -1615,6 +1615,14 @@ assert('String#-@ and a frozen literal answer alike') do
   assert_true (-"asked for both ways").equal?("asked for both ways".freeze)
 end
 
+assert('String#-@ answers with the literal the source carries') do
+  skip unless GC.stat.key?(:fstring_literal_count)
+  own = "spelled out in this file as well".dup.freeze
+  assert_false (-own).equal?(own)
+  assert_true (-own).equal?(-"spelled out in this file as well")
+  assert_equal own, -own
+end
+
 assert('String#-@ keeps a subclass out of the shared strings') do
   cls = Class.new(String)
   sub = -cls.new("as a subclass")
@@ -1700,6 +1708,20 @@ assert('the frozen string cache stops growing at its bound') do
   assert_equal bound, GC.stat[:fstring_capa]
   assert_operator GC.stat[:fstring_count], :<=, bound
   assert_equal 1200, live.size
+end
+
+assert('freezing a string interns nothing') do
+  skip unless GC.stat.key?(:fstring_literal_count)
+  # A literal is interned as the code carrying it is loaded, and freezing is
+  # not another way in: `freeze` answers with the string that was frozen, so
+  # that string cannot be exchanged for a shared one and nothing is put in the
+  # tables on its behalf. CRuby's `freeze` interns nothing either.
+  own = ("frozen on its" + " own").freeze
+  assert_true own.frozen?
+
+  shared = -("frozen on its" + " own")
+  assert_false shared.equal?(own)
+  assert_true shared.equal?(-("frozen on its" + " own"))
 end
 
 # The frozen key a Hash stores comes from the same cache, which is why these

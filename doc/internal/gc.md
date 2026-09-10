@@ -360,6 +360,28 @@ insertion into a full row past the bound drops one of the row's
 entries, which costs deduplication and nothing else. `GC.stat` reports
 `:fstring_count` and `:fstring_capa`.
 
+### The interned literals
+
+Beside the cache stands a table of the string literals of every irep
+that has been loaded (`struct mrb_fstr_literals`, filled by
+`mrb_fstr_intern_irep()` as `read_irep()` and `mrb_load_proc()` hand
+code over). `mrb_str_fstring()` reads it before the cache, so a program
+that asks about the bytes of a literal is answered with the literal,
+which is what CRuby answers with: its compiler interns every literal it
+compiles.
+
+That table is **strong**, and is the one place these two differ.
+`root_scan_phase()` marks every slot, nothing is ever dropped, and the
+strings stand until the state is closed. It has to be: a weak slot
+would let go of a literal as soon as the program stopped holding one,
+and the source would stop answering for bytes it plainly still spells.
+What it costs is one string to a distinct literal -- a header alone
+where the bytes are read-only data, which is where code compiled into
+the binary stands -- and `MRB_NO_FSTRING_LITERALS` builds it out for a
+target that would rather not pay it. `GC.stat[:fstring_literal_count]`
+says how many stand there; a default build interns about a hundred
+before a line of the program runs.
+
 ## Triggering GC
 
 ### Debt Model
@@ -419,17 +441,18 @@ From Ruby: `GC.start`.
 
 ### Compile-Time
 
-| Macro                          | Default | Description                              |
-| ------------------------------ | ------- | ---------------------------------------- |
-| `MRB_HEAP_PAGE_SIZE`           | 1024    | Objects per heap page                    |
-| `MRB_GRAY_STACK_SIZE`          | 1024    | Gray stack capacity                      |
-| `MRB_GC_ARENA_SIZE`            | 100     | Arena size (fixed mode) or initial size  |
-| `MRB_GC_FIXED_ARENA`           | off     | Use fixed-size arena                     |
-| `MRB_GC_TURN_OFF_GENERATIONAL` | off     | Disable generational mode                |
-| `MRB_GC_STRESS`                | off     | Full GC on every allocation (debug)      |
-| `MRB_GC_STATS`                 | off     | Enable GC statistics counters            |
-| `MRB_USE_MALLOC_TRIM`          | off     | Call `malloc_trim()` after full GC       |
-| `MRB_FSTRING_CACHE_MAX`        | 256     | Slots of the frozen string cache (0=off) |
+| Macro                          | Default | Description                                  |
+| ------------------------------ | ------- | -------------------------------------------- |
+| `MRB_HEAP_PAGE_SIZE`           | 1024    | Objects per heap page                        |
+| `MRB_GRAY_STACK_SIZE`          | 1024    | Gray stack capacity                          |
+| `MRB_GC_ARENA_SIZE`            | 100     | Arena size (fixed mode) or initial size      |
+| `MRB_GC_FIXED_ARENA`           | off     | Use fixed-size arena                         |
+| `MRB_GC_TURN_OFF_GENERATIONAL` | off     | Disable generational mode                    |
+| `MRB_GC_STRESS`                | off     | Full GC on every allocation (debug)          |
+| `MRB_GC_STATS`                 | off     | Enable GC statistics counters                |
+| `MRB_USE_MALLOC_TRIM`          | off     | Call `malloc_trim()` after full GC           |
+| `MRB_FSTRING_CACHE_MAX`        | 256     | Slots of the frozen string cache (0=off)     |
+| `MRB_NO_FSTRING_LITERALS`      | off     | Leave the literals of loaded code uninterned |
 
 ### Runtime
 
@@ -463,11 +486,13 @@ GC.stat
 #   :malloc_threshold => 16777216, # current malloc threshold setting
 #   :fstring_count => 12,       # strings the frozen string cache holds
 #   :fstring_capa => 64,        # slots it holds them in
+#   :fstring_literal_count => 105, # literals interned as code was loaded
 # }
 ```
 
-The last two keys are absent from a build made with
-`MRB_FSTRING_CACHE_MAX=0`, which carries no cache.
+The last three keys are absent from a build made with
+`MRB_FSTRING_CACHE_MAX=0`, which carries no cache, and the last of them
+from one made with `MRB_NO_FSTRING_LITERALS`.
 
 With `MRB_GC_STATS` enabled, additional keys are available:
 

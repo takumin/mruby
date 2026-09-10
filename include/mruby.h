@@ -458,10 +458,19 @@ struct mrb_state {
 
 #if MRB_FSTRING_CACHE_MAX > 0
   /* Where a frozen string is found again by the bytes it carries, for
-     `String#-@` and for a `String` key stored in a `Hash`. Nothing here keeps
-     a string alive; see struct mrb_fstr_cache in mruby/internal.h. NULL until
-     the first of those paths reaches it. */
+     `String#-@`, for a `String` key stored in a `Hash`, and for a frozen
+     string literal. Nothing here keeps a string alive; see struct
+     mrb_fstr_cache in mruby/internal.h. NULL until the first of those paths
+     reaches it. */
   struct mrb_fstr_cache *fstr_cache;
+
+#ifndef MRB_NO_FSTRING_LITERALS
+  /* The string literals of every irep that has been loaded, one to a distinct
+     literal, held until the state is closed so that the source answers for
+     the bytes it carries. NULL until the first irep with a literal in it
+     arrives; see struct mrb_fstr_literals in mruby/internal.h. */
+  struct mrb_fstr_literals *fstr_literals;
+#endif
 #endif
 
   /* The strings `defined?` answers with, one to an answer, made as they are

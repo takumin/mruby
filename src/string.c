@@ -16,6 +16,7 @@
 #include <mruby/string.h>
 #include <mruby/numeric.h>
 #include <mruby/internal.h>
+#include <mruby/irep.h>
 #include <string.h>
 
 typedef struct mrb_shared_string {
@@ -1866,7 +1867,10 @@ mrb_str_dup_frozen(mrb_state *mrb, mrb_value str)
  *
  * One more path reaches it: a `String` key stored in a `Hash` is taken from
  * here rather than copied per table (h_key_for() in hash.c, through
- * mrb_str_fstring()).
+ * mrb_str_fstring()). Freezing a string does not put it here, as it does not
+ * in CRuby: what freezing answers with is the string that was frozen, so a
+ * frozen string reaches the cache when it is first asked about and not
+ * before.
  *
  * Two things keep it inside a bound that an embedded build can afford. It
  * holds pointers and no strings, so its whole cost is its slots, and the
@@ -1923,6 +1927,18 @@ fstr_cache_hash(struct RString *s)
 {
   return mrb_byte_hash((const uint8_t*)RSTR_PTR(s), RSTR_LEN(s));
 }
+
+/* What the table is allocated with: FSTR_CACHE_INIT_SLOTS, or the bound where
+   the bound is smaller than that. */
+static uint32_t
+fstr_cache_init_capa(void)
+{
+  uint32_t capa = FSTR_CACHE_INIT_SLOTS;
+
+  while (capa > (uint32_t)MRB_FSTRING_CACHE_MAX) capa >>= 1;
+  return capa;
+}
+
 
 static struct mrb_fstr_cache*
 fstr_cache_new(mrb_state *mrb, uint32_t capa)
@@ -2052,6 +2068,155 @@ mrb_fstr_cache_free(mrb_state *mrb)
   mrb->fstr_cache = NULL;
 }
 
+#ifndef MRB_NO_FSTRING_LITERALS
+/* ------------------------------------------------------------------------
+ * The interned literals
+ *
+ * Every string literal of every irep that is loaded is interned as it
+ * arrives, which is what CRuby's compiler does with the literals it
+ * compiles, and what makes the source the first answer for the bytes it
+ * carries: a program that freezes a string of its own with the bytes of a
+ * literal is answered with the literal, not with its own string.
+ *
+ * They are held rather than cached. A slot of the weak cache is no reason to
+ * keep a string alive, so a literal put there would be collected the moment
+ * the program let go of it and the source would stop answering for its bytes;
+ * these are marked as roots instead (root_scan_phase() in gc.c) and stand
+ * until the state is closed. What that costs is one string to a distinct
+ * literal, which is why MRB_NO_FSTRING_LITERALS builds it out: a build that
+ * would rather answer with whichever string asked first than carry its own
+ * source is free to.
+ * ------------------------------------------------------------------------ */
+
+#define FSTR_LIT_INIT_SLOTS 64
+
+static struct mrb_fstr_literals*
+fstr_lit_new(mrb_state *mrb, uint32_t capa)
+{
+  size_t size = sizeof(struct mrb_fstr_literals) + (size_t)capa * sizeof(struct RString*);
+  /* As with the cache: a table that cannot be allocated leaves the literals
+     uninterned rather than raising out of a memory saving measure. */
+  struct mrb_fstr_literals *l = (struct mrb_fstr_literals*)mrb_malloc_simple(mrb, size);
+
+  if (l == NULL) return NULL;
+  memset(l, 0, size);
+  l->capa = capa;
+  l->slots = (struct RString**)(l + 1);
+  return l;
+}
+
+/* Where these bytes stand, or where they would stand: the table is never
+   full, so the walk always ends. */
+static struct RString**
+fstr_lit_slot(struct mrb_fstr_literals *l, const char *p, mrb_int len, uint32_t enc,
+              uint32_t hash)
+{
+  uint32_t mask = l->capa - 1;
+
+  for (uint32_t i = hash & mask; ; i = (i + 1) & mask) {
+    struct RString **slot = &l->slots[i];
+    struct RString *s = *slot;
+
+    if (s == NULL) return slot;
+    if (RSTR_LEN(s) == len && (uint32_t)RSTR_ENCODING(s) == enc &&
+        memcmp(RSTR_PTR(s), p, (size_t)len) == 0) {
+      return slot;
+    }
+  }
+}
+
+/* Move to a table of twice the slots, so that the walk above stays short.
+   Answers whether the move happened: where the memory is not there, the
+   caller leaves the literal uninterned. */
+static mrb_bool
+fstr_lit_grow(mrb_state *mrb)
+{
+  struct mrb_fstr_literals *old = mrb->fstr_literals;
+  struct mrb_fstr_literals *l = fstr_lit_new(mrb, old->capa * 2);
+
+  if (l == NULL) return FALSE;
+  for (uint32_t i = 0; i < old->capa; i++) {
+    struct RString *s = old->slots[i];
+
+    if (s == NULL) continue;
+    *fstr_lit_slot(l, RSTR_PTR(s), RSTR_LEN(s), (uint32_t)RSTR_ENCODING(s),
+                   mrb_byte_hash((const uint8_t*)RSTR_PTR(s), RSTR_LEN(s))) = s;
+    l->used++;
+  }
+  mrb->fstr_literals = l;
+  mrb_free(mrb, old);
+  return TRUE;
+}
+
+/* The string standing for these bytes among the literals, or NULL. */
+static struct RString*
+fstr_lit_find(mrb_state *mrb, const char *p, mrb_int len, uint32_t enc, uint32_t hash)
+{
+  struct mrb_fstr_literals *l = mrb->fstr_literals;
+
+  if (l == NULL) return NULL;
+  return *fstr_lit_slot(l, p, len, enc, hash);
+}
+
+/* Intern one literal of a pool: the bytes stand in the irep, so the string
+   carries them where they are when they are the program's own read-only data
+   and copies them otherwise, in case the irep is freed before the state is.
+   A literal already interned is left as it stands. */
+static void
+fstr_lit_intern(mrb_state *mrb, const char *p, mrb_int len)
+{
+  mrb_value str = mrb_ro_data_p(p) ? mrb_str_new_static(mrb, p, len)
+                                   : mrb_str_new(mrb, p, len);
+  struct RString *s = mrb_str_ptr(str);
+  uint32_t hash = mrb_byte_hash((const uint8_t*)p, len);
+  struct mrb_fstr_literals *l = mrb->fstr_literals;
+
+  if (l == NULL) {
+    l = mrb->fstr_literals = fstr_lit_new(mrb, FSTR_LIT_INIT_SLOTS);
+    if (l == NULL) return;
+  }
+  else if (l->used * 4 >= l->capa * 3 && !fstr_lit_grow(mrb)) {
+    return;
+  }
+  l = mrb->fstr_literals;
+
+  struct RString **slot = fstr_lit_slot(l, p, len, (uint32_t)RSTR_ENCODING(s), hash);
+  if (*slot) return;            /* the same bytes have been here before */
+  s->frozen = 1;
+  s->flags |= MRB_STR_FSTR;
+  *slot = s;
+  l->used++;
+}
+
+void
+mrb_fstr_intern_irep(mrb_state *mrb, const struct mrb_irep *irep)
+{
+  if (irep == NULL) return;
+
+  int ai = mrb_gc_arena_save(mrb);
+  for (int i = 0; i < irep->plen; i++) {
+    const mrb_irep_pool *v = &irep->pool[i];
+
+    if (v->tt & IREP_TT_NFLAG) continue;        /* a number, not a literal */
+    fstr_lit_intern(mrb, v->u.str, (mrb_int)(v->tt >> 2));
+    /* The table holds what was made, so the arena has no more to say about
+       it, and an irep of a thousand literals does not overflow it. */
+    mrb_gc_arena_restore(mrb, ai);
+  }
+  for (int i = 0; i < irep->rlen; i++) {
+    mrb_fstr_intern_irep(mrb, irep->reps[i]);
+  }
+}
+
+void
+mrb_fstr_literals_free(mrb_state *mrb)
+{
+  mrb_free(mrb, mrb->fstr_literals);
+  mrb->fstr_literals = NULL;
+}
+#endif  /* MRB_NO_FSTRING_LITERALS */
+
+
 MRB_API mrb_value
 mrb_str_fstring(mrb_state *mrb, mrb_value str)
 {
@@ -2059,6 +2224,7 @@ mrb_str_fstring(mrb_state *mrb, mrb_value str)
 
   /* Already the string its bytes are cached under, so it is its own answer. */
   if (RSTR_FSTR_P(s)) return str;
+
   /* What the answer carries is the receiver's class with a singleton class
      passed over, and only a plain String is ever shared between callers: an
      instance of a subclass answers for more than its bytes, so handing one to
@@ -2086,10 +2252,18 @@ mrb_str_fstring(mrb_state *mrb, mrb_value str)
   uint32_t hash = mrb_byte_hash((const uint8_t*)p, len);
   struct mrb_fstr_cache *c = mrb->fstr_cache;
 
+#ifndef MRB_NO_FSTRING_LITERALS
+  /* A literal answers for its bytes before any string the program made with
+     them, since the source carried them before the program ran: this is what
+     CRuby answers with, having interned every literal as it compiled it. */
+  {
+    struct RString *lit = fstr_lit_find(mrb, p, len, enc, hash);
+    if (lit) return mrb_obj_value(lit);
+  }
+#endif
+
   if (c == NULL) {
-    uint32_t capa = FSTR_CACHE_INIT_SLOTS;
-    while (capa > (uint32_t)MRB_FSTRING_CACHE_MAX) capa >>= 1;
-    c = mrb->fstr_cache = fstr_cache_new(mrb, capa);
+    c = mrb->fstr_cache = fstr_cache_new(mrb, fstr_cache_init_capa());
     if (c == NULL) return mrb_str_dup_frozen(mrb, str);
   }
   else {
@@ -2129,6 +2303,7 @@ mrb_str_fstring(mrb_state *mrb, mrb_value str)
 }
 
 #endif  /* MRB_FSTRING_CACHE_MAX > 0 */
+
 
 enum str_convert_range {
   /* `beg` and `len` are byte unit in `0 ... str.bytesize` */
