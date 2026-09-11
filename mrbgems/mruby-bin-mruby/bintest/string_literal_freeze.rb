@@ -130,3 +130,16 @@ assert('a frozen literal lets go of its string with the code it is written in') 
     p GC.stat[:frozen_string_count] <= base + 1
   RUBY
 end
+
+assert('a binary string put in the table first does not stand for a literal') do
+  # The table is keyed on the encoding as well as the bytes, so neither a
+  # literal answering its own freeze nor one its file froze is answered with a
+  # string that reads the same bytes as binary.
+  assert_mruby_out "false\nfalse\nfalse\n", <<~'RUBY'
+    b = "\xC3\xA9".b.freeze
+    -b
+    p "\xC3\xA9".freeze.equal?(b)
+    p (-"\xC3\xA9").equal?(b)
+    p eval("# frozen_string_literal: true\n\"\\xC3\\xA9\"").equal?(b)
+  RUBY
+end

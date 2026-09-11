@@ -1663,17 +1663,26 @@ str_uplus(mrb_state *mrb, mrb_value str)
  * call-seq:
  *   -string -> frozen_string
  *
- * Returns `self` if `self` is already frozen.
+ * Returns the one frozen string carrying the bytes of `self`, which is `self`
+ * where `self` is frozen and no other string carries them already.
  *
- * Otherwise returns a frozen copy of `self`, of the same class.
+ * An instance of a subclass is answered with a frozen copy of `self`, of the
+ * same class.
  */
 static mrb_value
 str_uminus(mrb_state *mrb, mrb_value str)
 {
-  if (mrb_frozen_p(mrb_obj_ptr(str))) {
-    return str;
+  /* Only a plain String stands for its bytes and nothing else, so only one is
+     answered out of the strings those bytes are shared through.  An instance
+     of a subclass answers for its class as well, and is frozen as a copy of
+     its own as it was before there was anything to share. */
+  if (mrb_obj_class(mrb, str) != mrb->string_class) {
+    if (mrb_frozen_p(mrb_obj_ptr(str))) {
+      return str;
+    }
+    return mrb_obj_freeze(mrb, str_copy_with_class(mrb, str));
   }
-  return mrb_obj_freeze(mrb, str_copy_with_class(mrb, str));
+  return mrb_str_frozen_shared(mrb, str);
 }
 
 /* Internal helper for String#ascii_only? - checks if string contains only ASCII characters */

@@ -53,7 +53,8 @@ struct RStringEmbed {
      bit 4-8    the embedded length
      bit 9-10   the coderange
      bit 11-12  the encoding index
-     bit 13-19  free
+     bit 13-18  free
+     bit 19     whether the frozen string table holds this string
 
    The order is the one that leaves what is free in a single run rather than in
    pieces, and puts the field likeliest to widen at the top of what is used. A
@@ -62,9 +63,11 @@ struct RStringEmbed {
    anywhere else pushes every field above it along. Of the two that can widen
    it is the encoding index that is expected to first, since a build carrying
    more than the four encodings two bits name is what this field is here to
-   allow. The embedded length is the other, and only where sizeof(void*) grows
-   to 16: RSTRING_EMBED_LEN_MAX is 11 on 32-bit and 27 on 64-bit, both of which
-   five bits hold. */
+   allow. It has the six free bits to grow into: MRB_STR_FSTR is at the top of
+   the word rather than at the bottom of what is free, so that what is free
+   stays next to the field that is going to take it. The embedded length is the
+   other, and only where sizeof(void*) grows to 16: RSTRING_EMBED_LEN_MAX is 11
+   on 32-bit and 27 on 64-bit, both of which five bits hold. */
 #define MRB_STR_EMBED_LEN_SHIFT 4
 #define MRB_STR_EMBED_LEN_BITS 5
 #define MRB_STR_EMBED_LEN_MASK (((1 << MRB_STR_EMBED_LEN_BITS) - 1) << MRB_STR_EMBED_LEN_SHIFT)
@@ -115,6 +118,20 @@ struct RStringEmbed {
 #define RSTR_SHARED_P(s) ((s)->flags & MRB_STR_SHARED)
 #define RSTR_FSHARED_P(s) ((s)->flags & MRB_STR_FSHARED)
 #define RSTR_NOFREE_P(s) ((s)->flags & MRB_STR_NOFREE)
+
+/* Whether the table of frozen strings holds this string under its own bytes,
+   which is to say that this is the one string those bytes are answered with.
+   The table is the authority and this bit is what it wrote there, so a string
+   that carries it is its own answer and needs no lookup to find that out.
+
+   Only the table sets it, and nothing clears it: an entry is dropped only for
+   a string the sweep is about to free, and a freed slot is filled with zeros
+   before it is handed out again. A string that carries it is frozen, so its
+   bytes stay where the table's key points and the bit cannot outlive what it
+   claims. */
+#define MRB_STR_FSTR (1 << 19)
+#define RSTR_FSTR_P(s) ((s)->flags & MRB_STR_FSTR)
+#define RSTR_SET_FSTR_FLAG(s) ((s)->flags |= MRB_STR_FSTR)
 
 /* What reading the bytes as the encoding they carry has come back with: not
    asked yet, nothing but ASCII, read whole and sound, or read and found
