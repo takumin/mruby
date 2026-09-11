@@ -1780,3 +1780,19 @@ assert('String#chars of a multibyte receiver longer than the GC arena') do
   assert_equal 300, ("\u3042" * 300).chars.size
   assert_equal "\u3042", ("\u3042" * 300).chars.last
 end if UTF8STRING
+
+assert('String#-@ on a literal answers one frozen string') do
+  a = -'abc'
+  assert_predicate a, :frozen?
+  assert_equal 'abc', a
+  assert_same a, -'abc'
+  # `-"lit"` and `"lit".freeze` answer with the same string: both are the one
+  # frozen string of that text.
+  assert_same a, 'abc'.freeze
+  assert_not_same a, 'abc'
+  # A receiver that is not a literal is answered by the method itself, which
+  # freezes a copy of its own.
+  s = 'abc'
+  assert_predicate(-s, :frozen?)
+  assert_equal 'abc', -s
+end

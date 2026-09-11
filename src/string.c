@@ -16,6 +16,7 @@
 #include <mruby/string.h>
 #include <mruby/numeric.h>
 #include <mruby/internal.h>
+#include <mruby/irep.h>
 #include <string.h>
 
 typedef struct mrb_shared_string {
@@ -27,6 +28,78 @@ typedef struct mrb_shared_string {
   mrb_int reserved;
   char *ptr;
 } mrb_shared_string;
+
+/*
+ * The frozen string literals a program is answered with.
+ *
+ * A literal the compiler froze (`"lit".freeze`, `-"lit"`, or every literal
+ * of a file carrying a `frozen_string_literal: true` comment) can never be
+ * written to, so one string stands for every occurrence of the same bytes
+ * anywhere in the program and the opcode allocates nothing after the first.
+ * This table is what makes that one string findable.  Its keys are the
+ * strings themselves, compared by the bytes they carry, which a frozen string
+ * keeps where they are for as long as it lives.
+ *
+ * Code holds the strings its literals were answered with, as a CRuby iseq
+ * holds its operands, so a literal is one object for as long as the code it
+ * is written in lives, whether or not the program holds it.  Each entry
+ * counts the places in live code it has been answered at, and an entry whose
+ * count is not zero is marked with the roots by mrb_gc_mark_frozen_strings().
+ * The count is what lets the hold end.  A state that compiles code as it goes
+ * (eval, a REPL, anything reading a program in) writes literals for as long
+ * as it runs, and each piece of code gives its counts back when it is freed,
+ * in mrb_frozen_strings_forget_irep().  An irep an image compiled into the
+ * program (MRB_IREP_NO_FREE) is never freed, so it pins its strings for good
+ * and nothing is recorded for its sites.
+ *
+ * An entry whose count is zero names its string without holding it, and
+ * mrb_gc_sweep_frozen_strings() takes it out once a cycle has not reached the
+ * string.
+ */
+/* This table and the one after it are open addressing with linear probing.
+   Each is only asked for a key, given one and made to forget one, which a few
+   lines do in a fraction of the code a khash instantiation brings.  A key
+   taken out has the keys after it in its run moved back over the gap rather
+   than leaving the slot marked, so no lookup walks the slots of keys already
+   gone. */
+struct mrb_frzstrs {
+  uint32_t capa;                /* a power of two */
+  uint32_t size;
+  /* `capa` strings, NULL in an empty slot, and after them `capa` counts, 0 in
+     an empty slot.  Two arrays rather than one of pairs, which a 64-bit build
+     would pad out to 16 bytes a slot. */
+  struct RString *str[];
+};
+
+/* The slot frzstr_find() answers when the table holds no string for the
+   bytes. */
+#define FRZSTR_NONE UINT32_MAX
+
+static inline uint32_t
+frzstr_hash(const char *p, mrb_int len)
+{
+  return mrb_byte_hash((const uint8_t*)p, len);
+}
+
+/* The count of a string that code which is never freed was answered with. */
+#define FRZSTR_PIN_FOREVER UINT32_MAX
+
+/* For each irep that can be freed and has answered a frozen literal, one bit
+   per pool entry, set once the entry's site has been counted.  The irep's
+   address is the key. */
+struct frzsite {
+  const struct mrb_irep *irep;  /* NULL in an empty slot */
+  uint8_t *bits;
+};
+
+struct mrb_frzsites {
+  uint32_t capa;                /* a power of two */
+  uint32_t size;
+  struct frzsite e[];
+};
+
+#define frzsite_hash(irep) \
+  ((uint32_t)(((uintptr_t)(irep) >> 4) ^ ((uintptr_t)(irep) >> 13)))
 
 const char mrb_digitmap[] = "0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -1842,6 +1915,412 @@ mrb_str_dup_frozen(mrb_state *mrb, mrb_value str)
     mrb_basic_ptr(str)->frozen = TRUE;
   }
   return str;
+}
+
+static inline uint32_t*
+frzstr_pins(struct mrb_frzstrs *t)
+{
+  return (uint32_t*)(t->str + t->capa);
+}
+
+/* The slot of the string for the `len` bytes at `p`, whose hash is `hash`,
+   or FRZSTR_NONE when there is none. */
+static uint32_t
+frzstr_find(mrb_state *mrb, const char *p, mrb_int len, uint32_t hash)
+{
+  struct mrb_frzstrs *t = mrb->frozen_strings;
+  struct RString *s;
+  uint32_t mask, i;
+
+  if (t == NULL) return FRZSTR_NONE;
+  mask = t->capa - 1;
+  for (i = hash & mask; (s = t->str[i]) != NULL; i = (i + 1) & mask) {
+    /* memcmp() takes no NULL, which the empty literal of an irep pool may be,
+       so equal lengths of zero answer before either pointer is read. */
+    if (RSTR_LEN(s) == len &&
+        (len == 0 || memcmp(RSTR_PTR(s), p, (size_t)len) == 0)) {
+      return i;
+    }
+  }
+  return FRZSTR_NONE;
+}
+
+/* The empty slot a string whose hash is `hash` goes in.  An eighth of the
+   slots is always empty, so the probe ends. */
+static uint32_t
+frzstr_empty(struct mrb_frzstrs *t, uint32_t hash)
+{
+  uint32_t mask = t->capa - 1;
+  uint32_t i = hash & mask;
+
+  while (t->str[i]) i = (i + 1) & mask;
+  return i;
+}
+
+/* Make the table twice as large, or make it.  The allocation may collect,
+   which takes strings out of the table in place, so the strings are read
+   once it is done. */
+static void
+frzstr_grow(mrb_state *mrb)
+{
+  uint32_t capa = mrb->frozen_strings ? mrb->frozen_strings->capa * 2 : 8;
+  struct mrb_frzstrs *t = (struct mrb_frzstrs*)
+    mrb_calloc(mrb, 1, sizeof(*t) + (sizeof(struct RString*) + sizeof(uint32_t)) * capa);
+  struct mrb_frzstrs *old = mrb->frozen_strings;
+
+  t->capa = capa;
+  if (old) {
+    uint32_t *pins = frzstr_pins(t);
+    uint32_t *old_pins = frzstr_pins(old);
+
+    for (uint32_t i = 0; i < old->capa; i++) {
+      struct RString *s = old->str[i];
+
+      if (s) {
+        uint32_t k = frzstr_empty(t, frzstr_hash(RSTR_PTR(s), RSTR_LEN(s)));
+
+        t->str[k] = s;
+        pins[k] = old_pins[i];
+      }
+    }
+    t->size = old->size;
+    mrb_free(mrb, old);
+  }
+  mrb->frozen_strings = t;
+}
+
+/* Put `s`, whose hash is `hash` and whose bytes the table holds no string
+   for, in the table uncounted, and answer its slot.  Growing the table
+   allocates and so may collect, and the string is not in place to be found
+   until this returns, so the caller holds `s` across the call: every one of
+   them has it on the GC arena or in a register. */
+static uint32_t
+frzstr_put(mrb_state *mrb, struct RString *s, uint32_t hash)
+{
+  struct mrb_frzstrs *t = mrb->frozen_strings;
+  uint32_t k;
+
+  /* Filled to seven eighths, where the site table below stops at three
+     quarters: this one has a slot for every string a program freezes, so
+     the room a slot takes counts for more than the probe a fuller run adds. */
+  if (t == NULL || (t->size + 1) * 8 > t->capa * 7) frzstr_grow(mrb);
+  t = mrb->frozen_strings;
+  k = frzstr_empty(t, hash);
+  t->str[k] = s;
+  t->size++;
+  return k;
+}
+
+/* Take the string in slot `i` out.  Each string after it in the same run
+   that could stand in the emptied slot is moved back into it, so that no
+   later probe stops at the gap short of a string it is looking for.  Where a
+   string would stand is found by hashing its bytes again, as the table keeps
+   no hash beside it. */
+static void
+frzstr_remove(struct mrb_frzstrs *t, uint32_t i)
+{
+  uint32_t mask = t->capa - 1;
+  uint32_t *pins = frzstr_pins(t);
+  struct RString *s;
+
+  for (uint32_t j = (i + 1) & mask; (s = t->str[j]) != NULL; j = (j + 1) & mask) {
+    uint32_t home = frzstr_hash(RSTR_PTR(s), RSTR_LEN(s)) & mask;
+
+    if (((j - home) & mask) >= ((j - i) & mask)) {
+      t->str[i] = s;
+      pins[i] = pins[j];
+      i = j;
+    }
+  }
+  t->str[i] = NULL;
+  pins[i] = 0;
+  t->size--;
+}
+
+/* The slot of `irep` in `t`, or the empty slot it would go in.  A quarter of
+   the slots is always empty, so the probe ends. */
+static struct frzsite*
+frzsite_slot(struct mrb_frzsites *t, const struct mrb_irep *irep)
+{
+  uint32_t mask = t->capa - 1;
+  uint32_t i = frzsite_hash(irep) & mask;
+
+  while (t->e[i].irep && t->e[i].irep != irep) i = (i + 1) & mask;
+  return &t->e[i];
+}
+
+/* Make the table twice as large, or make it.  The allocation may collect,
+   which takes entries out of the table in place, so the entries are read
+   once it is done. */
+static void
+frzsite_grow(mrb_state *mrb)
+{
+  uint32_t capa = mrb->frozen_sites ? mrb->frozen_sites->capa * 2 : 8;
+  struct mrb_frzsites *t = (struct mrb_frzsites*)
+    mrb_calloc(mrb, 1, sizeof(*t) + sizeof(struct frzsite) * capa);
+  struct mrb_frzsites *old = mrb->frozen_sites;
+
+  t->capa = capa;
+  if (old) {
+    for (uint32_t i = 0; i < old->capa; i++) {
+      if (old->e[i].irep) *frzsite_slot(t, old->e[i].irep) = old->e[i];
+    }
+    t->size = old->size;
+    mrb_free(mrb, old);
+  }
+  mrb->frozen_sites = t;
+}
+
+/* The bits of `irep`, one per pool entry, made on the first ask.  The room
+   for the entry and the bits are both allocated ahead of the entry going in,
+   so that neither allocation can leave an entry without bits, and the slot is
+   found after both: a collection in either frees ireps and takes their
+   entries out, which may move it. */
+static uint8_t*
+frzsite_bits(mrb_state *mrb, const struct mrb_irep *irep)
+{
+  struct mrb_frzsites *t = mrb->frozen_sites;
+  struct frzsite *e;
+  uint8_t *bits;
+
+  if (t) {
+    e = frzsite_slot(t, irep);
+    if (e->irep) return e->bits;
+  }
+  if (t == NULL || (t->size + 1) * 4 > t->capa * 3) frzsite_grow(mrb);
+  bits = (uint8_t*)mrb_calloc(mrb, ((size_t)irep->plen + 7) / 8, 1);
+  t = mrb->frozen_sites;
+  e = frzsite_slot(t, irep);
+  e->irep = irep;
+  e->bits = bits;
+  t->size++;
+  return bits;
+}
+
+/* Take the entry of `irep` out and answer its bits, or NULL when it has none.
+   Each entry after it in the same run that could stand in the emptied slot
+   is moved back into it, so that no later probe stops at the gap short of an
+   entry it is looking for. */
+static uint8_t*
+frzsite_take(mrb_state *mrb, const struct mrb_irep *irep)
+{
+  struct mrb_frzsites *t = mrb->frozen_sites;
+  uint32_t mask, i, j;
+  uint8_t *bits;
+
+  if (t == NULL) return NULL;
+  mask = t->capa - 1;
+  i = (uint32_t)(frzsite_slot(t, irep) - t->e);
+  if (t->e[i].irep == NULL) return NULL;
+  bits = t->e[i].bits;
+  for (j = (i + 1) & mask; t->e[j].irep; j = (j + 1) & mask) {
+    uint32_t home = frzsite_hash(t->e[j].irep) & mask;
+
+    if (((j - home) & mask) >= ((j - i) & mask)) {
+      t->e[i] = t->e[j];
+      i = j;
+    }
+  }
+  t->e[i].irep = NULL;
+  t->size--;
+  return bits;
+}
+
+/* The frozen string standing for the literal at `irep->pool[idx]`, which the
+   VM answers a frozen literal with.  The first call for a given text makes the
+   string; every later one, wherever in the program the same text is written,
+   is answered with that same string.  The site is counted the first time it
+   asks, and the count keeps the string for as long as `irep` lives.
+
+   The bytes of an irep that is never freed stay where they are for good, so
+   the string shares them.  Any other irep's are copied, unless they are
+   read-only data, which mrb_str_new() shares: the string may outlive the irep,
+   and an irep read from a buffer its caller later frees would leave both the
+   string and the key it is found by pointing into freed memory. */
+mrb_value
+mrb_str_frozen_literal(mrb_state *mrb, const struct mrb_irep *irep, uint32_t idx)
+{
+  const char *p = irep->pool[idx].u.str;
+  mrb_int len = (mrb_int)(irep->pool[idx].tt >> 2);
+  mrb_bool forever = (irep->flags & MRB_IREP_NO_FREE) != 0;
+  uint32_t hash = frzstr_hash(p, len);
+  uint8_t *bits = NULL;
+  uint32_t k, *pin;
+  mrb_value str;
+
+  /* What allocates goes ahead of the lookup: a collection takes strings out,
+     which may move the one found. */
+  if (!forever) bits = frzsite_bits(mrb, irep);
+
+  k = frzstr_find(mrb, p, len, hash);
+  if (k != FRZSTR_NONE) {
+    str = mrb_obj_value(mrb->frozen_strings->str[k]);
+  }
+  else {
+    str = forever ? mrb_str_new_static(mrb, p, len) : mrb_str_new(mrb, p, len);
+    mrb_obj_freeze(mrb, str);
+    k = frzstr_put(mrb, mrb_str_ptr(str), hash);
+  }
+
+  pin = &frzstr_pins(mrb->frozen_strings)[k];
+  if (*pin == FRZSTR_PIN_FOREVER) return str;
+  if (forever) {
+    *pin = FRZSTR_PIN_FOREVER;
+  }
+  else if (!(bits[idx / 8] & (1 << (idx % 8)))) {
+    bits[idx / 8] |= (uint8_t)(1 << (idx % 8));
+    (*pin)++;
+  }
+  return str;
+}
+
+/* How many strings the table holds, which `GC.stat` reports as
+   `:frozen_string_count`.  A test that the collector takes back a literal
+   nothing holds has this to read and the strings themselves to hold. */
+size_t
+mrb_frozen_strings_count(mrb_state *mrb)
+{
+  return mrb->frozen_strings ? (size_t)mrb->frozen_strings->size : 0;
+}
+
+/* Mark the strings live code was answered with: the entries whose count is
+   not zero.  Called with the roots, from both marking phases. */
+void
+mrb_gc_mark_frozen_strings(mrb_state *mrb)
+{
+  struct mrb_frzstrs *t = mrb->frozen_strings;
+  uint32_t *pins;
+
+  if (t == NULL) return;
+  pins = frzstr_pins(t);
+  for (uint32_t i = 0; i < t->capa; i++) {
+    if (pins[i] != 0) mrb_gc_mark(mrb, (struct RBasic*)t->str[i]);
+  }
+}
+
+/* Take out the uncounted entries naming a string this cycle did not reach,
+   which is what makes the table hold those weakly: a string no live code was
+   answered with and nothing else reaches is swept as any other unreached
+   string is, and the table is left naming none of what the sweep frees.
+
+   It runs where marking has settled and the sweep has not started, so a string
+   that is unreached here is one that is really unreachable, and no lookup
+   between here and the sweep can answer with a string the sweep is about to
+   free.  A key is the string it names, so an entry has to go before the
+   string does.
+
+   The cache in front of the table names its strings without holding them,
+   and is emptied of the same strings on the same terms: a literal whose code
+   was freed leaves an entry there that nothing else would take out. */
+void
+mrb_gc_sweep_frozen_strings(mrb_state *mrb)
+{
+  if (mrb->frozen_strings) {
+    struct mrb_frzstrs *t = mrb->frozen_strings;
+    uint32_t *pins = frzstr_pins(t);
+    /* `i` is not advanced over a removal, so the entry moved into the slot
+       just emptied is looked at next.  Entries are only moved back, so none
+       is moved past `i` to be missed; one moved from the start of the table
+       to its end, by a run that wraps round, is looked at twice, and answers
+       the same both times. */
+    for (uint32_t i = 0; i < t->capa; ) {
+      if (t->str[i] && pins[i] == 0 &&
+          mrb_gc_unreached_p(mrb, (struct RBasic*)t->str[i])) {
+        frzstr_remove(t, i);
+        continue;
+      }
+      i++;
+    }
+    /* The table only ever doubles, so the slots a state gave a great many
+       strings would be kept for as long as it runs.  Empty is the one size it
+       can be taken down to here, where freeing is all that may be done and
+       allocating a smaller table may not; the next literal makes it afresh. */
+    if (t->size == 0) mrb_free_frozen_strings(mrb);
+  }
+
+#ifndef MRB_NO_FRZSTR_CACHE
+  {
+    struct mrb_frzstr_cache_entry *sc = mrb->frzstr_cache;
+
+    for (int i=0; i<MRB_FRZSTR_CACHE_SIZE; sc++,i++) {
+      if (sc->irep && mrb_gc_unreached_p(mrb, sc->str)) sc->irep = NULL;
+    }
+  }
+#endif
+}
+
+#ifndef MRB_NO_FRZSTR_CACHE
+/* Forget the entries of one irep before its memory is freed.  The cache is
+   keyed by the irep's address, so the next irep allocated at that address
+   would otherwise be answered with the strings of another scope's literals. */
+void
+mrb_frzstr_cache_forget_irep(mrb_state *mrb, const struct mrb_irep *irep)
+{
+  struct mrb_frzstr_cache_entry *sc = mrb->frzstr_cache;
+
+  for (int i=0; i<MRB_FRZSTR_CACHE_SIZE; sc++,i++) {
+    if (sc->irep == irep) sc->irep = NULL;
+  }
+}
+#endif
+
+/* Give back the counts of `irep`'s sites before it is freed.  An entry with a
+   count is never taken out, so each is found again by the text of its pool
+   entry.  Its string stays through this cycle, which marked it with the
+   roots, and goes in a later one if nothing else holds it. */
+void
+mrb_frozen_strings_forget_irep(mrb_state *mrb, const struct mrb_irep *irep)
+{
+  uint8_t *bits = frzsite_take(mrb, irep);
+
+  if (bits == NULL) return;
+  if (mrb->frozen_strings) {
+    for (uint32_t i = 0; i < irep->plen; i++) {
+      const char *p = irep->pool[i].u.str;
+      mrb_int len = (mrb_int)(irep->pool[i].tt >> 2);
+      uint32_t k;
+
+      if (!(bits[i / 8] & (1 << (i % 8)))) continue;
+      k = frzstr_find(mrb, p, len, frzstr_hash(p, len));
+      if (k != FRZSTR_NONE) {
+        uint32_t *pin = &frzstr_pins(mrb->frozen_strings)[k];
+
+        if (*pin != FRZSTR_PIN_FOREVER) (*pin)--;
+      }
+    }
+  }
+  mrb_free(mrb, bits);
+  /* The last irep that answered a literal has given its bits back, so there
+     is nothing left to record; the next one that answers one makes the table
+     again. */
+  if (mrb->frozen_sites->size == 0) mrb_free_frozen_sites(mrb);
+}
+
+/* Gives back the table itself, which mrb_close() does ahead of taking the
+   heap down, so that the ireps the heap frees find no table to look their
+   text up in against strings already freed.  The sweep does it too, for a
+   table left holding nothing. */
+void
+mrb_free_frozen_strings(mrb_state *mrb)
+{
+  mrb_free(mrb, mrb->frozen_strings);
+  mrb->frozen_strings = NULL;
+}
+
+/* Gives back the bits of the ireps still standing, which is what mrb_close()
+   is left with once the heap is down, and nothing at all where the last irep
+   to answer a literal has already given its bits back. */
+void
+mrb_free_frozen_sites(mrb_state *mrb)
+{
+  struct mrb_frzsites *t = mrb->frozen_sites;
+
+  if (t == NULL) return;
+  for (uint32_t i = 0; i < t->capa; i++) {
+    if (t->e[i].irep) mrb_free(mrb, t->e[i].bits);
+  }
+  mrb_free(mrb, t);
+  mrb->frozen_sites = NULL;
 }
 
 enum str_convert_range {

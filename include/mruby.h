@@ -305,6 +305,28 @@ struct mrb_const_cache_entry {
 };
 #endif
 
+#ifdef MRB_FRZSTR_CACHE_SIZE
+# undef MRB_NO_FRZSTR_CACHE
+mrb_static_assert_powerof2(MRB_FRZSTR_CACHE_SIZE);
+#else
+/* default frozen string literal cache size: 32 */
+/* cache size needs to be power of 2 */
+# define MRB_FRZSTR_CACHE_SIZE (1<<5)
+#endif
+
+#ifndef MRB_NO_FRZSTR_CACHE
+/* Caches the (irep, pool index) -> frozen string a frozen literal would
+   otherwise look up by its text on every execution. What a pool entry's text
+   resolves to never changes, so an entry is only ever dropped with the irep it
+   was made for. The string is held by the table the lookup fills, so nothing
+   here keeps it alive. */
+struct mrb_frzstr_cache_entry {
+  const struct mrb_irep *irep;
+  uint32_t idx;
+  struct RBasic *str;
+};
+#endif
+
 struct mrb_jmpbuf;
 
 typedef void (*mrb_atexit_func)(mrb_state*);
@@ -312,7 +334,11 @@ typedef void (*mrb_atexit_func)(mrb_state*);
 /**
  * Slots of `mrb_state.idx_class`, one per builtin the inline index opcodes
  * (`OP_GETIDX`, `OP_GETIDX0`, `OP_SETIDX`) reimplement in C, plus one for
- * `String#+`, which `OP_ADD` guards the same way.
+ * `String#+`, which `OP_ADD` guards the same way, and the two methods a
+ * string literal answers with a shared frozen string instead of sending.  The
+ * index opcodes read a slot to compare their receiver's class against; the
+ * literal has itself for a receiver and so reads only whether the slot is
+ * armed.
  */
 enum mrb_idx_op_slot {
   MRB_IDX_OP_ARY_AREF,          /* Array#[]  */
@@ -322,6 +348,8 @@ enum mrb_idx_op_slot {
   MRB_IDX_OP_HASH_ASET,         /* Hash#[]=  */
   MRB_IDX_OP_STR_ASET,          /* String#[]= */
   MRB_IDX_OP_STR_ADD,           /* String#+  */
+  MRB_IDX_OP_STR_FREEZE,        /* String#freeze (Object#freeze, inherited) */
+  MRB_IDX_OP_STR_UMINUS,        /* String#-@ */
   MRB_IDX_OP_SLOT_COUNT
 };
 
@@ -445,6 +473,10 @@ struct mrb_state {
   struct mrb_const_cache_entry const_cache[MRB_CONST_CACHE_SIZE];
 #endif
 
+#ifndef MRB_NO_FRZSTR_CACHE
+  struct mrb_frzstr_cache_entry frzstr_cache[MRB_FRZSTR_CACHE_SIZE];
+#endif
+
   mrb_sym symidx;
   const char **symtbl;
   uint8_t *sym_flags;                     /* per-symbol flags (SYM_FL_*) */
@@ -510,6 +542,15 @@ struct mrb_state {
      and indexes nothing. */
   uint32_t bop_redefined;
   mrb_method_t bop_builtin[MRB_BOP_SLOT_COUNT];
+
+  /* The frozen string literals a program is answered with, from the bytes of
+     a literal to the one frozen string carrying them.  Made on the first
+     frozen literal the state runs and given back by mrb_close(); see
+     string.c. */
+  struct mrb_frzstrs *frozen_strings;
+  /* For each irep that can be freed, which of its literals have been counted
+     in the table above; see string.c. */
+  struct mrb_frzsites *frozen_sites;
 
 #ifdef MRB_USE_TASK_SCHEDULER
   mrb_task_state task;                    /* Task scheduler state */

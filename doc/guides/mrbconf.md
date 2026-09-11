@@ -310,6 +310,17 @@ end
 - Ignored if `MRB_NO_METHOD_CACHE` is defined.
 - Need to be the power of 2.
 
+`MRB_NO_FRZSTR_CACHE`
+
+- Disable the frozen string literal cache to save memory.
+- A frozen string literal is then found by its text on every execution.
+
+`MRB_FRZSTR_CACHE_SIZE`
+
+- Default value is `32`.
+- Ignored if `MRB_NO_FRZSTR_CACHE` is defined.
+- Need to be the power of 2.
+
 `MRB_USE_ALL_SYMBOLS`
 
 - Make it available `Symbol.all_symbols` in `mrbgems/mruby-symbol-ext`

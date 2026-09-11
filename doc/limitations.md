@@ -177,29 +177,6 @@ end
 carrying neither hook falls through rather than raising, both as CRuby
 does.
 
-## Frozen String Literals
-
-`# frozen_string_literal: true` freezes the string literals of the file that
-carries it, and `mrbc` reads the comment for each file it is given. A literal
-is a new string every time it runs, where CRuby answers one object for the
-whole program.
-
-#### CRuby
-
-```ruby
-# frozen_string_literal: true
-def a = "x"
-a.equal?(a)   # => true
-```
-
-#### mruby
-
-```ruby
-# frozen_string_literal: true
-def a = "x"
-a.equal?(a)   # => false
-```
-
 ## No Refinements
 
 Module refinements (`refine`, `using`) are not supported in mruby.
