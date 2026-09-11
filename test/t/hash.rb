@@ -1305,6 +1305,37 @@ assert('Hash#[]= with a key that stores itself from its own eql?') do
   once.call(h, k)
 end
 
+assert('Hash with keys that keep the default hash and eql?') do
+  [8, 100].each do |size|
+    ks = Array.new(size) { Object.new }
+    h = {}
+    ks.each_with_index { |k, i| h[k] = i }
+    ks.each_with_index { |k, i| assert_equal(i, h[k]) }
+    assert_nil(h[Object.new])
+    assert_equal(3, h.delete(ks[3]))
+    assert_false(h.key?(ks[3]))
+
+    # A key with a `hash` and `eql?` of its own is asked for them, and so is
+    # one that has them on its singleton class alone.
+    alias_class = Class.new do
+      def initialize(t) @t = t end
+      def hash; @t.hash end
+      def eql?(other) @t.equal?(other) end
+    end
+    assert_equal(5, h[alias_class.new(ks[5])])
+    holder = Class.new do
+      def initialize(t) @t = t end
+    end
+    alias_key = holder.new(ks[5])
+    def alias_key.hash; @t.hash end
+    def alias_key.eql?(other) @t.equal?(other) end
+    assert_equal(5, h[alias_key])
+    h[alias_key] = :replaced
+    assert_equal(:replaced, h[ks[5]])
+    assert_equal(size - 1, h.size)
+  end
+end
+
 assert('Hash#assoc, Hash#rassoc') do
   h = {foo: 0, bar: 1, baz: 2}
   assert_equal([:bar, 1], h.assoc(:bar))
