@@ -1160,10 +1160,15 @@ h_rehash(mrb_state *mrb, struct RHash *h)
   struct RHash *new_h = h_alloc(mrb);  /* on the arena, so the GC keeps it */
   /* Sized for every entry up front, so that no store below grows the table:
      a growth reindexes what is already in it, asking those keys for their
-     hash codes again. */
-  ar_init(new_h, 0, ea_resize(mrb, NULL, 0, size), size, 0);
+     hash codes again. The entry array goes to the hash before the index is
+     built, so an allocation that raises there leaves it with an owner the GC
+     can free. The capacity handed over with it is clamped: where the AR form
+     keeps that number in flag bits, they hold AR_MAX_SIZE at most, and the
+     wide form takes the real one from `ht_init` below. */
+  hash_entry *ea = ea_resize(mrb, NULL, 0, size);
+  ar_init(new_h, 0, ea, lesser(size, AR_MAX_SIZE), 0);
   if (AR_MAX_SIZE < size) {
-    ht_init(mrb, new_h, 0, ar_ea(new_h), size, NULL, ib_bit_for(size));
+    ht_init(mrb, new_h, 0, ea, size, NULL, ib_bit_for(size));
   }
   H_EACH(h, entry) {
     mrb_value key = entry->key, val = entry->val;
