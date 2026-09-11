@@ -1142,3 +1142,82 @@ assert('Hash#== and #eql? with recursive values') do
     assert_false a.__send__(op, c), op.to_s
   end
 end
+
+# `Hash` holds up to this many entries without a hash table, and switches to
+# one on the next store.
+HASH_AR_MAX_SIZE = 16
+# With a hash table, the buckets are rebuilt for twice as many once the
+# entries reach three quarters of the 32 the table starts with.
+HASH_IB_GROW_SIZE = 24
+
+assert('Hash re-index keeps every entry when a key raises') do
+  # The `#hash` methods of the keys are called to place the entries again
+  # whenever a store makes the table outgrow its buckets. One of them raising
+  # used to leave the entries after it in no bucket at all: `size` still
+  # counted them and `each` still walked over them, but no lookup could find
+  # them again.
+  [HASH_AR_MAX_SIZE, HASH_IB_GROW_SIZE].each do |n|
+    keys = (0...n).map{HashKey[_1]}
+    h = {}
+    keys.each_with_index{|k, i| h[k] = i}
+    keys[-1].error = :hash
+    assert_raise(RuntimeError, "#{n} entries"){h[HashKey[-100]] = :grow}
+    keys[-1].error = nil
+
+    assert_equal(n, h.size, "#{n} entries")
+    keys.each_with_index{|k, i| assert_equal(i, h[k], "#{n} entries, key #{i}")}
+    assert_not_operator(h, :key?, HashKey[-100])
+    h[HashKey[-100]] = :grow
+    assert_equal(:grow, h[HashKey[-100]])
+  end
+end
+
+assert('Hash re-index keeps every entry when a key modifies the hash') do
+  keys = (0...HASH_IB_GROW_SIZE).map{HashKey[_1]}
+  h = {}
+  keys.each_with_index{|k, i| h[k] = i}
+  keys[-1].callback = ->(name, *){h[:added] = true if name == :hash}
+  assert_raise(RuntimeError){h[HashKey[-100]] = :grow}
+  keys[-1].callback = nil
+
+  h.each_key{|k| assert_operator(h, :key?, k)}
+  keys.each_with_index{|k, i| assert_equal(i, h[k], "key #{i}")}
+  assert_not_operator(h, :key?, HashKey[-100])
+end
+
+assert('Hash re-index survives a store of a key the hash already has') do
+  # Such a store changes nothing the modification check looks at, so the
+  # re-index it is made from goes on to finish.
+  keys = (0...HASH_IB_GROW_SIZE).map{HashKey[_1]}
+  h = {}
+  keys.each_with_index{|k, i| h[k] = i}
+  keys[-1].callback = ->(name, *){h[keys[0]] = :replaced if name == :hash}
+  h[HashKey[-100]] = :grow
+  keys[-1].callback = nil
+
+  assert_equal(HASH_IB_GROW_SIZE + 1, h.size)
+  assert_equal(:replaced, h[keys[0]])
+  assert_equal(:grow, h[HashKey[-100]])
+  keys.each_with_index{|k, i| assert_equal(i, h[k], "key #{i}") unless i == 0}
+end
+
+assert('Hash re-index keeps every entry when a key trades one entry for another') do
+  # A delete and a store made from the same `#hash` put the entry count back
+  # where it was, and only the slots EA has used still show the change.
+  keys = (0...HASH_IB_GROW_SIZE).map{HashKey[_1]}
+  h = {}
+  keys.each_with_index{|k, i| h[k] = i}
+  keys[-1].callback = ->(name, *) do
+    if name == :hash
+      h.delete(keys[0])
+      h[HashKey[-50]] = :traded
+    end
+  end
+  assert_raise(RuntimeError){h[HashKey[-100]] = :grow}
+  keys[-1].callback = nil
+
+  h.each_key{|k| assert_operator(h, :key?, k)}
+  keys.each_with_index{|k, i| assert_equal(i, h[k], "key #{i}") unless i == 0}
+  assert_equal(:traded, h[HashKey[-50]])
+  assert_not_operator(h, :key?, keys[0])
+end
