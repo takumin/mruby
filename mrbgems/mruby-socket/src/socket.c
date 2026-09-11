@@ -212,7 +212,7 @@ mrb_addrinfo_getaddrinfo(mrb_state *mrb, mrb_value klass)
   const char *hostname;
 
   family = socktype = protocol = mrb_nil_value();
-  mrb_get_args(mrb, "z!o|oooi", &hostname, &service, &family, &socktype, &protocol, &flags);
+  mrb_get_args(mrb, "z~!o|oooi~", &hostname, &service, &family, &socktype, &protocol, &flags);
 
   const char *servname = NULL;
   if (mrb_string_p(service)) {
@@ -268,7 +268,7 @@ mrb_addrinfo_getnameinfo(mrb_state *mrb, mrb_value self)
 {
   mrb_int flags = 0;
 
-  mrb_get_args(mrb, "|i", &flags);
+  mrb_get_args(mrb, "|i~", &flags);
 
   mrb_value host = mrb_str_new_capa(mrb, NI_MAXHOST);
   mrb_value serv = mrb_str_new_capa(mrb, NI_MAXSERV);
@@ -455,7 +455,7 @@ socket_option_init(mrb_state *mrb, mrb_value self)
   mrb_int family, level, optname;
   mrb_value data;
 
-  mrb_get_args(mrb, "iiio", &family, &level, &optname, &data);
+  mrb_get_args(mrb, "i~i~i~o", &family, &level, &optname, &data);
   mrb_iv_set(mrb, self, MRB_SYM(family), mrb_int_value(mrb, family));
   mrb_iv_set(mrb, self, MRB_SYM(level), mrb_int_value(mrb, level));
   mrb_iv_set(mrb, self, MRB_SYM(optname), mrb_int_value(mrb, optname));
@@ -499,7 +499,7 @@ socket_option_s_int(mrb_state *mrb, mrb_value klass)
   mrb_value args[4];
   mrb_int data;
 
-  mrb_get_args(mrb, "oooi", &args[0], &args[1], &args[2], &data);
+  mrb_get_args(mrb, "oooi~", &args[0], &args[1], &args[2], &data);
 
   int tmp = (int)data;
   args[3] = mrb_str_new(mrb, (char*)&tmp, sizeof(int));
@@ -659,7 +659,7 @@ mrb_basicsocket_getsockopt(mrb_state *mrb, mrb_value self)
 {
   mrb_int level, optname;
 
-  mrb_get_args(mrb, "ii", &level, &optname);
+  mrb_get_args(mrb, "i~i~", &level, &optname);
 
   int s = socket_fd(mrb, self);
   char opt[8];
@@ -687,7 +687,7 @@ mrb_basicsocket_recv(mrb_state *mrb, mrb_value self)
 {
   mrb_int maxlen, flags = 0;
 
-  mrb_get_args(mrb, "i|i", &maxlen, &flags);
+  mrb_get_args(mrb, "i~|i~", &maxlen, &flags);
   if (maxlen < 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "negative length");
   }
@@ -747,7 +747,7 @@ mrb_basicsocket_send(mrb_state *mrb, mrb_value self)
   mrb_value mesg;
   mrb_value dest = mrb_nil_value();
 
-  mrb_get_args(mrb, "Si|S", &mesg, &flags, &dest);
+  mrb_get_args(mrb, "S~i~|S~", &mesg, &flags, &dest);
 
   ssize_t n;
   if (mrb_nil_p(dest)) {
@@ -797,7 +797,7 @@ mrb_basicsocket_setsockopt(mrb_state *mrb, mrb_value self)
 {
   mrb_int level = 0, optname;
   mrb_value so, optval;
-  mrb_int argc = mrb_get_args(mrb, "o|io", &so, &optname, &optval);
+  mrb_int argc = mrb_get_args(mrb, "o|i~o", &so, &optname, &optval);
 
   if (argc == 3) {
     mrb_ensure_int_type(mrb, so);
@@ -856,7 +856,7 @@ mrb_basicsocket_shutdown(mrb_state *mrb, mrb_value self)
 {
   mrb_int how = SHUT_RDWR;
 
-  mrb_get_args(mrb, "|i", &how);
+  mrb_get_args(mrb, "|i~", &how);
   if (shutdown(socket_fd(mrb, self), (int)how) != 0)
     sock_sys_fail(mrb, "shutdown");
   return mrb_fixnum_value(0);
@@ -892,7 +892,7 @@ mrb_ipsocket_ntop(mrb_state *mrb, mrb_value klass)
   const char *addr;
   char buf[50];
 
-  mrb_get_args(mrb, "is", &af, &addr, &n);
+  mrb_get_args(mrb, "i~s~", &af, &addr, &n);
   if ((af == AF_INET && n != 4) || (af == AF_INET6 && n != 16) ||
       mrb_hal_socket_inet_ntop((int)af, addr, buf, sizeof(buf)) == NULL)
     mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid address");
@@ -920,7 +920,7 @@ mrb_ipsocket_pton(mrb_state *mrb, mrb_value klass)
   const char *bp;
   char buf[50];
 
-  mrb_get_args(mrb, "is", &af, &bp, &n);
+  mrb_get_args(mrb, "i~s~", &af, &bp, &n);
   if ((size_t)n > sizeof(buf) - 1) {
     invalid_address_error(mrb);
   }
@@ -962,7 +962,7 @@ mrb_ipsocket_recvfrom(mrb_state *mrb, mrb_value self)
   mrb_int maxlen;
   mrb_int flags = 0;
 
-  mrb_get_args(mrb, "i|i", &maxlen, &flags);
+  mrb_get_args(mrb, "i~|i~", &maxlen, &flags);
   if (maxlen < 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "negative length");
   }
@@ -1166,7 +1166,7 @@ mrb_socket_sockaddr_un(mrb_state *mrb, mrb_value klass)
 {
   mrb_value path;
 
-  mrb_get_args(mrb, "S", &path);
+  mrb_get_args(mrb, "S~", &path);
   return mrb_hal_socket_sockaddr_un(mrb, RSTRING_PTR(path), (size_t)RSTRING_LEN(path));
 }
 #else
@@ -1190,7 +1190,7 @@ mrb_socket_socketpair(mrb_state *mrb, mrb_value klass)
   mrb_int domain, type, protocol;
   int sv[2];
 
-  mrb_get_args(mrb, "iii", &domain, &type, &protocol);
+  mrb_get_args(mrb, "i~i~i~", &domain, &type, &protocol);
 
   if (mrb_hal_socket_socketpair(mrb, (int)domain, (int)type, (int)protocol, sv) == -1) {
     sock_sys_fail(mrb, "socketpair");
@@ -1256,7 +1256,7 @@ mrb_basicsocket_recv_sysread(mrb_state *mrb, mrb_value self)
   mrb_value buf = mrb_nil_value();
   mrb_int maxlen;
 
-  mrb_get_args(mrb, "i|S", &maxlen, &buf);
+  mrb_get_args(mrb, "i~|S~", &maxlen, &buf);
   if (maxlen < 0) {
     return mrb_nil_value();
   }
@@ -1305,7 +1305,7 @@ mrb_basicsocket_send_syswrite(mrb_state *mrb, mrb_value self)
   mrb_value str;
   int sd = socket_fd(mrb, self);
 
-  mrb_get_args(mrb, "S", &str);
+  mrb_get_args(mrb, "S~", &str);
 
   int n = send(sd, RSTRING_PTR(str), (int)RSTRING_LEN(str), 0);
   if (n == -1)

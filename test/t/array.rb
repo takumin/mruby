@@ -23,6 +23,11 @@ end
 
 assert('Array#+', '15.2.12.5.1') do
   assert_equal([1, 1], [1].+([1]))
+  # the other array is read as a pointer and a length, so the conversion has
+  # to be over before the pointer is taken
+  o = Class.new { def to_ary; [2, 3]; end }.new
+  assert_equal([1, 2, 3], [1] + o)
+  assert_raise(TypeError) { [1] + Object.new }
 end
 
 assert('Array#*', '15.2.12.5.2') do
@@ -789,4 +794,15 @@ assert('Array#== and #eql? with recursive elements') do
   e = [1]; f = [1]; e << f; f << e
   g = [1]; h = [1]; g << h; h << g
   assert_true e == g
+end
+
+assert('an Array index takes an implicit conversion') do
+  o = Class.new { def to_int; 2; end }.new
+  assert_equal 3, [1, 2, 3][o]
+  assert_equal [2, 3], [1, 2, 3][1, o]
+  assert_equal [1, 2], [1, 2, 3].first(o)
+  assert_raise(TypeError) { [1, 2, 3][Object.new] }
+  # the index of the two-argument form is not the send's last argument, so
+  # the restart cannot reach it
+  assert_raise(TypeError) { [1, 2, 3][o, 1] }
 end

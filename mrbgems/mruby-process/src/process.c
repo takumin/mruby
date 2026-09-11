@@ -236,7 +236,7 @@ wait_for_child(mrb_state *mrb, mrb_value *statusp)
   mrb_int flags = 0;
   mrb_int result_pid = 0, raw_status = 0;
 
-  mrb_get_args(mrb, "|ii", &pid, &flags);
+  mrb_get_args(mrb, "|i~i~", &pid, &flags);
   pid = mrb_process_int_arg(mrb, pid, "pid");
 
   /* A port is told what a wait means in mruby's own bits and answers only for

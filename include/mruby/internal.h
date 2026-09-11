@@ -10,6 +10,11 @@
 #ifdef MRUBY_ARRAY_H
 void mrb_ary_decref(mrb_state*, mrb_shared_array*);
 mrb_value mrb_ary_subseq(mrb_state *mrb, mrb_value ary, mrb_int beg, mrb_int len);
+/* mrb_ary_splat() split at the `to_a` question, for the VM, which has asked
+   it already: _wrap makes the one-element array a value without `to_a`
+   stands for, _to_a sends it and normalizes what comes back. */
+mrb_value mrb_ary_splat_wrap(mrb_state *mrb, mrb_value v);
+mrb_value mrb_ary_splat_to_a(mrb_state *mrb, mrb_value v);
 #endif
 
 /* What frame `ci` of context `c` carries as special variables, or NULL.
@@ -140,6 +145,11 @@ mrb_irep_catch_handler_table(const struct mrb_irep *irep)
 #endif
 
 /* numeric */
+/* TRUE where `mrb_ensure_integer_type()` reads the value on its own, without
+   asking it for anything.  A marked `i` in an `mrb_get_args()` format sends
+   `to_int` only where this is FALSE, so that a Float is truncated rather than
+   dispatched to, the way CRuby's `NUM2LONG` truncates it. */
+mrb_bool mrb_integer_convertible_p(mrb_value val);
 mrb_value mrb_div_int_value(mrb_state *mrb, mrb_int x, mrb_int y);
 mrb_int mrb_div_int(mrb_int x, mrb_int y);
 mrb_value mrb_int_add(mrb_state *mrb, mrb_value x, mrb_value y);

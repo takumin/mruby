@@ -429,7 +429,7 @@ class Array
   # intermediate step is `nil`.
   #
   def dig(idx,*args)
-    idx = Integer.__ensure(idx)
+    idx = Integer.__convert(idx)
     n = self[idx]
     if args.size > 0
       n&.dig(*args)
@@ -643,7 +643,7 @@ class Array
   end
 
   def __combination(mode, k, &block)
-    k = Integer.__ensure(k)
+    k = Integer.__convert(k)
     return to_enum(mode, k) unless block
 
     case k

@@ -1589,3 +1589,27 @@ assert('String#bytesplice on a shared buffer') do
   assert_equal 2000, d.bytesize
   assert_equal "0123456789012345678901234567890123456789", d.byteslice(-40, 40)
 end
+
+assert('String#split and String#index take an implicit conversion') do
+  o = Class.new { def to_str; "1"; end }.new
+  assert_equal(["a", "b", "c"], "a1b1c".split(o))
+  assert_equal(1, "a1b".index(o))
+  assert_equal(1, "a1b".rindex(o))
+  assert_raise(TypeError) { "a1b".split(Object.new) }
+  assert_raise(TypeError) { "a1b".index(Object.new) }
+end
+
+assert('a String method that counts takes an implicit conversion') do
+  # `i` reads a Float on its own, as it always did, so only a value none of
+  # the numeric types covers is asked for `to_int`.
+  o = Class.new { def to_int; 2; end }.new
+  assert_equal "abab", "ab" * o
+  assert_equal 4, "abcabc".index("b", o)
+  assert_equal 1, "abcabc".rindex("b", o)
+  assert_equal 2, "10".to_i(o)
+  assert_equal 99, "abc".getbyte(o)
+  assert_equal ["a", "b,c"], "a,b,c".split(",", o)
+  assert_equal "abab", "ab" * 2.9 if Object.const_defined?(:Float)
+  assert_raise(TypeError) { "ab" * Object.new }
+  assert_raise(TypeError) { "ab" * Class.new { def to_int; "2"; end }.new }
+end

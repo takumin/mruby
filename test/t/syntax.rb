@@ -3164,3 +3164,172 @@ assert('super reaches a private or protected operator') do
     o == 1
   end
 end
+
+class MasgnToAry
+  def initialize; @count = 0; end
+  attr_reader :count
+  def to_ary; @count += 1; [1, 2]; end
+  def inspect; "#<MasgnToAry>"; end
+end
+
+class MasgnBadToAry
+  def to_ary; 7; end
+end
+
+class MasgnRaisingToAry
+  def to_ary; raise ArgumentError, "from to_ary"; end
+end
+
+class MasgnNoToAry
+end
+
+assert('multiple assignment converts the right-hand side with to_ary') do
+  x, y = MasgnToAry.new
+  assert_equal 1, x
+  assert_equal 2, y
+
+  # a value with no to_ary is the whole assignment, as in Ruby: no TypeError
+  o = MasgnNoToAry.new
+  x, y = o
+  assert_same o, x
+  assert_nil y
+
+  # to_ary that gives back something else is a TypeError, and the message
+  # names the object that was asked, not just what came back
+  assert_raise_with_message(TypeError,
+      "can't convert MasgnBadToAry to Array (MasgnBadToAry#to_ary gives Integer)") do
+    x, y = MasgnBadToAry.new
+  end
+  assert_raise(TypeError) do
+    x, *y = MasgnBadToAry.new
+  end
+
+  # an exception from to_ary passes through rather than turning into TypeError
+  assert_raise_with_message(ArgumentError, "from to_ary") do
+    x, y = MasgnRaisingToAry.new
+  end
+
+  # short right-hand side fills with nil, long one drops the rest
+  x, y, z = MasgnToAry.new
+  assert_equal [1, 2, nil], [x, y, z]
+  x, = MasgnToAry.new
+  assert_equal 1, x
+end
+
+assert('to_ary is sent once per multiple assignment') do
+  o = MasgnToAry.new
+  x, y = o
+  assert_equal 1, o.count
+
+  # the splat form reads the same converted value for its AREF and its APOST
+  o = MasgnToAry.new
+  x, *y = o
+  assert_equal 1, o.count
+  assert_equal [1, [2]], [x, y]
+
+  # and so does the form whose value is used
+  o = MasgnToAry.new
+  v = (x, *y = o)
+  assert_equal 1, o.count
+  assert_same o, v
+end
+
+assert('a multiple assignment used as an expression is the right-hand side') do
+  o = MasgnToAry.new
+
+  # every position that reads the value reads the object, not the conversion
+  v = (x, y = o)
+  assert_same o, v
+  assert_same o, (x, y = o)
+  assert_same o, [(x, y = o)][0]
+  assert_same o, (x, *y = o)
+  assert_same o, ((*y = o))
+  assert_equal [1, 2], (x, y = [1, 2])
+
+  # the outer assignment wins when it names one of the targets
+  w = (w, y = o)
+  assert_same o, w
+
+  # the last statement of a method body is such a position too
+  def masgn_tail(q); x, y = q; end
+  assert_same o, masgn_tail(o)
+
+  # a nested target destructures without changing the outer value
+  u = (x, (y, z) = [1, o])
+  assert_equal 1, x
+  assert_equal [1, 2], [y, z]
+  assert_equal [1, o], u
+end
+
+class SplatToA
+  def initialize; @count = 0; end
+  attr_reader :count
+  def to_a; @count += 1; [1, 2]; end
+  def inspect; "#<SplatToA>"; end
+end
+
+class SplatBadToA
+  def to_a; 7; end
+end
+
+class SplatNilToA
+  def to_a; nil; end
+  def inspect; "#<SplatNilToA>"; end
+end
+
+class SplatRaisingToA
+  def to_a; raise ArgumentError, "from to_a"; end
+end
+
+class SplatNoToA
+  def inspect; "#<SplatNoToA>"; end
+end
+
+class SplatSharedToA
+  def initialize; @shared = [1, 2]; end
+  attr_reader :shared
+  def to_a; @shared; end
+end
+
+assert('a splat expands its operand with to_a') do
+  o = SplatToA.new
+  assert_equal [0, 1, 2, 9], [0, *o, 9]
+  assert_equal [1, 2], [*o]
+
+  def splat_tail(q); return *q; end
+  assert_equal [1, 2], splat_tail(SplatToA.new)
+
+  # to_a that gives back nil wraps the object rather than raising
+  o = SplatNilToA.new
+  assert_equal [o], [*o]
+
+  # and so does a value with no to_a at all
+  o = SplatNoToA.new
+  assert_equal [0, o], [0, *o]
+  assert_equal [o], splat_tail(o)
+
+  # to_a that gives back something else is a TypeError, and the message names
+  # the object that was asked
+  assert_raise_with_message(TypeError,
+      "can't convert SplatBadToA to Array (SplatBadToA#to_a gives Integer)") do
+    [0, *SplatBadToA.new]
+  end
+  assert_raise(TypeError) { splat_tail(SplatBadToA.new) }
+
+  # an exception from to_a passes through rather than turning into TypeError
+  assert_raise_with_message(ArgumentError, "from to_a") do
+    [*SplatRaisingToA.new]
+  end
+end
+
+assert('a splat sends to_a once and copies what it gets') do
+  o = SplatToA.new
+  assert_equal [0, 1, 2], [0, *o]
+  assert_equal 1, o.count
+
+  # the expansion is the caller's own array: what to_a returned stays as it was
+  src = SplatSharedToA.new
+  got = [*src]
+  got << 3
+  assert_equal [1, 2], src.shared
+end

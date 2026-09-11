@@ -1632,7 +1632,7 @@ check_x(mrb_state *mrb, mrb_int a, mrb_int count, char c)
 static void
 prepare_tmpl(mrb_state *mrb, struct tmpl *tmpl)
 {
-  mrb_get_args(mrb, "S", &tmpl->str);
+  mrb_get_args(mrb, "S~", &tmpl->str);
   tmpl->idx = 0;
 }
 

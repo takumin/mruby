@@ -1392,7 +1392,7 @@ static mrb_value
 mrb_hash_init_copy(mrb_state *mrb, mrb_value self)
 {
   mrb_value orig;
-  mrb_get_args(mrb, "H", &orig);
+  mrb_get_args(mrb, "H~", &orig);
   hash_modify(mrb, self);
   if (mrb_hash_ptr(self) != mrb_hash_ptr(orig)) hash_replace(mrb, self, orig);
   return self;
@@ -2451,6 +2451,6 @@ mrb_init_hash(mrb_state *mrb)
   mrb->hash_class = h = mrb_define_class_id(mrb, MRB_SYM(Hash), mrb->object_class);              /* 15.2.13 */
   MRB_SET_INSTANCE_TT(h, MRB_TT_HASH);
 
-  MRB_MT_INIT_ROM(mrb, h, hash_rom_entries);
+  MRB_MT_INIT_ROM_CONV(mrb, h, hash_rom_entries, MRB_CONV_TO_HASH);
 }
 #undef lesser

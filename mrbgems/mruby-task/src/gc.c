@@ -83,7 +83,7 @@ gc_debt_limit_set(mrb_state *mrb, mrb_value obj)
 {
   mrb_int limit;
 
-  mrb_get_args(mrb, "i", &limit);
+  mrb_get_args(mrb, "i~", &limit);
   if (limit < 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "debt_limit must be non-negative");
   }

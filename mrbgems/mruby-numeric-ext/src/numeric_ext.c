@@ -293,7 +293,7 @@ int_digits(mrb_state *mrb, mrb_value self)
 {
   mrb_int base = 10;
 
-  mrb_get_args(mrb, "|i", &base);
+  mrb_get_args(mrb, "|i~", &base);
   if (base < 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "negative radix");
   }

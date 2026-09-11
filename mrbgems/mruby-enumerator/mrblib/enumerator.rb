@@ -169,7 +169,7 @@ class Enumerator
     if offset.nil?
       offset = 0
     else
-      offset = Integer.__ensure(offset)
+      offset = Integer.__convert(offset)
     end
 
     n = offset - 1

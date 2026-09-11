@@ -1620,7 +1620,7 @@ mrb_str_plus_m(mrb_state *mrb, mrb_value self)
 {
   mrb_value str;
 
-  mrb_get_args(mrb, "S", &str);
+  mrb_get_args(mrb, "S~", &str);
   return mrb_str_plus(mrb, self, str);
 }
 
@@ -1660,7 +1660,7 @@ mrb_str_times(mrb_state *mrb, mrb_value self)
 {
   mrb_int len, times;
 
-  mrb_get_args(mrb, "i", &times);
+  mrb_get_args(mrb, "i~", &times);
   if (times < 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "negative argument");
   }
@@ -2209,7 +2209,7 @@ mrb_str_aset_m(mrb_state *mrb, mrb_value str)
 {
   mrb_value idx, alen, replace;
 
-  switch (mrb_get_args(mrb, "oo|S!", &idx, &alen, &replace)) {
+  switch (mrb_get_args(mrb, "oo|S~!", &idx, &alen, &replace)) {
     case 2:
       replace = alen;
       alen = mrb_undef_value();
@@ -2477,7 +2477,7 @@ static mrb_value
 mrb_str_chomp_bang(mrb_state *mrb, mrb_value str)
 {
   mrb_value rs;
-  mrb_int argc = mrb_get_args(mrb, "|S", &rs);
+  mrb_int argc = mrb_get_args(mrb, "|S~", &rs);
   struct RString *s = mrb_str_ptr(str);
 
   mrb_str_modify_keep_cr(mrb, s);
@@ -2835,7 +2835,7 @@ mrb_str_include(mrb_state *mrb, mrb_value self)
 {
   mrb_value str2;
 
-  mrb_get_args(mrb, "S", &str2);
+  mrb_get_args(mrb, "S~", &str2);
   if (str_index_str(mrb, self, str2, 0) < 0)
     return mrb_bool_value(FALSE);
   return mrb_bool_value(TRUE);
@@ -2878,7 +2878,7 @@ mrb_str_byteindex_m(mrb_state *mrb, mrb_value str)
   mrb_value sub;
   mrb_int pos;
 
-  if (mrb_get_args(mrb, "S|i", &sub, &pos) == 1) {
+  if (mrb_get_args(mrb, "S~|i~", &sub, &pos) == 1) {
     pos = 0;
   }
   else if (pos < 0) {
@@ -2923,7 +2923,7 @@ mrb_str_index_m(mrb_state *mrb, mrb_value str)
   mrb_value sub;
   mrb_int pos;
 
-  if (mrb_get_args(mrb, "S|i", &sub, &pos) == 1) {
+  if (mrb_get_args(mrb, "S~|i~", &sub, &pos) == 1) {
     pos = 0;
   }
   else if (pos < 0) {
@@ -2956,7 +2956,7 @@ mrb_str_replace(mrb_state *mrb, mrb_value str)
 {
   mrb_value str2;
 
-  mrb_get_args(mrb, "S", &str2);
+  mrb_get_args(mrb, "S~", &str2);
   return str_replace(mrb, mrb_str_ptr(str), mrb_str_ptr(str2));
 }
 
@@ -2972,7 +2972,7 @@ mrb_str_init(mrb_state *mrb, mrb_value self)
 {
   mrb_value str2;
 
-  if (mrb_get_args(mrb, "|S", &str2) == 0) {
+  if (mrb_get_args(mrb, "|S~", &str2) == 0) {
     str2 = mrb_str_new(mrb, 0, 0);
   }
   str_replace(mrb, mrb_str_ptr(self), mrb_str_ptr(str2));
@@ -3196,7 +3196,7 @@ mrb_str_byterindex_m(mrb_state *mrb, mrb_value str)
   mrb_value sub;
   mrb_int pos;
 
-  if (mrb_get_args(mrb, "S|i", &sub, &pos) == 1) {
+  if (mrb_get_args(mrb, "S~|i~", &sub, &pos) == 1) {
     pos = len;
   }
   else {
@@ -3244,7 +3244,7 @@ mrb_str_rindex_m(mrb_state *mrb, mrb_value str)
   mrb_value sub;
   mrb_int pos;
 
-  if (mrb_get_args(mrb, "S|i", &sub, &pos) == 1) {
+  if (mrb_get_args(mrb, "S~|i~", &sub, &pos) == 1) {
     pos = RSTRING_LEN(str);
   }
   else if (pos >= 0) {
@@ -3319,7 +3319,7 @@ mrb_str_split_m(mrb_state *mrb, mrb_value str)
   mrb_int lim = 0;
   mrb_value tmp;
 
-  mrb_int argc = mrb_get_args(mrb, "|oi", &spat, &lim);
+  mrb_int argc = mrb_get_args(mrb, "|oi~", &spat, &lim);
   mrb_bool lim_p = (lim > 0 && argc == 2);
   if (argc == 2) {
     if (lim == 1) {
@@ -3334,6 +3334,10 @@ mrb_str_split_m(mrb_state *mrb, mrb_value str)
     split_type = awk;
   }
   else if (!mrb_string_p(spat)) {
+    /* The separator may also be a pattern where the regexp gem is in, so the
+       format reads `o` and the type is decided here; asking for `to_str` is
+       the same request a `S~` would have made. */
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
     mrb_raise(mrb, E_TYPE_ERROR, "expected String");
   }
   else if (RSTRING_LEN(spat) == 1 && RSTRING_PTR(spat)[0] == ' ') {
@@ -3709,7 +3713,7 @@ mrb_str_to_i(mrb_state *mrb, mrb_value self)
 {
   mrb_int base = 10;
 
-  mrb_get_args(mrb, "|i", &base);
+  mrb_get_args(mrb, "|i~", &base);
   if (base < 0 || 36 < base) {
     mrb_raisef(mrb, E_ARGUMENT_ERROR, "illegal radix %i", base);
   }
@@ -4182,7 +4186,7 @@ static mrb_value
 mrb_str_getbyte(mrb_state *mrb, mrb_value str)
 {
   mrb_int pos;
-  mrb_get_args(mrb, "i", &pos);
+  mrb_get_args(mrb, "i~", &pos);
 
   if (pos < 0)
     pos += RSTRING_LEN(str);
@@ -4203,7 +4207,7 @@ mrb_str_setbyte(mrb_state *mrb, mrb_value str)
 {
   mrb_int pos, byte;
 
-  mrb_get_args(mrb, "ii", &pos, &byte);
+  mrb_get_args(mrb, "i~i~", &pos, &byte);
 
   mrb_int len = RSTRING_LEN(str);
   if (pos < -len || len <= pos)
@@ -4249,7 +4253,7 @@ mrb_str_byteslice(mrb_state *mrb, mrb_value str)
   len = mrb_get_argc(mrb);
   switch (len) {
   case 2:
-    mrb_get_args(mrb, "ii", &beg, &len);
+    mrb_get_args(mrb, "i~i~", &beg, &len);
     str_len = RSTRING_LEN(str);
     break;
   case 1:
@@ -4261,6 +4265,11 @@ mrb_str_byteslice(mrb_state *mrb, mrb_value str)
       }
     }
     else {
+      /* A Range answers before the type does, so the format cannot name
+         Integer here and the request for `to_int` is made by hand. */
+      if (mrb_unlikely(!mrb_integer_convertible_p(a1))) {
+        mrb_convert_arg(mrb, 0, MRB_CONV_TO_INT);
+      }
       beg = mrb_as_int(mrb, a1);
       len = 1;
       empty = FALSE;
@@ -4427,7 +4436,7 @@ mrb_str_bytesplice(mrb_state *mrb, mrb_value str)
   case 3:
     mrb_get_args(mrb, "ooo", &range1, &replace, &range2);
     if (mrb_integer_p(range1)) {
-      mrb_get_args(mrb, "iiS", &idx1, &len1, &replace);
+      mrb_get_args(mrb, "i~i~S~", &idx1, &len1, &replace);
       return str_bytesplice(mrb, str, idx1, len1, replace, 0, RSTRING_LEN(replace));
     }
     mrb_ensure_string_type(mrb, replace);
@@ -4435,10 +4444,10 @@ mrb_str_bytesplice(mrb_state *mrb, mrb_value str)
     if (mrb_range_beg_len(mrb, range2, &idx2, &len2, RSTRING_LEN(replace), FALSE) != MRB_RANGE_OK) break;
     return str_bytesplice(mrb, str, idx1, len1, replace, idx2, len2);
   case 5:
-    mrb_get_args(mrb, "iiSii", &idx1, &len1, &replace, &idx2, &len2);
+    mrb_get_args(mrb, "i~i~S~i~i~", &idx1, &len1, &replace, &idx2, &len2);
     return str_bytesplice(mrb, str, idx1, len1, replace, idx2, len2);
   case 2:
-    mrb_get_args(mrb, "oS", &range1, &replace);
+    mrb_get_args(mrb, "oS~", &range1, &replace);
     if (mrb_range_beg_len(mrb, range1, &idx1, &len1, RSTRING_LEN(str), FALSE) == MRB_RANGE_OK) {
       return str_bytesplice(mrb, str, idx1, len1, replace, 0, RSTRING_LEN(replace));
     }
@@ -4523,7 +4532,7 @@ mrb_init_string(mrb_state *mrb)
   mrb->string_class = s = mrb_define_class_id(mrb, MRB_SYM(String), mrb->object_class);             /* 15.2.10 */
   MRB_SET_INSTANCE_TT(s, MRB_TT_STRING);
 
-  MRB_MT_INIT_ROM(mrb, s, string_rom_entries);
+  MRB_MT_INIT_ROM_CONV(mrb, s, string_rom_entries, MRB_CONV_TO_STR);
 
   mrb_define_method_id(mrb, mrb->kernel_module, MRB_SYM(__ENCODING__), mrb_encoding, MRB_ARGS_NONE());
 }

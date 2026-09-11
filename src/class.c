@@ -52,11 +52,31 @@ mt_new(mrb_state *mrb)
   return t;
 }
 
+/* The bit `mrb_state.conv_defined` gives a conversion method name, or 0 for
+   a name that is not one.  Read where a method is installed, so that the
+   coercion trap in the VM can answer "nobody has one" without a lookup. */
+static uint8_t
+conv_bit(mrb_sym sym)
+{
+  switch (sym) {
+  case MRB_SYM(to_ary):  return MRB_CONV_TO_ARY;
+  case MRB_SYM(to_str):  return MRB_CONV_TO_STR;
+  case MRB_SYM(to_int):  return MRB_CONV_TO_INT;
+  case MRB_SYM(to_hash): return MRB_CONV_TO_HASH;
+  default: return 0;
+  }
+}
+
 /* Inserts or updates an entry in the method table (linear scan) */
 static void
 mt_put(mrb_state *mrb, mrb_mt_tbl *t, mrb_sym sym, uint32_t flags, union mrb_mt_ptr ptrval)
 {
   mrb_mt_entry *entries = t->ptr;
+
+  uint8_t conv = conv_bit(sym);
+  if (mrb_unlikely(conv != 0)) {
+    mrb->conv_defined |= conv;
+  }
 
   /* Linear scan for existing key */
   for (int i = 0; i < t->size; i++) {
@@ -180,8 +200,19 @@ mt_free(mrb_state *mrb, mrb_mt_tbl *t)
    freed by mt_free during normal GC. */
 void
 mrb_mt_init_rom(mrb_state *mrb, struct RClass *c,
-                const mrb_mt_entry *entries, int size)
+                const mrb_mt_entry *entries, int size, uint8_t conv)
 {
+#ifdef MRB_DEBUG
+  {
+    uint8_t scanned = 0;
+    for (int i = 0; i < size; i++) {
+      scanned |= conv_bit(entries[i].key);
+    }
+    mrb_assert(scanned == conv);
+  }
+#endif
+  mrb->conv_defined |= conv;
+
   mrb_mt_tbl *rom = (mrb_mt_tbl*)mrb_malloc(mrb, sizeof(mrb_mt_tbl));
   rom->size = size;
   rom->alloc = size | MRB_MT_READONLY_BIT;
@@ -1485,7 +1516,10 @@ mrb_block_given_p(mrb_state *mrb)
  * that the file can be compiled as C++ (array-index designators are a
  * C99-only feature).  Modern compilers typically lower this to a jump
  * table, giving the same effective O(1) behavior as the original table.
- * Returns 1 for a valid arg specifier, 2 for the separator, 0 otherwise.
+ * Returns 1 for a valid arg specifier, 4 for one that may carry the
+ * conversion modifier, 2 for the separator, 3 for the modifier itself
+ * (which is read by the specifier it follows, so meeting one here is a
+ * malformed format), 0 otherwise.
  */
 static inline uint8_t
 fast_fmt_ok(char c)
@@ -1495,14 +1529,53 @@ fast_fmt_ok(char c)
   case 'f':
     return 1;
 #endif
-  case 'o': case 'S': case 'A': case 'H': case 'i': case 'b':
-  case 'n': case 'z': case 'c': case 's': case 'a':
+  case 'o': case 'b':
+  case 'n': case 'c':
     return 1;
+  case 'S': case 'A': case 'H':
+  case 's': case 'z': case 'a': case 'i':
+    return 4;
   case '|':
     return 2;
+  case '~':
+    return 3;
   default:
     return 0;
   }
+}
+
+/*
+ * An argument met the wrong type where an implicit conversion could answer.
+ * `mrb_convert_arg()` arranges for the dispatch loop to run the conversion
+ * and take the send from the top again, and does not return when it can;
+ * where it cannot, the `TypeError` is raised here as it always was.
+ */
+static void
+arg_conv(mrb_state *mrb, const mrb_value *argv, mrb_int i, uint8_t conv)
+{
+  mrb_convert_arg(mrb, i, conv);
+  switch (conv) {
+  case MRB_CONV_TO_STR:  mrb_ensure_string_type(mrb, argv[i]); break;
+  case MRB_CONV_TO_ARY:  mrb_ensure_array_type(mrb, argv[i]); break;
+  case MRB_CONV_TO_INT:  mrb_ensure_int_type(mrb, argv[i]); break;
+  default:               /* MRB_CONV_TO_HASH */
+                         mrb_ensure_hash_type(mrb, argv[i]); break;
+  }
+}
+
+/*
+ * A marked `i`.  The numeric types come first, so a Float is truncated where
+ * CRuby's `NUM2LONG` truncates it; only a value none of them reads is asked
+ * for `to_int`, and where that request cannot be arranged the `TypeError` is
+ * the one `i` always raised.
+ */
+static mrb_int
+arg_as_int(mrb_state *mrb, const mrb_value *argv, mrb_int i)
+{
+  if (!mrb_integer_convertible_p(argv[i])) {
+    mrb_convert_arg(mrb, i, MRB_CONV_TO_INT);
+  }
+  return mrb_as_int(mrb, argv[i]);
 }
 
 /*
@@ -1530,10 +1603,18 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
   mrb_bool in_opt = FALSE;
   while (*p) {
     uint8_t v = fast_fmt_ok(*p);
-    if (v == 0) return -1;  /* unsupported specifier */
+    if (v == 1) { if (in_opt) opt++; else req++; p++; continue; }
+    if (v == 4) {
+      /* a specifier that names a type reads a `~` of its own, so the count
+         stays one either way */
+      if (in_opt) opt++; else req++;
+      p += (p[1] == '~') ? 2 : 1;
+      continue;
+    }
     if (v == 2) { in_opt = TRUE; p++; continue; }
-    if (in_opt) opt++; else req++;
-    p++;
+    /* unsupported specifier, or a `~` where no specifier claims it: the
+       general path words the error */
+    return -1;
   }
   if (argc < req || argc > req + opt) {
     mrb_argnum_error(mrb, argc, req, req + opt);
@@ -1544,6 +1625,11 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
   while (*p) {
     char c = *p++;
     if (c == '|') continue;
+    /* The scan above refused a `~` on a specifier that takes none, so one
+       met here belongs to the specifier just read.  Reading it before the
+       switch keeps the format pointer out of the arms. */
+    mrb_bool conv = (*p == '~');
+    if (conv) p++;
     if (i >= argc) {
       /* skip remaining optional args (just consume GET_ARG pointers) */
       switch (c) {
@@ -1565,25 +1651,41 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     }
     case 'S': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      mrb_ensure_string_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_string_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_STR);
+        else mrb_ensure_string_type(mrb, argv[i]);
+      }
       *vp = argv[i++];
       break;
     }
     case 'A': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      mrb_ensure_array_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_array_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_ARY);
+        else mrb_ensure_array_type(mrb, argv[i]);
+      }
       *vp = argv[i++];
       break;
     }
     case 'H': {
       mrb_value *vp = GET_ARG(mrb_value*);
-      mrb_ensure_hash_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_hash_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_HASH);
+        else mrb_ensure_hash_type(mrb, argv[i]);
+      }
       *vp = argv[i++];
       break;
     }
     case 'i': {
       mrb_int *ip = GET_ARG(mrb_int*);
-      *ip = mrb_as_int(mrb, argv[i++]);
+      /* An Integer answers here rather than in `mrb_ensure_int_type()`,
+         which is a call this arm made on every argument it read. */
+      if (mrb_likely(mrb_integer_p(argv[i]))) {
+        *ip = mrb_integer(argv[i++]);
+        break;
+      }
+      *ip = conv ? arg_as_int(mrb, argv, i) : mrb_as_int(mrb, argv[i]);
+      i++;
       break;
     }
     case 'b': {
@@ -1605,14 +1707,20 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     }
     case 'z': {
       const char **zp = GET_ARG(const char**);
-      mrb_ensure_string_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_string_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_STR);
+        else mrb_ensure_string_type(mrb, argv[i]);
+      }
       *zp = RSTRING_CSTR(mrb, argv[i++]);
       break;
     }
     case 's': {
       const char **sp = GET_ARG(const char**);
       mrb_int *lp = GET_ARG(mrb_int*);
-      mrb_ensure_string_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_string_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_STR);
+        else mrb_ensure_string_type(mrb, argv[i]);
+      }
       *sp = RSTRING_PTR(argv[i]);
       *lp = RSTRING_LEN(argv[i]);
       i++;
@@ -1621,7 +1729,10 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     case 'a': {
       const mrb_value **pb = GET_ARG(const mrb_value**);
       mrb_int *pl = GET_ARG(mrb_int*);
-      mrb_ensure_array_type(mrb, argv[i]);
+      if (mrb_unlikely(!mrb_array_p(argv[i]))) {
+        if (conv) arg_conv(mrb, argv, i, MRB_CONV_TO_ARY);
+        else mrb_ensure_array_type(mrb, argv[i]);
+      }
       struct RArray *a = mrb_ary_ptr(argv[i]);
       *pb = ARY_PTR(a);
       *pl = ARY_LEN(a);
@@ -1640,6 +1751,17 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
   }
   return i;
 }
+
+/*
+ * The modifiers a specifier can carry, in one byte rather than in a `mrb_bool`
+ * apiece.  All three stay live across the scan that answers the specifiers, and
+ * a third register held for that long is enough to change how gcc lays the
+ * scan's switches out: as three variables they cost a send through the general
+ * path some 25 instructions, whatever its format says.
+ */
+#define MOD_ALT    1  /* `!` */
+#define MOD_MODIFY 2  /* `+` */
+#define MOD_CONV   4  /* `~` */
 
 static mrb_int
 get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
@@ -1674,6 +1796,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
       goto check_exit;
     case '!':
     case '+':
+    case '~':
       break;
     case ':':
       reqkarg = TRUE;
@@ -1728,18 +1851,27 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
   opt = FALSE;
   i = 0;
   while ((c = *format++)) {
-    mrb_bool altmode = FALSE;
-    mrb_bool needmodify = FALSE;
+    uint8_t mods = 0;
 
     for (; *format; format++) {
       switch (*format) {
       case '!':
-        if (altmode) goto modifier_exit; /* not accept for multiple '!' */
-        altmode = TRUE;
+        if (mods & MOD_ALT) goto modifier_exit; /* not accept for multiple '!' */
+        mods |= MOD_ALT;
         break;
       case '+':
-        if (needmodify) goto modifier_exit; /* not accept for multiple '+' */
-        needmodify = TRUE;
+        if (mods & MOD_MODIFY) goto modifier_exit; /* not accept for multiple '+' */
+        mods |= MOD_MODIFY;
+        break;
+      case '~':
+        if (mods & MOD_CONV) goto modifier_exit; /* not accept for multiple '~' */
+        /* only the specifiers that name a type to convert to take `~`; the
+           test sits here so that a format without one pays nothing for it */
+        if (c != 'S' && c != 'A' && c != 'H' &&
+            c != 's' && c != 'z' && c != 'a' && c != 'i') {
+          mrb_raisef(mrb, E_ARGUMENT_ERROR, "wrong `%c~` modified specifier", c);
+        }
+        mods |= MOD_CONV;
         break;
       default:
         goto modifier_exit;
@@ -1749,7 +1881,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
   modifier_exit:
     switch (c) {
     case '|': case '*': case '&': case '?': case ':':
-      if (needmodify) {
+      if (mods & MOD_MODIFY) {
       bad_needmodify:
         mrb_raisef(mrb, E_ARGUMENT_ERROR, "wrong `%c+` modified specifier`", c);
       }
@@ -1757,7 +1889,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
     default:
       if (i < argc) {
         pickarg = &argv[i++];
-        if (needmodify && !mrb_nil_p(*pickarg)) {
+        if ((mods & MOD_MODIFY) && !mrb_nil_p(*pickarg)) {
           mrb_check_frozen_value(mrb, *pickarg);
         }
       }
@@ -1783,12 +1915,27 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         p = GET_ARG(mrb_value*);
         if (pickarg) {
-          if (!(altmode && mrb_nil_p(*pickarg))) {
+          if (!((mods & MOD_ALT) && mrb_nil_p(*pickarg))) {
             switch (c) {
             case 'C': ensure_class_type(mrb, *pickarg); break;
-            case 'S': mrb_ensure_string_type(mrb, *pickarg); break;
-            case 'A': mrb_ensure_array_type(mrb, *pickarg); break;
-            case 'H': mrb_ensure_hash_type(mrb, *pickarg); break;
+            case 'S':
+              if (!mrb_string_p(*pickarg)) {
+                if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+                else mrb_ensure_string_type(mrb, *pickarg);
+              }
+              break;
+            case 'A':
+              if (!mrb_array_p(*pickarg)) {
+                if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_ARY);
+                else mrb_ensure_array_type(mrb, *pickarg);
+              }
+              break;
+            case 'H':
+              if (!mrb_hash_p(*pickarg)) {
+                if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_HASH);
+                else mrb_ensure_hash_type(mrb, *pickarg);
+              }
+              break;
             }
           }
           *p = *pickarg;
@@ -1801,7 +1948,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         p = GET_ARG(struct RClass**);
         if (pickarg) {
-          if (altmode && mrb_nil_p(*pickarg)) {
+          if ((mods & MOD_ALT) && mrb_nil_p(*pickarg)) {
             *p = NULL;
           }
           else {
@@ -1818,14 +1965,17 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         ps = GET_ARG(const char**);
         pl = GET_ARG(mrb_int*);
-        if (needmodify) goto bad_needmodify;
+        if (mods & MOD_MODIFY) goto bad_needmodify;
         if (pickarg) {
-          if (altmode && mrb_nil_p(*pickarg)) {
+          if ((mods & MOD_ALT) && mrb_nil_p(*pickarg)) {
             *ps = NULL;
             *pl = 0;
           }
           else {
-            mrb_ensure_string_type(mrb, *pickarg);
+            if (!mrb_string_p(*pickarg)) {
+              if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+              else mrb_ensure_string_type(mrb, *pickarg);
+            }
             *ps = RSTRING_PTR(*pickarg);
             *pl = RSTRING_LEN(*pickarg);
           }
@@ -1837,13 +1987,16 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
         const char **ps;
 
         ps = GET_ARG(const char**);
-        if (needmodify) goto bad_needmodify;
+        if (mods & MOD_MODIFY) goto bad_needmodify;
         if (pickarg) {
-          if (altmode && mrb_nil_p(*pickarg)) {
+          if ((mods & MOD_ALT) && mrb_nil_p(*pickarg)) {
             *ps = NULL;
           }
           else {
-            mrb_ensure_string_type(mrb, *pickarg);
+            if (!mrb_string_p(*pickarg)) {
+              if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+              else mrb_ensure_string_type(mrb, *pickarg);
+            }
             *ps = RSTRING_CSTR(mrb, *pickarg);
           }
         }
@@ -1857,14 +2010,17 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         pb = GET_ARG(const mrb_value**);
         pl = GET_ARG(mrb_int*);
-        if (needmodify) goto bad_needmodify;
+        if (mods & MOD_MODIFY) goto bad_needmodify;
         if (pickarg) {
-          if (altmode && mrb_nil_p(*pickarg)) {
+          if ((mods & MOD_ALT) && mrb_nil_p(*pickarg)) {
             *pb = NULL;
             *pl = 0;
           }
           else {
-            mrb_ensure_array_type(mrb, *pickarg);
+            if (!mrb_array_p(*pickarg)) {
+              if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_ARY);
+              else mrb_ensure_array_type(mrb, *pickarg);
+            }
             a = mrb_ary_ptr(*pickarg);
             *pb = ARY_PTR(a);
             *pl = ARY_LEN(a);
@@ -1890,7 +2046,15 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         p = GET_ARG(mrb_int*);
         if (pickarg) {
-          *p = mrb_as_int(mrb, *pickarg);
+          if (mrb_likely(mrb_integer_p(*pickarg))) {
+            *p = mrb_integer(*pickarg);
+          }
+          else if (mods & MOD_CONV) {
+            *p = arg_as_int(mrb, argv, i-1);
+          }
+          else {
+            *p = mrb_as_int(mrb, *pickarg);
+          }
         }
       }
       break;
@@ -1921,7 +2085,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
         datap = GET_ARG(void**);
         type = GET_ARG(struct mrb_data_type const*);
         if (pickarg) {
-          if (altmode && mrb_nil_p(*pickarg)) {
+          if ((mods & MOD_ALT) && mrb_nil_p(*pickarg)) {
             *datap = NULL;
           }
           else {
@@ -1937,7 +2101,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         p = GET_ARG(mrb_value*);
         bp = ci->stack + mrb_ci_bidx(ci);
-        if (altmode && mrb_nil_p(*bp)) {
+        if ((mods & MOD_ALT) && mrb_nil_p(*bp)) {
           mrb_raise(mrb, E_ARGUMENT_ERROR, "no block given");
         }
         *p = *bp;
@@ -1960,7 +2124,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
       {
         const mrb_value **var;
         mrb_int *pl;
-        mrb_bool nocopy = (altmode || !argv_on_stack) ? TRUE : FALSE;
+        mrb_bool nocopy = ((mods & MOD_ALT) || !argv_on_stack) ? TRUE : FALSE;
 
         var = GET_ARG(const mrb_value**);
         pl = GET_ARG(mrb_int*);
@@ -2144,6 +2308,10 @@ finish:
  *   '+': Request a modifiable (not frozen) object. Raises a FrozenError if the
  *        retrieved object is frozen (this check does not apply to nil values).
  */
+#undef MOD_ALT
+#undef MOD_MODIFY
+#undef MOD_CONV
+
 MRB_API mrb_int
 mrb_get_args(mrb_state *mrb, mrb_args_format format, ...)
 {
@@ -4967,6 +5135,42 @@ static const mrb_mt_entry cls_rom_entries[] = {
   MRB_MT_ENTRY(mrb_class_superclass, MRB_SYM(superclass), MRB_ARGS_NONE()),                   /* 15.2.3.3.4 */
 };
 
+/*
+ * Module#__ensure(val, obj, conv[, args, idx]) -> val
+ *
+ * Internal. Checks that `val` is an instance of the receiver, as a check ON
+ * its argument rather than a dispatch TO it. The coercion trampoline in the
+ * VM calls it on what a conversion method gave back, handing it the object
+ * it asked and the name it sent: the type the conversion produced on its own
+ * says nothing about where it came from, and the error names all three the
+ * way CRuby's does.
+ *
+ * It reads its arguments rather than asking `mrb_get_args` for them, which
+ * walks the format string twice and costs more than the check.
+ */
+static mrb_value
+mod_ensure(mrb_state *mrb, mrb_value self)
+{
+  mrb_int argc = mrb_get_argc(mrb);
+  const mrb_value *argv = mrb_get_argv(mrb);
+
+  if (argc != 3 && argc != 5) mrb_argnum_error(mrb, argc, 3, 5);
+  if (!mrb_obj_is_kind_of(mrb, argv[0], mrb_class_ptr(self))) {
+    mrb_raisef(mrb, E_TYPE_ERROR, "can't convert %Y to %C (%Y#%n gives %Y)",
+               argv[1], mrb_class_ptr(self), argv[1],
+               mrb_symbol(argv[2]), argv[0]);
+  }
+  /* An argument that reached its method packed is converted where it sits,
+     since that is what the restarted send reads again.  The store is here
+     rather than in the trampoline's bytecode so that it neither runs a
+     redefined `Array#[]=` nor needs the array's class, which
+     `mrb_get_args()` cleared to keep the array out of `ObjectSpace`. */
+  if (argc == 5) {
+    mrb_ary_set(mrb, argv[3], mrb_integer(argv[4]), argv[0]);
+  }
+  return argv[0];
+}
+
 static const mrb_mt_entry mod_rom_entries[] = {
   MRB_MT_ENTRY(mrb_mod_eqq,             MRB_OPSYM(eqq),            MRB_ARGS_REQ(1)),                   /* 15.2.2.4.7 */
   MRB_MT_ENTRY(mrb_mod_alias,           MRB_SYM(alias_method),     MRB_ARGS_ANY()),                    /* 15.2.2.4.8 */
@@ -5002,6 +5206,10 @@ static const mrb_mt_entry mod_rom_entries[] = {
   MRB_MT_ENTRY(mrb_mod_remove_const,    MRB_SYM(remove_const),     MRB_ARGS_REQ(1) | MRB_MT_PRIVATE),  /* 15.2.2.4.40 */
   MRB_MT_ENTRY(mrb_mod_to_s,            MRB_SYM(to_s),             MRB_ARGS_NONE()),
   MRB_MT_ENTRY(mrb_mod_undef,           MRB_SYM(undef_method),     MRB_ARGS_ANY()),                    /* 15.2.2.4.41 */
+  /* Last on purpose: the table is scanned in order, and everything above
+     is a name programs call.  Boot cost 743 instructions more with this
+     entry second. */
+  MRB_MT_ENTRY(mod_ensure,              MRB_SYM(__ensure),         MRB_ARGS_ARG(3,2)),
 };
 
 void

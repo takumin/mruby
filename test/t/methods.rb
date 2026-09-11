@@ -260,3 +260,210 @@ assert('super in a method with a receiver') do
   assert_equal(:base, SuperInSdefSub.go)
   assert_equal([:base_block], SuperInSdefSub.in_block)
 end
+
+class ArgConvToStr
+  def initialize; @asked = 0; end
+  attr_reader :asked
+  def to_str; @asked += 1; "b"; end
+end
+
+class ArgConvToAry
+  def to_ary; [1, 2]; end
+end
+
+class ArgConvToInt
+  def to_int; 2; end
+end
+
+class ArgConvToIntBad
+  def to_int; "2"; end
+end
+
+class ArgConvToHash
+  def to_hash; {a: 1}; end
+end
+
+class ArgConvBadToStr
+  def to_str; 7; end
+end
+
+class ArgConvRaises
+  def to_str; raise ArgumentError, "from to_str"; end
+end
+
+assert('an argument of a method written in C takes an implicit conversion') do
+  o = ArgConvToStr.new
+  assert_true("abc".include?(o))
+  assert_equal(1, o.asked)
+
+  assert_equal([1, 2], [0].replace(ArgConvToAry.new))
+  assert_equal({a: 1}, {b: 2}.replace(ArgConvToHash.new))
+end
+
+assert('a conversion that gives back the wrong type names the object that was asked') do
+  assert_raise_with_message(TypeError,
+      "can't convert ArgConvBadToStr to String " \
+      "(ArgConvBadToStr#to_str gives Integer)") do
+    "abc".include?(ArgConvBadToStr.new)
+  end
+  # an object that does not answer the protocol at all is the error it was
+  assert_raise_with_message(TypeError, "Object cannot be converted to String") do
+    "abc".include?(Object.new)
+  end
+  # an exception from the conversion is the one that comes out
+  assert_raise_with_message(ArgumentError, "from to_str") do
+    "abc".include?(ArgConvRaises.new)
+  end
+end
+
+assert('a conversion nested in a conversion runs out of call frames, not C stack') do
+  # The conversion is bytecode, so nesting it spends what a Ruby call spends.
+  cls = Class.new do
+    def initialize(n); @n = n; end
+    def to_str; @n == 0 ? "x" : "a".include?(self.class.new(@n - 1)).to_s; end
+  end
+  assert_raise(SystemStackError) do
+    d = 0
+    while d < 100000
+      d += 1
+      "a".include?(cls.new(d))
+    end
+  end
+end
+
+assert('`~` in a format states that the argument takes an implicit conversion') do
+  o = ArgConvToStr.new
+  assert_equal("b", TestArgFormat.conv_str(o))
+  assert_equal([1, 2], TestArgFormat.conv_ary(ArgConvToAry.new))
+  assert_equal({a: 1}, TestArgFormat.conv_hash(ArgConvToHash.new))
+
+  # a value of the type itself asks for nothing, and the restarted send asks
+  # for the conversion once rather than once per attempt
+  assert_equal("x", TestArgFormat.conv_str("x"))
+  assert_equal(1, o.asked)
+
+  # the same specifier without the modifier keeps the type it always demanded
+  assert_raise_with_message(TypeError, "ArgConvToStr cannot be converted to String") do
+    TestArgFormat.strict_str(ArgConvToStr.new)
+  end
+end
+
+assert('`~` reaches the specifiers that hand out a pointer') do
+  # `s`, `z` and `a` give the method a pointer into the object, so the
+  # conversion has to have happened by the time the pointer is taken.
+  assert_equal("b", TestArgFormat.conv_ptr(ArgConvToStr.new))
+  assert_equal("b", TestArgFormat.conv_cstr(ArgConvToStr.new))
+  assert_equal(1, TestArgFormat.conv_alist(ArgConvToAry.new))
+  assert_equal("x", TestArgFormat.conv_ptr("x"))
+
+  # unmarked, they demand their type as they always did
+  assert_raise_with_message(TypeError, "ArgConvToStr cannot be converted to String") do
+    TestArgFormat.strict_ptr(ArgConvToStr.new)
+  end
+
+  # `!` puts the format on the general path, where nil is the empty pointer
+  # and asks for nothing
+  assert_nil(TestArgFormat.conv_ptr_alt(nil))
+  assert_equal("b", TestArgFormat.conv_ptr_alt(ArgConvToStr.new))
+  assert_nil(TestArgFormat.conv_cstr_alt(nil))
+  assert_equal("b", TestArgFormat.conv_cstr_alt(ArgConvToStr.new))
+  assert_nil(TestArgFormat.conv_alist_alt(nil))
+  assert_equal(2, TestArgFormat.conv_alist_alt(ArgConvToAry.new))
+end
+
+assert('a `to_int` conversion behaves like the other three') do
+  # asked once, its exception passes through, and nesting spends call frames
+  asked = 0
+  o = Class.new { define_method(:to_int) { asked += 1; 2 } }.new
+  assert_equal("abab", "ab" * o)
+  assert_equal(1, asked)
+
+  assert_raise_with_message(ArgumentError, "from to_int") do
+    "ab" * Class.new { def to_int; raise ArgumentError, "from to_int"; end }.new
+  end
+
+  cls = Class.new do
+    def initialize(n); @n = n; end
+    def to_int; @n == 0 ? 1 : ("a" * self.class.new(@n - 1)).size; end
+  end
+  assert_raise(SystemStackError) do
+    d = 0
+    while d < 100000
+      d += 1
+      "a" * cls.new(d)
+    end
+  end
+end
+
+assert('`~` on `i` asks only where the C code cannot read the value itself') do
+  # `i` has always read a Float as well as an Integer, and the mark does not
+  # change that: only a value none of the numeric types covers is asked for
+  # `to_int`, which is where CRuby's NUM2LONG asks too.
+  assert_equal(2, TestArgFormat.conv_int(ArgConvToInt.new))
+  assert_equal(7, TestArgFormat.conv_int(7))
+  assert_equal(1, TestArgFormat.conv_int(1.9)) if Object.const_defined?(:Float)
+  assert_equal(2, TestArgFormat.conv_int_alt(ArgConvToInt.new))
+  assert_nil(TestArgFormat.conv_int_alt)
+
+  # unmarked, `i` demands a value it can read on its own
+  assert_raise_with_message(TypeError, "ArgConvToInt cannot be converted to Integer") do
+    TestArgFormat.strict_int(ArgConvToInt.new)
+  end
+
+  # a `to_int` that gives back something else is refused where it answered
+  assert_raise_with_message(TypeError,
+                            "can't convert ArgConvToIntBad to Integer (ArgConvToIntBad#to_int gives String)") do
+    TestArgFormat.conv_int(ArgConvToIntBad.new)
+  end
+end
+
+assert('a send that packs its arguments carries the conversion too') do
+  # `Class#new` hands what it was given to `initialize` packed, so a C
+  # `initialize` reads its arguments out of an array rather than registers.
+  # The array is an object the restart re-reads instead of building again,
+  # so the conversion is written into it.
+  o = ArgConvToStr.new
+  assert_equal("b", String.new(o))
+  assert_equal(1, o.asked)
+
+  # the trampoline goes above the caller's registers here, which leaves the
+  # block where the restart will read it
+  assert_equal("b", String.new(ArgConvToStr.new) {})
+
+  # and leaves the argument free to be one that is not the last
+  assert_equal(1, "abc".index(*[ArgConvToStr.new]))
+  assert_equal(1, "abc".index(*[ArgConvToStr.new, 0]))
+
+  # a value that answers no protocol is the error it always was
+  assert_raise(TypeError) { String.new(Object.new) }
+end
+
+assert('a format modifier is not an argument of its own') do
+  assert_nil(TestArgFormat.conv_opt)
+  assert_equal("b", TestArgFormat.conv_opt(ArgConvToStr.new))
+  assert_raise(ArgumentError) { TestArgFormat.conv_opt("a", "b") }
+end
+
+assert('`~` combines with the modifiers that were already there') do
+  # `!` lets nil through, and nil asks for no conversion
+  assert_nil(TestArgFormat.conv_alt(nil))
+  assert_equal("b", TestArgFormat.conv_alt(ArgConvToStr.new))
+end
+
+assert('`~` on a specifier that names no conversion is a broken format') do
+  assert_raise(ArgumentError) { TestArgFormat.bad_modifier(1) }
+end
+
+assert('an argument that is not the last one keeps the type error') do
+  # The conversion restarts the send, so it can only answer for the argument
+  # the send leaves on top of the stack.
+  assert_raise(TypeError) { TestArgFormat.conv_first(ArgConvToStr.new, 1) }
+  assert_equal("x", TestArgFormat.conv_first("x", 1))
+end
+
+assert('a method that decides the type itself asks for the conversion by hand') do
+  # `Array#concat` reads its arguments with `*`, which names no type, so the
+  # request is made from the method rather than by a `~` in the format.
+  assert_equal([0, 1, 2], [0].concat(ArgConvToAry.new))
+  assert_raise(TypeError) { [0].concat(Object.new) }
+end

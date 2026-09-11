@@ -900,3 +900,15 @@ assert('eval of a multiple assignment with more post-splat targets than fit') do
   assert_equal 255, eval(masgn.call(255) + "; @masgn_post254")
   assert_raise(SyntaxError) { eval(masgn.call(256)) }
 end
+
+assert('eval takes an implicit conversion for the code and the file name') do
+  # Both reach the C method as a pointer, so the conversion has to be over
+  # before the pointer is taken.
+  code = Class.new { def to_str; '1 + 1'; end }.new
+  file = Class.new { def to_str; 'converted.rb'; end }.new
+  assert_equal(2, eval(code))
+  assert_equal('converted.rb', eval('__FILE__', nil, file))
+  assert_equal(1, String.class_eval(Class.new { def to_str; '1'; end }.new))
+  assert_equal('converted.rb', Object.new.instance_eval('__FILE__', file))
+  assert_raise(TypeError) { eval(Object.new) }
+end

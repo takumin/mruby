@@ -91,7 +91,7 @@ mrb_file_s_umask(mrb_state *mrb, mrb_value klass)
 {
   mrb_int mask, omask;
 
-  if (mrb_get_args(mrb, "|i", &mask) == 0) {
+  if (mrb_get_args(mrb, "|i~", &mask) == 0) {
     omask = mrb_hal_io_umask(mrb, -1);
   }
   else {
@@ -143,7 +143,7 @@ mrb_file_s_rename(mrb_state *mrb, mrb_value obj)
 {
   mrb_value from, to;
 
-  mrb_get_args(mrb, "SS", &from, &to);
+  mrb_get_args(mrb, "S~S~", &from, &to);
   char *src = mrb_locale_from_utf8(RSTRING_CSTR(mrb, from), -1);
   char *dst = mrb_locale_from_utf8(RSTRING_CSTR(mrb, to), -1);
   if (mrb_hal_io_rename(mrb, src, dst) < 0) {
@@ -199,7 +199,7 @@ mrb_file_dirname(mrb_state *mrb, mrb_value klass)
 {
   const char *path;
   mrb_int level = 1;
-  mrb_get_args(mrb, "z|i", &path, &level);
+  mrb_get_args(mrb, "z~|i~", &path, &level);
 
   if (level < 0) {
     mrb_raisef(mrb, E_ARGUMENT_ERROR, "negative level: %i", level);
@@ -258,7 +258,7 @@ mrb_file_basename(mrb_state *mrb, mrb_value klass)
   const char *path;
   const char *suffix = NULL;
 
-  mrb_get_args(mrb, "z|z", &path, &suffix);
+  mrb_get_args(mrb, "z~|z~", &path, &suffix);
 
   const char *endp = path + strlen(path);
   if (path == endp) {
@@ -323,7 +323,7 @@ mrb_file_realpath(mrb_state *mrb, mrb_value klass)
 {
   mrb_value pathname, dir_string;
 
-  if (mrb_get_args(mrb, "S|S", &pathname, &dir_string) == 2) {
+  if (mrb_get_args(mrb, "S~|S~", &pathname, &dir_string) == 2) {
     mrb_value s = mrb_str_dup(mrb, dir_string);
     s = mrb_str_cat_cstr(mrb, s, FILE_SEPARATOR);
     s = mrb_str_append(mrb, s, pathname);
@@ -567,7 +567,7 @@ mrb_file_expand_path(mrb_state *mrb, mrb_value self)
 {
   const char *path;
   const char *default_dir = ".";
-  mrb_get_args(mrb, "z|z", &path, &default_dir);
+  mrb_get_args(mrb, "z~|z~", &path, &default_dir);
   return path_expand(mrb, path, default_dir, TRUE);
 }
 
@@ -584,7 +584,7 @@ mrb_file_absolute_path(mrb_state *mrb, mrb_value self)
 {
   const char *path;
   const char *default_dir = ".";
-  mrb_get_args(mrb, "z|z", &path, &default_dir);
+  mrb_get_args(mrb, "z~|z~", &path, &default_dir);
   return path_expand(mrb, path, default_dir, FALSE);
 }
 
@@ -662,7 +662,7 @@ mrb_file_flock(mrb_state *mrb, mrb_value self)
 {
   mrb_int operation;
 
-  mrb_get_args(mrb, "i", &operation);
+  mrb_get_args(mrb, "i~", &operation);
   int fd = mrb_io_fileno(mrb, self);
 
   while (mrb_hal_io_flock(mrb, fd, (int)operation) == -1) {
@@ -744,7 +744,7 @@ mrb_file_s_symlink(mrb_state *mrb, mrb_value klass)
 {
   mrb_value from, to;
 
-  mrb_get_args(mrb, "SS", &from, &to);
+  mrb_get_args(mrb, "S~S~", &from, &to);
   char *src = mrb_locale_from_utf8(RSTRING_CSTR(mrb, from), -1);
   char *dst = mrb_locale_from_utf8(RSTRING_CSTR(mrb, to), -1);
   if (mrb_hal_io_symlink(mrb, src, dst) == -1) {
@@ -779,7 +779,7 @@ mrb_file_s_chmod(mrb_state *mrb, mrb_value klass)
   const mrb_value *filenames;
   int ai = mrb_gc_arena_save(mrb);
 
-  mrb_get_args(mrb, "i*", &mode, &filenames, &argc);
+  mrb_get_args(mrb, "i~*", &mode, &filenames, &argc);
   for (int i = 0; i < argc; i++) {
     mrb_ensure_string_type(mrb, filenames[i]);
     const char *utf8_path = RSTRING_CSTR(mrb, filenames[i]);
@@ -814,7 +814,7 @@ mrb_file_s_readlink(mrb_state *mrb, mrb_value klass)
 {
   const char *path;
 
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
 
   char *tmp = mrb_locale_from_utf8(path, -1);
   /* Use mrb_temp_alloc for exception safety - GC will clean up on exception */
@@ -853,7 +853,7 @@ static mrb_value
 mrb_file_extname(mrb_state *mrb, mrb_value klass)
 {
   char *path;
-  mrb_get_args(mrb, "z", &path);
+  mrb_get_args(mrb, "z~", &path);
 
   size_t len = strlen(path);
   if (len == 0) {
@@ -907,7 +907,7 @@ static mrb_value
 mrb_file_path(mrb_state *mrb, mrb_value klass)
 {
   mrb_value filename;
-  mrb_get_args(mrb, "S", &filename);
+  mrb_get_args(mrb, "S~", &filename);
   return filename;
 }
 

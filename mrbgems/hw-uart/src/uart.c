@@ -96,7 +96,7 @@ static mrb_value
 mrb_uart_m_write(mrb_state *mrb, mrb_value self)
 {
   mrb_value str;
-  mrb_get_args(mrb, "S", &str);
+  mrb_get_args(mrb, "S~", &str);
   mrb_int unit = mrb_integer(mrb_iv_get(mrb, self, MRB_IVSYM(unit_num)));
   size_t len = RSTRING_LEN(str);
   mrb_uart_write((int)unit, (const uint8_t*)RSTRING_PTR(str), len);
@@ -108,7 +108,7 @@ static mrb_value
 mrb_uart_m_read(mrb_state *mrb, mrb_value self)
 {
   mrb_int len = -1;
-  mrb_get_args(mrb, "|i", &len);
+  mrb_get_args(mrb, "|i~", &len);
 
   mrb_uart_ringbuf *rb = (mrb_uart_ringbuf*)mrb_data_get_ptr(mrb, self, &rxbuf_type);
   int avail = mrb_uart_ringbuf_available(rb);
@@ -131,7 +131,7 @@ static mrb_value
 mrb_uart_m_readpartial(mrb_state *mrb, mrb_value self)
 {
   mrb_int maxlen;
-  mrb_get_args(mrb, "i", &maxlen);
+  mrb_get_args(mrb, "i~", &maxlen);
 
   mrb_uart_ringbuf *rb = (mrb_uart_ringbuf*)mrb_data_get_ptr(mrb, self, &rxbuf_type);
   int avail = mrb_uart_ringbuf_available(rb);
@@ -202,7 +202,7 @@ static mrb_value
 mrb_uart_m_send_break(mrb_state *mrb, mrb_value self)
 {
   mrb_int ms = 100;
-  mrb_get_args(mrb, "|i", &ms);
+  mrb_get_args(mrb, "|i~", &ms);
   mrb_int unit = mrb_integer(mrb_iv_get(mrb, self, MRB_IVSYM(unit_num)));
   mrb_uart_send_break((int)unit, (uint32_t)ms);
   return self;

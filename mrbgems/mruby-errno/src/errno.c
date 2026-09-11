@@ -206,7 +206,7 @@ mrb_exxx_init(mrb_state *mrb, mrb_value self)
 {
   mrb_value m = mrb_nil_value();
 
-  mrb_get_args(mrb, "|S", &m);
+  mrb_get_args(mrb, "|S~", &m);
   mrb_sce_init(mrb, self, m, mrb_nil_value());
   return self;
 }

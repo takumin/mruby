@@ -376,6 +376,12 @@ typedef struct mrb_task_state {
 } mrb_task_state;
 #endif
 
+/* bits of mrb_state.conv_defined */
+#define MRB_CONV_TO_ARY  1
+#define MRB_CONV_TO_STR  2
+#define MRB_CONV_TO_INT  4
+#define MRB_CONV_TO_HASH 8
+
 struct mrb_state {
   struct mrb_jmpbuf *jmp;
 
@@ -509,6 +515,21 @@ struct mrb_state {
      `MRB_BOP_NIL_TRUE_FALSE_EQ`, mirrors a class flag instead of a builtin
      and indexes nothing. */
   uint32_t bop_redefined;
+
+  /* One bit per implicit conversion protocol, set the first time a method of
+     that name is installed anywhere.  The core defines `to_str`, `to_int`
+     and `to_hash` on String, Integer and Hash, so those three bits stand
+     from boot; nothing in it defines `to_ary`, so a program that never
+     writes one lets the coercion trap answer from this word instead of
+     walking an ancestor chain for a name that is not there.  Conservative:
+     never cleared by `undef`. */
+  uint8_t conv_defined;
+
+  /* Set while a conversion arranged for a C method's argument is on its way
+     to the dispatch loop: `mrb_get_args()` cannot return to the method it is
+     serving, so it throws, and this says the throw carries a restart rather
+     than an exception.  Read and cleared where the loop catches it. */
+  uint8_t conv_signal;
   mrb_method_t bop_builtin[MRB_BOP_SLOT_COUNT];
 
 #ifdef MRB_USE_TASK_SCHEDULER
@@ -1130,15 +1151,15 @@ MRB_API struct RClass* mrb_define_module_under_id(mrb_state *mrb, struct RClass 
  * |:----:|----------------|-------------------|----------------------------------------------------|
  * | `o`  | {Object}       | {mrb_value}       | Could be used to retrieve any type of argument     |
  * | `C`  | {Class}/{Module} | {mrb_value}     | when `!` follows, the value may be `nil`           |
- * | `S`  | {String}       | {mrb_value}       | when `!` follows, the value may be `nil`           |
- * | `A`  | {Array}        | {mrb_value}       | when `!` follows, the value may be `nil`           |
- * | `H`  | {Hash}         | {mrb_value}       | when `!` follows, the value may be `nil`           |
- * | `s`  | {String}       | const char *, {mrb_int} | Receive two arguments; `s!` gives (`NULL`,`0`) for `nil` |
- * | `z`  | {String}       | const char *      | `NULL` terminated string; `z!` gives `NULL` for `nil` |
- * | `a`  | {Array}        | const {mrb_value} *, {mrb_int} | Receive two arguments; `a!` gives (`NULL`,`0`) for `nil` |
+ * | `S`  | {String}       | {mrb_value}       | when `!` follows, the value may be `nil`; when `~` follows, `to_str` is asked for |
+ * | `A`  | {Array}        | {mrb_value}       | when `!` follows, the value may be `nil`; when `~` follows, `to_ary` is asked for |
+ * | `H`  | {Hash}         | {mrb_value}       | when `!` follows, the value may be `nil`; when `~` follows, `to_hash` is asked for |
+ * | `s`  | {String}       | const char *, {mrb_int} | Receive two arguments; `s!` gives (`NULL`,`0`) for `nil`; when `~` follows, `to_str` is asked for |
+ * | `z`  | {String}       | const char *      | `NULL` terminated string; `z!` gives `NULL` for `nil`; when `~` follows, `to_str` is asked for |
+ * | `a`  | {Array}        | const {mrb_value} *, {mrb_int} | Receive two arguments; `a!` gives (`NULL`,`0`) for `nil`; when `~` follows, `to_ary` is asked for |
  * | `c`  | {Class}/{Module} | strcut RClass * | `c!` gives `NULL` for `nil`                        |
  * | `f`  | {Integer}/{Float} | {mrb_float}    |                                                    |
- * | `i`  | {Integer}/{Float} | {mrb_int}      |                                                    |
+ * | `i`  | {Integer}/{Float} | {mrb_int}      | when `~` follows, `to_int` is asked for where none of the numeric types reads the value |
  * | `b`  | boolean        | {mrb_bool}        |                                                    |
  * | `n`  | {String}/{Symbol} | {mrb_sym}         |                                                    |
  * | `d`  | data           | void *, {mrb_data_type} const | 2nd argument will be used to check data type so it won't be modified; when `!` follows, the value may be `nil` |
@@ -1157,6 +1178,7 @@ MRB_API struct RClass* mrb_define_module_under_id(mrb_state *mrb, struct RClass 
  * |:----:|-----------------------------------------------------------------------------------------|
  * | `!`  | Switch to the alternate mode; The behaviour changes depending on the format specifier   |
  * | `+`  | Request a not frozen object; However, except nil value                                  |
+ * | `~`  | Only for `S`, `A`, `H`, `s`, `z`, `a` and `i`: take an implicit conversion (`to_str`, `to_ary`, `to_hash`, `to_int`) |
  */
 typedef const char *mrb_args_format;
 
@@ -1263,6 +1285,42 @@ MRB_API const mrb_value *mrb_get_argv(mrb_state *mrb);
  * Correctly handles *splat arguments.
  */
 MRB_API mrb_value mrb_get_arg1(mrb_state *mrb);
+
+/**
+ * Ask an argument of the running C method for an implicit conversion.
+ *
+ * The method has read its arguments and found one of the wrong type where
+ * a conversion could answer, and asks for it here.  `conv` is one of
+ * `MRB_CONV_TO_STR`, `MRB_CONV_TO_ARY`, `MRB_CONV_TO_HASH` and
+ * `MRB_CONV_TO_INT`, and `argidx`
+ * numbers the argument from zero.
+ *
+ * On success the call does not return: the send that reached this method is
+ * taken from the top again with the argument converted, so the method runs
+ * once more and reads a value of the right type.  Anything the method did
+ * before the call happens twice, which is why the call belongs before the
+ * work.
+ *
+ * It returns `FALSE` when the conversion cannot be arranged (the protocol is
+ * defined nowhere, the argument does not answer it, or the send cannot be
+ * restarted), and then the caller raises `TypeError` as it always did.
+ *
+ *     if (!mrb_string_p(arg)) {
+ *       mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
+ *       mrb_ensure_string_type(mrb, arg);
+ *     }
+ *
+ * A `~` in the argument format asks for the same thing where the format can
+ * name the type; this entry is for the methods that read `o` and decide the
+ * type themselves.
+ *
+ * @param mrb The current mruby state.
+ * @param argidx The argument's position, counted from zero.
+ * @param conv The conversion to ask for.
+ * @return FALSE, when it returns at all.
+ * @see mrb_args_format
+ */
+MRB_API mrb_bool mrb_convert_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv);
 
 /**
  * Check if a block argument is given from mrb_state.

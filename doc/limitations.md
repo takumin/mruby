@@ -212,37 +212,63 @@ arbitrary-precision integers when included.
 `ObjectSpace.each_object` has limited functionality compared
 to CRuby.
 
-## No Implicit Type Conversion (`to_int`, `to_str`, `to_ary`, ...)
+## What Bounds the Implicit Type Conversion
 
-mruby does not perform implicit type conversion through methods
-like `to_int`, `to_str`, `to_ary`, or `to_hash`. CRuby uses these
-to let user-defined classes duck-type as built-in types — for
-example `Array#[]` calls `to_int` on its argument, `String#+` calls
-`to_str`, and multiple assignment calls `to_ary` on its right-hand
-side. mruby's built-in operations require the actual built-in type
-and do not consult these conversion methods.
+mruby consults `to_str`, `to_ary`, `to_hash` and `to_int` where a built-in
+operation is written to take the conversion, so a user-defined class can
+duck-type as a String, an Array, a Hash or an Integer in those places.
 
 ```ruby
-class MyInt;  def to_int; 42; end;     end
-class MyStr;  def to_str; "x"; end;    end
+class MyInt;  def to_int; 2; end;       end
+class MyStr;  def to_str; "x"; end;     end
 class MyAry;  def to_ary; [1,2,3]; end; end
 ```
 
-#### CRuby
+```
+"a" + MyStr.new         # => "ax"            (to_str)
+[0].replace(MyAry.new)  # => [1, 2, 3]       (to_ary)
+a, b, c = MyAry.new     # => a=1, b=2, c=3   (to_ary)
+[1,2,3][MyInt.new]      # => 3               (to_int)
+"ab" * MyInt.new        # => "abab"          (to_int)
+```
 
-```
-[1,2,3][MyInt.new]   # => nil   (to_int called -> ary[42])
-"a" + MyStr.new      # => "ax"  (to_str called)
-a, b, c = MyAry.new  # => a=1, b=2, c=3   (to_ary called)
-```
+Which arguments take a conversion is written down rather than implied by
+the type a method wants. A method written in C marks the argument with `~`
+in its `mrb_get_args()` format (`S~`, `A~`, `H~`, `i~`, and `s~`, `z~`,
+`a~` for the specifiers that hand out a pointer), or asks for the
+conversion itself with `mrb_convert_arg()` where the format reads `o` and
+the method decides the type. An unmarked specifier reads what it always
+read, so a format nobody edited keeps refusing what it always refused.
 
-#### mruby
+`i` is the one specifier that already read more than a single type: it
+takes a Float, and a Bignum, a Rational and a Complex where the build has
+them. The mark leaves all of that alone and adds `to_int` at the end, where
+the specifier used to raise, so `"ab" * 2.9` is still truncated in C rather
+than dispatched to.
 
-```
-[1,2,3][MyInt.new]   # TypeError
-"a" + MyStr.new      # TypeError
-a, b, c = MyAry.new  # a=<MyAry obj>, b=nil, c=nil   (treated as single value)
-```
+The conversion runs as ordinary bytecode: the instruction or the send that
+met the wrong type rewinds and runs again once the conversion has answered.
+That is what a method written in C cannot do by calling back into the VM,
+and it is also what bounds where a conversion can happen. Only a send the
+dispatch loop issued itself can rewind, so `obj[i] = x` and a method
+reached from C through `mrb_funcall()` and its kin raise `TypeError` as
+before.
+
+A send that hands its arguments over one at a time converts its last
+argument only, and cannot carry a block: the conversion is answered over
+the argument's own register, and the registers above it are where the rest
+of the arguments and the block sit. A send that packs its arguments into an
+array has neither bound, because the array is an object the restart reads
+again rather than builds again, and the conversion is written inside it.
+`Class#new` passes what it was given to `initialize` packed, so
+`Dir.new(obj)` converts. `File.open(obj)` does not, for a different reason:
+`File#initialize` is written in Ruby, and it passes the path as the first
+of three arguments to a method written in C.
+
+A conversion is answered by a method lookup, not by a question put to the
+object, so overriding `respond_to?` steers nothing. One consequence is that
+a `to_int` reached only through `method_missing` is not found, which is
+what CRuby's `respond_to?` answers for it as well.
 
 Identity versions of `to_int`, `to_str`, `to_sym`, and `to_hash`
 remain defined on the corresponding built-in types so that
@@ -251,11 +277,7 @@ remain defined on the corresponding built-in types so that
 
 Explicit conversion methods (`to_i`, `to_s`, `to_a`) work as in
 CRuby and are called by features such as string interpolation and
-the splat operator (`*obj`).
-
-This is a deliberate trade-off: implicit conversion forces every
-coercion site to go through method dispatch and can silently mask
-type-mismatch bugs.
+the splat operator (`*obj`), which asks for `to_a` and not `to_ary`.
 
 ## `Proc#dup` / `Proc#clone` is Always Orphan
 

@@ -1178,3 +1178,13 @@ assert('Array#intersection with no argument copies the receiver') do
   assert_equal [2, 3], [1, 2, 3].intersection([2, 3])
   assert_equal [1, 2, 3], [1, 2, 3].intersection((1..40).to_a)
 end
+
+assert('an Array count takes an implicit conversion') do
+  o = Class.new { def to_int; 1; end }.new
+  assert_equal [2, 3, 1], [1, 2, 3].rotate(o)
+  assert_equal [1, [2]], [[1, [2]]].flatten(o)
+  assert_equal [1], [1, 2, 3].slice!(0, o)
+  assert_raise(TypeError) { [1, 2, 3].rotate(Object.new) }
+  # the index of `insert` is not the send's last argument
+  assert_raise(TypeError) { [1, 2, 3].insert(o, 9) }
+end

@@ -217,6 +217,17 @@ mrb_int mrb_get_args(mrb_state *mrb, const char *format, ...);
 Adding `!` to `S`, `A`, `H`, `C`, `c`, `s`, `z`, `a`, `d` allows `nil`
 (returns NULL/zero for nil).
 
+Adding `~` to `S`, `A`, `H`, `s`, `z`, `a` or `i` takes an implicit
+conversion: an argument of another type is asked for `to_str`, `to_ary`,
+`to_hash` or `to_int` and the method runs again with what it answered.
+Without the mark the specifier reads what it always read and raises
+`TypeError` for the rest. On `s`, `z` and `a` the conversion happens before
+the pointer is handed out, so the pointer names the converted object. On
+`i` it happens only where none of the numeric types reads the value, so a
+Float is still truncated rather than dispatched to. A method whose format
+reads `o` because it decides the type itself asks with `mrb_convert_arg()`;
+see `doc/limitations.md` for what the conversion reaches.
+
 ### Examples
 
 ```c

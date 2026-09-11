@@ -273,6 +273,12 @@ bitop_count_bits(const unsigned char *ptr, mrb_int len)
 static mrb_int
 bitop_offset_from_index(mrb_state *mrb, mrb_value index)
 {
+  /* The offset shares its format with the `lsb_first` keyword, so it is read
+     as `o` and asked for here.  The numeric types are read without asking,
+     the way `i~` reads them. */
+  if (mrb_unlikely(!mrb_integer_convertible_p(index))) {
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_INT);
+  }
   return mrb_as_int(mrb, mrb_ensure_integer_type(mrb, index));
 }
 

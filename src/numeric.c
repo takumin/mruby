@@ -950,7 +950,7 @@ flo_rounding(mrb_state *mrb, mrb_value num, double (*func)(double))
   const int fprec =  15;
 #endif
 
-  mrb_get_args(mrb, "|i", &ndigits);
+  mrb_get_args(mrb, "|i~", &ndigits);
   if (f == 0.0) {
     return ndigits > 0 ? mrb_float_value(mrb, f) : mrb_fixnum_value(0);
   }
@@ -1100,7 +1100,7 @@ flo_round(mrb_state *mrb, mrb_value num)
   double number, f;
   mrb_int ndigits = 0;
 
-  mrb_get_args(mrb, "|i", &ndigits);
+  mrb_get_args(mrb, "|i~", &ndigits);
   number = mrb_float(num);
 
   if (0 < ndigits && (isinf(number) || isnan(number))) {
@@ -1718,7 +1718,7 @@ prepare_int_rounding(mrb_state *mrb, mrb_value x)
   mrb_int nd = 0;
   double bytes = (double)sizeof(mrb_int) - 0.125;
 
-  mrb_get_args(mrb, "|i", &nd);
+  mrb_get_args(mrb, "|i~", &nd);
   if (nd >= 0) {
     return mrb_nil_value();
   }
@@ -2570,19 +2570,32 @@ static const mrb_mt_entry numeric_rom_entries[] = {
 };
 
 /*
- * Integer.__ensure(val) -> Integer
+ * Integer.__convert(val) -> Integer
  *
  * Internal. Converts `val` the way `mrb_ensure_int_type()` does, as a check
  * ON its argument rather than a dispatch TO it. `val.__to_int` used to be the
  * mrblib idiom, but `__to_int` was an ordinary public method, so an object
  * defining one was accepted where an object defining `to_int` is rejected
  * (#7014).
+ *
+ * It is not called `__ensure`, which would sit in Integer's singleton class
+ * and hide `Module#__ensure` there: the trampoline that runs a conversion
+ * sends `__ensure` to the class being converted to, and for `to_int` that
+ * class is this one. The two do different jobs anyway -- `__ensure` checks
+ * that a conversion gave back the type it promised, this converts.
  */
 static mrb_value
-int_s_ensure(mrb_state *mrb, mrb_value self)
+int_s_convert(mrb_state *mrb, mrb_value self)
 {
   mrb_value val;
   mrb_get_args(mrb, "o", &val);
+  /* The format reads `o` so that the numeric types keep answering here
+     without being asked anything, which is also what `i~` does; a value none
+     of them reads is asked for `to_int`, which is what carries the
+     conversion to every mrblib method that counts through this one. */
+  if (mrb_unlikely(!mrb_integer_convertible_p(val))) {
+    mrb_convert_arg(mrb, 0, MRB_CONV_TO_INT);
+  }
   return mrb_ensure_int_type(mrb, val);
 }
 
@@ -2675,8 +2688,8 @@ mrb_init_numeric(mrb_state *mrb)
   MRB_SET_INSTANCE_TT(integer, MRB_TT_INTEGER);
   MRB_UNDEF_ALLOCATOR(integer);
   mrb_undef_class_method_id(mrb, integer, MRB_SYM(new));
-  MRB_MT_INIT_ROM(mrb, integer, integer_rom_entries);
-  mrb_define_class_method_id(mrb, integer, MRB_SYM(__ensure), int_s_ensure, MRB_ARGS_REQ(1));
+  MRB_MT_INIT_ROM_CONV(mrb, integer, integer_rom_entries, MRB_CONV_TO_INT);
+  mrb_define_class_method_id(mrb, integer, MRB_SYM(__convert), int_s_convert, MRB_ARGS_REQ(1));
 
   /* Fixnum Class for compatibility */
   mrb_define_const_id(mrb, mrb->object_class, MRB_SYM(Fixnum), mrb_obj_value(integer));

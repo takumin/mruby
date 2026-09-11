@@ -43,7 +43,7 @@ mrb_time_strftime(mrb_state *mrb, mrb_value self)
   const char *format;
   mrb_int format_len;
 
-  mrb_get_args(mrb, "s", &format, &format_len);
+  mrb_get_args(mrb, "s~", &format, &format_len);
   struct tm *tm = mrb_time_get_tm(mrb, self);
 
   mrb_value result = mrb_str_new(mrb, NULL, 0);

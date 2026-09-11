@@ -43,6 +43,18 @@ assert('File.basename') do
   assert_raise(ArgumentError) { File.basename("/a/b\0") }
 end
 
+assert('File.basename and File.dirname take an implicit conversion') do
+  o = Class.new { def to_str; '/a/b.rb'; end }.new
+  assert_equal 'b.rb', File.basename(o)
+  assert_equal '/a', File.dirname(o)
+  assert_equal '.rb', File.extname(o)
+  # the suffix converts too, being the last argument of that send
+  assert_equal 'b', File.basename('/a/b.rb', Class.new { def to_str; '.rb'; end }.new)
+  assert_raise(TypeError) { File.basename(Object.new) }
+  # but the path no longer can, once a suffix follows it
+  assert_raise(TypeError) { File.basename(o, '.rb') }
+end
+
 assert('File.basename with suffix') do
   assert_equal 'foo', File.basename('foo.rb', '.rb')
   assert_equal 'foo.rb', File.basename('foo.rb', '.py')

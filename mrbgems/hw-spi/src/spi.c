@@ -165,7 +165,7 @@ static mrb_value
 mrb_spi_m_read(mrb_state *mrb, mrb_value self)
 {
   mrb_int len, tx_val = 0;
-  mrb_get_args(mrb, "i|i", &len, &tx_val);
+  mrb_get_args(mrb, "i~|i~", &len, &tx_val);
   if (len <= 0) mrb_raise(mrb, E_ARGUMENT_ERROR, "length must be positive");
 
   mrb_spi_info *info = SPI_INFO(self);

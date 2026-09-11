@@ -136,24 +136,31 @@ How to style your C and Ruby code which you want to submit.
 
 ### Argument conversion
 
-mruby has no implicit conversion protocol, so do not dispatch `to_int` or
-`to_str` to convert an argument. Ask for an integer with
-`mrb_ensure_integer_type()` in C or `Integer.__ensure(obj)` in Ruby, and for a
-string with a plain type check. Both take the value as an argument rather than
-as a receiver: a conversion written as `obj.something` is a dispatch, and the
-argument can redefine it.
+Never dispatch `to_int`, `to_str`, `to_ary` or `to_hash` from C to convert an
+argument. The conversion is the VM's to send, not a C function's: mark the
+argument with `~` in the `mrb_get_args()` format (`S~`, `A~`, `H~`, `i~`, and
+`s~`, `z~`, `a~` where the specifier hands out a pointer), and the dispatch
+loop sends the protocol method and takes the send from the top again with what
+it answered. A method whose format reads `o` because it decides the type
+itself asks with `mrb_convert_arg()` instead.
 
-`Array.new(obj)`, `ary[obj]` and `"s" * obj` all raise `TypeError` for an object
-that merely defines `to_int`, and `String#match` does the same for one that
-defines `to_str`. A method that honours the protocol is more permissive than the
-tree it sits in, which is a worse inconsistency than the difference from CRuby.
-Nor can the gap be closed by honouring it everywhere: `convert_type()` in
-`src/object.c` dispatches without CRuby's `method_missing` step, so a partial
-protocol only trades one surprise for another.
+That is what keeps _Avoid re-entering the VM from C_ below: no C function that
+validates or normalizes a value re-enters the VM, so no conversion can fail
+with `FiberError: can't cross C function boundary`. It is also why a marked
+argument must be read before the method changes anything — the method is
+entered a second time.
 
-CRuby's `NUM2LONG()` and `StringValue()` do convert, so a faithful port of a
-CRuby method will arrive with the dispatch in it. Removing it is a deliberate
-difference, not a defect in the port.
+Ask for a value without offering the conversion with
+`mrb_ensure_integer_type()`, `mrb_ensure_string_type()` and their kin in C, or
+`Integer.__convert(obj)` in Ruby. All of them take the value as an argument
+rather than as a receiver: a conversion written as `obj.something` is a
+dispatch, and the argument can redefine it.
+
+Which arguments take part is written down rather than implied. Before marking
+one, check what CRuby does with an object whose only method is the protocol:
+`NUM2LONG()` and `StringValue()` convert, and `sleep` does not. An argument
+only mruby's own Ruby layer reaches stays unmarked, since no user value
+arrives there. `doc/limitations.md` records what the restart can reach.
 
 ### C code
 

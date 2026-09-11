@@ -166,10 +166,19 @@ str_concat(mrb_state *mrb, mrb_value self, mrb_value str, mrb_bool binary)
 }
 
 static mrb_value
-str_concat0(mrb_state *mrb, mrb_value self, mrb_bool binary)
+str_concat0(mrb_state *mrb, mrb_value self, mrb_bool binary, mrb_bool conv)
 {
   if (mrb_get_argc(mrb) == 1) {
-    str_concat(mrb, self, mrb_get_arg1(mrb), binary);
+    mrb_value arg = mrb_get_arg1(mrb);
+    /* An Integer or a Float is a codepoint here, so the format cannot name
+       String and the request for `to_str` is made by hand.  It comes before
+       the append, which a restarted send would otherwise make twice; the
+       arguments after the first are out of reach for the same reason. */
+    if (conv && mrb_unlikely(!mrb_string_p(arg) &&
+                             !mrb_integer_p(arg) && !mrb_float_p(arg))) {
+      mrb_convert_arg(mrb, 0, MRB_CONV_TO_STR);
+    }
+    str_concat(mrb, self, arg, binary);
     return self;
   }
 
@@ -203,7 +212,7 @@ static mrb_value
 str_concat_m(mrb_state *mrb, mrb_value self)
 {
   mrb_bool binary = RSTR_BINARY_P(mrb_str_ptr(self));
-  return str_concat0(mrb, self, binary);
+  return str_concat0(mrb, self, binary, TRUE);
 }
 
 /*
@@ -216,7 +225,9 @@ str_concat_m(mrb_state *mrb, mrb_value self)
 static mrb_value
 str_append_as_bytes(mrb_state *mrb, mrb_value self)
 {
-  return str_concat0(mrb, self, TRUE);
+  /* CRuby's `append_as_bytes` names String and Integer and takes nothing
+     else, so this one asks for no conversion either. */
+  return str_concat0(mrb, self, TRUE, FALSE);
 }
 
 /*
@@ -242,7 +253,12 @@ str_start_with(mrb_state *mrb, mrb_value self)
   for (mrb_int i = 0; i < argc; i++) {
     int ai = mrb_gc_arena_save(mrb);
     mrb_value sub = argv[i];
-    mrb_ensure_string_type(mrb, sub);
+    if (mrb_unlikely(!mrb_string_p(sub))) {
+      /* No answer is given before the arguments up to this one have been
+         read, so the send may still be taken from the top again. */
+      mrb_convert_arg(mrb, i, MRB_CONV_TO_STR);
+      mrb_ensure_string_type(mrb, sub);
+    }
     mrb_gc_arena_restore(mrb, ai);
     size_t len_l = RSTRING_LEN(self);
     size_t len_r = RSTRING_LEN(sub);
@@ -271,7 +287,12 @@ str_end_with(mrb_state *mrb, mrb_value self)
   for (mrb_int i = 0; i < argc; i++) {
     int ai = mrb_gc_arena_save(mrb);
     mrb_value sub = argv[i];
-    mrb_ensure_string_type(mrb, sub);
+    if (mrb_unlikely(!mrb_string_p(sub))) {
+      /* No answer is given before the arguments up to this one have been
+         read, so the send may still be taken from the top again. */
+      mrb_convert_arg(mrb, i, MRB_CONV_TO_STR);
+      mrb_ensure_string_type(mrb, sub);
+    }
     mrb_gc_arena_restore(mrb, ai);
     /* A suffix whose bytes are not the encoding it is taken to be in ends
        nothing, the way one is found nowhere by String#index. */
@@ -520,7 +541,7 @@ str_tr_m(mrb_state *mrb, mrb_value str)
 {
   mrb_value p1, p2;
 
-  mrb_get_args(mrb, "SS", &p1, &p2);
+  mrb_get_args(mrb, "S~S~", &p1, &p2);
   mrb_value dup = mrb_str_dup(mrb, str);
   str_tr(mrb, dup, p1, p2, FALSE);
   return dup;
@@ -538,7 +559,7 @@ str_tr_bang(mrb_state *mrb, mrb_value str)
 {
   mrb_value p1, p2;
 
-  mrb_get_args(mrb, "SS", &p1, &p2);
+  mrb_get_args(mrb, "S~S~", &p1, &p2);
   if (str_tr(mrb, str, p1, p2, FALSE)) {
     return str;
   }
@@ -561,7 +582,7 @@ str_tr_s(mrb_state *mrb, mrb_value str)
 {
   mrb_value p1, p2;
 
-  mrb_get_args(mrb, "SS", &p1, &p2);
+  mrb_get_args(mrb, "S~S~", &p1, &p2);
   mrb_value dup = mrb_str_dup(mrb, str);
   str_tr(mrb, dup, p1, p2, TRUE);
   return dup;
@@ -579,7 +600,7 @@ str_tr_s_bang(mrb_state *mrb, mrb_value str)
 {
   mrb_value p1, p2;
 
-  mrb_get_args(mrb, "SS", &p1, &p2);
+  mrb_get_args(mrb, "S~S~", &p1, &p2);
   if (str_tr(mrb, str, p1, p2, TRUE)) {
     return str;
   }
@@ -636,7 +657,7 @@ str_squeeze_m(mrb_state *mrb, mrb_value str)
 {
   mrb_value pat = mrb_nil_value();
 
-  mrb_get_args(mrb, "|S", &pat);
+  mrb_get_args(mrb, "|S~", &pat);
   mrb_value dup = mrb_str_dup(mrb, str);
   str_squeeze(mrb, dup, pat);
   return dup;
@@ -654,7 +675,7 @@ str_squeeze_bang(mrb_state *mrb, mrb_value str)
 {
   mrb_value pat = mrb_nil_value();
 
-  mrb_get_args(mrb, "|S", &pat);
+  mrb_get_args(mrb, "|S~", &pat);
   if (str_squeeze(mrb, str, pat)) {
     return str;
   }
@@ -673,7 +694,7 @@ str_delete_m(mrb_state *mrb, mrb_value str)
 {
   mrb_value pat;
 
-  mrb_get_args(mrb, "S", &pat);
+  mrb_get_args(mrb, "S~", &pat);
   mrb_value dup = mrb_str_dup(mrb, str);
   str_delete(mrb, dup, pat);
   return dup;
@@ -685,7 +706,7 @@ str_delete_bang(mrb_state *mrb, mrb_value str)
 {
   mrb_value pat;
 
-  mrb_get_args(mrb, "S", &pat);
+  mrb_get_args(mrb, "S~", &pat);
   if (str_delete(mrb, str, pat)) {
     return str;
   }
@@ -707,7 +728,7 @@ static mrb_value
 str_count(mrb_state *mrb, mrb_value str)
 {
   mrb_value v_pat;
-  mrb_get_args(mrb, "S", &v_pat);
+  mrb_get_args(mrb, "S~", &v_pat);
   tr_validate(mrb, str);
   struct tr_pattern pat = tr_parse_pattern(mrb, v_pat, TRUE);
   const char *p = RSTRING_PTR(str), *end = p + RSTRING_LEN(str);
@@ -768,7 +789,7 @@ int_chr(mrb_state *mrb, mrb_value num)
   mrb_value enc;
   mrb_bool enc_given;
 
-  mrb_get_args(mrb, "|S?", &enc, &enc_given);
+  mrb_get_args(mrb, "|S~?", &enc, &enc_given);
   if (!enc_given ||
       MRB_STR_CASECMP_P(enc, ENC_ASCII_8BIT) ||
       MRB_STR_CASECMP_P(enc, ENC_BINARY)) {
@@ -1376,7 +1397,7 @@ str_del_prefix_bang(mrb_state *mrb, mrb_value self)
   mrb_int plen;
   const char *ptr;
 
-  mrb_get_args(mrb, "s", &ptr, &plen);
+  mrb_get_args(mrb, "s~", &ptr, &plen);
   struct RString *str = RSTRING(self);
   mrb_int slen = RSTR_LEN(str);
   if (plen > slen) return mrb_nil_value();
@@ -1415,7 +1436,7 @@ str_del_prefix(mrb_state *mrb, mrb_value self)
   mrb_int plen;
   const char *ptr;
 
-  mrb_get_args(mrb, "s", &ptr, &plen);
+  mrb_get_args(mrb, "s~", &ptr, &plen);
   mrb_int slen = RSTRING_LEN(self);
   if (plen > slen) return mrb_str_dup(mrb, self);
   if (!str_prefix_p(mrb, self, ptr, plen))
@@ -1447,7 +1468,7 @@ str_del_suffix_bang(mrb_state *mrb, mrb_value self)
   mrb_int plen;
   const char *ptr;
 
-  mrb_get_args(mrb, "s", &ptr, &plen);
+  mrb_get_args(mrb, "s~", &ptr, &plen);
   struct RString *str = RSTRING(self);
   mrb_check_frozen(mrb, str);
   mrb_int slen = RSTR_LEN(str);
@@ -1476,7 +1497,7 @@ str_del_suffix(mrb_state *mrb, mrb_value self)
   mrb_int plen;
   const char *ptr;
 
-  mrb_get_args(mrb, "s", &ptr, &plen);
+  mrb_get_args(mrb, "s~", &ptr, &plen);
   mrb_int slen = RSTRING_LEN(self);
   if (plen > slen) return mrb_str_dup(mrb, self);
   if (!str_suffix_p(mrb, self, ptr, plen))
@@ -2010,7 +2031,7 @@ str_ljust_core(mrb_state *mrb, mrb_value self)
   mrb_int width;
   mrb_value padstr = mrb_str_new_lit(mrb, " ");
 
-  mrb_get_args(mrb, "i|S", &width, &padstr);
+  mrb_get_args(mrb, "i~|S~", &width, &padstr);
 
   if (RSTRING_LEN(padstr) == 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "zero width padding");
@@ -2060,7 +2081,7 @@ str_rjust_core(mrb_state *mrb, mrb_value self)
   mrb_int width;
   mrb_value padstr = mrb_str_new_lit(mrb, " ");
 
-  mrb_get_args(mrb, "i|S", &width, &padstr);
+  mrb_get_args(mrb, "i~|S~", &width, &padstr);
 
   if (RSTRING_LEN(padstr) == 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "zero width padding");
@@ -2116,7 +2137,7 @@ str_center_core(mrb_state *mrb, mrb_value self)
   mrb_int width;
   mrb_value padstr = mrb_str_new_lit(mrb, " ");
 
-  mrb_get_args(mrb, "i|S", &width, &padstr);
+  mrb_get_args(mrb, "i~|S~", &width, &padstr);
 
   if (RSTRING_LEN(padstr) == 0) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "zero width padding");
@@ -2302,7 +2323,7 @@ static mrb_value
 str_partition(mrb_state *mrb, mrb_value self)
 {
   mrb_value sep;
-  mrb_get_args(mrb, "S", &sep);
+  mrb_get_args(mrb, "S~", &sep);
 
   mrb_int self_len = RSTRING_LEN(self);
   mrb_int sep_len = RSTRING_LEN(sep);
@@ -2366,7 +2387,7 @@ static mrb_value
 str_rpartition(mrb_state *mrb, mrb_value self)
 {
   mrb_value sep;
-  mrb_get_args(mrb, "S", &sep);
+  mrb_get_args(mrb, "S~", &sep);
 
   mrb_int self_len = RSTRING_LEN(self);
   mrb_int sep_len = RSTRING_LEN(sep);
@@ -2432,7 +2453,7 @@ str_insert(mrb_state *mrb, mrb_value self)
 {
   mrb_int idx;
   mrb_value str_to_insert;
-  mrb_get_args(mrb, "iS", &idx, &str_to_insert);
+  mrb_get_args(mrb, "i~S~", &idx, &str_to_insert);
 
   struct RString *s = mrb_str_ptr(self);
   mrb_int self_len = RSTR_LEN(s);

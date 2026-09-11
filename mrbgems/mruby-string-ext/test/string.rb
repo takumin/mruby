@@ -1780,3 +1780,50 @@ assert('String#chars of a multibyte receiver longer than the GC arena') do
   assert_equal 300, ("\u3042" * 300).chars.size
   assert_equal "\u3042", ("\u3042" * 300).chars.last
 end if UTF8STRING
+
+assert('String#<< takes an implicit conversion') do
+  # An Integer is a codepoint here, so the format names no type and the
+  # method asks for `to_str` itself.
+  asked = 0
+  o = Class.new { define_method(:to_str) { asked += 1; "b" } }.new
+  assert_equal("ab", "a" << o)
+  assert_equal(1, asked)
+  assert_equal("ab", "a".concat(o))
+  assert_equal("a", "" << 97)
+  assert_raise(TypeError) { "a" << Object.new }
+end
+
+assert('String#end_with? takes an implicit conversion') do
+  o = Class.new { def to_str; "b"; end }.new
+  assert_true("ab".end_with?(o))
+  assert_false("ac".end_with?(o))
+  assert_raise(TypeError) { "ab".end_with?(Object.new) }
+end
+
+assert('String#delete_prefix and String#delete_suffix take an implicit conversion') do
+  # These read the prefix as a pointer and a length rather than as a value,
+  # so the conversion has to be over before the pointer is taken.
+  o = Class.new { def to_str; "he"; end }.new
+  assert_equal("llo", "hello".delete_prefix(o))
+  assert_equal("llo", "hello".dup.delete_prefix!(o))
+  p = Class.new { def to_str; "lo"; end }.new
+  assert_equal("hel", "hello".delete_suffix(p))
+  assert_equal("hel", "hello".dup.delete_suffix!(p))
+  assert_raise(TypeError) { "hello".delete_prefix(Object.new) }
+end
+
+assert('String#start_with? and String#partition take an implicit conversion') do
+  o = Class.new { def to_str; "l"; end }.new
+  assert_true("llama".start_with?(o))
+  assert_equal(["he", "l", "lo"], "hello".partition(o))
+  assert_equal(["hel", "l", "o"], "hello".rpartition(o))
+  assert_raise(TypeError) { "hello".partition(Object.new) }
+end
+
+assert('a String width takes an implicit conversion') do
+  o = Class.new { def to_int; 3; end }.new
+  assert_equal "a  ", "a".ljust(o)
+  assert_equal "  a", "a".rjust(o)
+  assert_equal " a ", "a".center(o)
+  assert_raise(TypeError) { "a".ljust(Object.new) }
+end

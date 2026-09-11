@@ -474,18 +474,19 @@ assert('Integer#divmod', '15.2.8.3.30') do
   assert_equal [ 1, -6], -13.divmod(-7)
 end
 
-assert('Integer.__ensure converts its argument without dispatching') do
+assert('Integer.__convert converts its argument without dispatching') do
   # The mrblib idiom used to be `obj.__to_int`, a dispatch the argument could
   # redefine, so an object defining `__to_int` was accepted everywhere an
-  # object defining `to_int` is rejected.
+  # object defining `to_int` is rejected. `to_int` itself is the protocol and
+  # is asked for; `__to_int` is not and never was.
   evil = Class.new { def __to_int; 2; end }.new
-  assert_raise(TypeError) { Integer.__ensure(evil) }
-  assert_raise(TypeError) { Integer.__ensure(Class.new { def to_int; 2; end }.new) }
+  assert_raise(TypeError) { Integer.__convert(evil) }
+  assert_equal 2, Integer.__convert(Class.new { def to_int; 2; end }.new)
 
-  assert_equal 2, Integer.__ensure(2)
-  assert_equal 1, Integer.__ensure(1.9) if Object.const_defined?(:Float)
-  assert_raise(TypeError) { Integer.__ensure("2") }
-  assert_raise(TypeError) { Integer.__ensure(nil) }
+  assert_equal 2, Integer.__convert(2)
+  assert_equal 1, Integer.__convert(1.9) if Object.const_defined?(:Float)
+  assert_raise(TypeError) { Integer.__convert("2") }
+  assert_raise(TypeError) { Integer.__convert(nil) }
 end
 
 assert('Integer arithmetic redefined on Integer itself reaches the redefinition') do

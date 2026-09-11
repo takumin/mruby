@@ -1080,7 +1080,7 @@ static mrb_value
 set_join(mrb_state *mrb, mrb_value self)
 {
   mrb_value separator = mrb_nil_value();
-  mrb_get_args(mrb, "|S", &separator);
+  mrb_get_args(mrb, "|S~", &separator);
 
   kset_t *set = set_get_kset(mrb, self);
   if (kset_is_empty(set)) {

@@ -1919,7 +1919,7 @@ mrb_mod_module_eval(mrb_state *mrb, mrb_value mod)
 {
   mrb_value a, b;
 
-  if (mrb_get_args(mrb, "|S&", &a, &b) == 1) {
+  if (mrb_get_args(mrb, "|S~&", &a, &b) == 1) {
     mrb_raise(mrb, E_NOTIMP_ERROR, "module_eval/class_eval with string not implemented");
   }
   return eval_under(mrb, mod, b, mrb_class_ptr(mod));
@@ -1951,7 +1951,7 @@ mrb_obj_instance_eval(mrb_state *mrb, mrb_value self)
 {
   mrb_value a, b;
 
-  if (mrb_get_args(mrb, "|S&", &a, &b) == 1) {
+  if (mrb_get_args(mrb, "|S~&", &a, &b) == 1) {
     mrb_raise(mrb, E_NOTIMP_ERROR, "instance_eval with string not implemented");
   }
   return eval_under(mrb, self, b, mrb_singleton_class_ptr(mrb, self));
@@ -3168,6 +3168,564 @@ mrb_vm_interrupt(mrb_state *mrb)
  *       when not using switch-based dispatch. It also manages the callinfo
  *       stack (`ci`) for tracking method/block calls.
  */
+/* ---- implicit conversion trampoline -------------------------------------
+   An instruction that meets the wrong type does not convert it in C: it
+   rewinds its own pc, pushes this frame over the offending register, and
+   lets the dispatch loop run the conversion as ordinary bytecode.  The
+   frame returns into the register it was pushed over, so the restarted
+   instruction reads the converted value with nothing recorded anywhere.
+
+   The class's `__ensure` is a check ON its argument, so a conversion that
+   gives back something else raises here instead of letting the restart trap
+   a second time.  That is what removes the need for an "already tried" mark.
+   It is handed the object that was asked as well, so that the error names
+   that object the way CRuby's does rather than naming only the type the
+   conversion produced.
+
+   One shape serves every protocol: the frame is handed the object as its
+   self and the target class as its one argument, and `__ensure` is a method
+   of Module, so it is the receiver that says what to check against and the
+   symbol handed along that says what was sent.  Only the two symbols differ
+   between protocols, so the bytecode is shared and each carries a symbol
+   pair, an irep and a proc. */
+static const mrb_code coerce_iseq[] = {
+  OP_ENTER, 0x04, 0x00, 0x00,   /* 1:0:0:0:0:0:0 */
+  OP_MOVE, 3, 0,                /* R3 = self */
+  OP_SEND, 3, 0, 0,             /* R3 = R3.to_xxx */
+  OP_MOVE, 2, 1,                /* R2 = the class */
+  OP_MOVE, 4, 0,                /* R4 = the object that was asked */
+  OP_LOADSYM, 5, 0,             /* R5 = :to_xxx */
+  OP_SEND, 2, 1, 3,             /* R2 = R2.__ensure(R3, R4, R5) */
+  OP_RETURN, 2,
+};
+
+/* The same conversion for an argument that reached the C method inside a
+   packed argument array.  A send that packs takes the array out of a
+   register it built before the send, so the restart re-reads the very same
+   object rather than building it again — which means the converted value has
+   to be written into the array, not into a register.  This frame is pushed
+   clear of the caller's registers so that the block and the keyword
+   dictionary the send also re-reads survive it.  `Class#new` is the send
+   that makes this worth having: it passes what it was given straight to
+   `initialize`, packed.
+
+   The array and the index travel to `__ensure`, which stores the value it
+   has just checked.  Storing it here instead, with `OP_SETIDX`, would run a
+   redefined `Array#[]=` and would need the array's class put back, which
+   `mrb_get_args()` cleared to keep it out of `ObjectSpace.each_object`. */
+static const mrb_code coerce_packed_iseq[] = {
+  OP_ENTER, 0x0c, 0x00, 0x00,   /* 3:0:0:0:0:0:0 */
+  OP_MOVE, 5, 0,                /* R5 = self */
+  OP_SEND, 5, 0, 0,             /* R5 = R5.to_xxx */
+  OP_MOVE, 4, 1,                /* R4 = the class */
+  OP_MOVE, 6, 0,                /* R6 = the object that was asked */
+  OP_LOADSYM, 7, 0,             /* R7 = :to_xxx */
+  OP_MOVE, 8, 2,                /* R8 = the packed arguments */
+  OP_MOVE, 9, 3,                /* R9 = where the argument sits in them */
+  OP_SEND, 4, 1, 5,             /* R4 = R4.__ensure(R5, R6, R7, R8, R9) */
+  OP_RETURN, 4,
+};
+
+#define COERCE_TRAMPOLINE(name, convsym)                                \
+  MRB_PRESYM_DEFINE_VAR_AND_INITER(coerce_##name##_syms, 2,             \
+                                   convsym, MRB_SYM(__ensure))          \
+  static const mrb_irep coerce_##name##_irep = {                        \
+    2, 7, 0, MRB_IREP_STATIC,                                           \
+    coerce_iseq, NULL, coerce_##name##_syms, NULL, NULL, NULL,          \
+    sizeof(coerce_iseq), 0, 2, 0, 0,                                    \
+  };                                                                    \
+  mrb_alignas(8)                                                        \
+  static const struct RProc coerce_##name##_proc = {                    \
+    NULL, MRB_TT_PROC, MRB_GC_RED, MRB_OBJ_IS_FROZEN,                   \
+    MRB_PROC_SCOPE | MRB_PROC_STRICT,                                   \
+    { &coerce_##name##_irep }, NULL, { NULL }                           \
+  };                                                                    \
+  static const mrb_irep coerce_##name##_packed_irep = {                 \
+    4, 11, 0, MRB_IREP_STATIC,                                          \
+    coerce_packed_iseq, NULL, coerce_##name##_syms, NULL, NULL, NULL,   \
+    sizeof(coerce_packed_iseq), 0, 2, 0, 0,                             \
+  };                                                                    \
+  mrb_alignas(8)                                                        \
+  static const struct RProc coerce_##name##_packed_proc = {             \
+    NULL, MRB_TT_PROC, MRB_GC_RED, MRB_OBJ_IS_FROZEN,                   \
+    MRB_PROC_SCOPE | MRB_PROC_STRICT,                                   \
+    { &coerce_##name##_packed_irep }, NULL, { NULL }                    \
+  };
+
+COERCE_TRAMPOLINE(ary,  MRB_SYM(to_ary))
+COERCE_TRAMPOLINE(str,  MRB_SYM(to_str))
+COERCE_TRAMPOLINE(hash, MRB_SYM(to_hash))
+COERCE_TRAMPOLINE(int,  MRB_SYM(to_int))
+
+/* The splat's `to_a` is not one of those protocols and does not share their
+   bytecode.  `[*obj]` accepts a `to_a` that gives back nil, wrapping the
+   object in a one-element array rather than raising, so this one needs a
+   branch; a result that is neither nil nor an Array is refused by the same
+   `__ensure`.  The duplicate the splat owes its caller is not taken here:
+   the instruction takes it when it runs again on the array. */
+MRB_PRESYM_DEFINE_VAR_AND_INITER(coerce_splat_syms, 2,
+                                 MRB_SYM(to_a), MRB_SYM(__ensure))
+static const mrb_code coerce_splat_iseq[] = {
+  OP_ENTER, 0x04, 0x00, 0x00,   /* 1:0:0:0:0:0:0 */
+  OP_MOVE, 3, 0,                /* R3 = self */
+  OP_SEND, 3, 0, 0,             /* R3 = R3.to_a */
+  OP_JMPNIL, 3, 0, 15,          /* nil: wrap instead of raising */
+  OP_MOVE, 2, 1,                /* R2 = Array */
+  OP_MOVE, 4, 0,                /* R4 = the object that was asked */
+  OP_LOADSYM, 5, 0,             /* R5 = :to_a */
+  OP_SEND, 2, 1, 3,             /* R2 = R2.__ensure(R3, R4, R5) */
+  OP_RETURN, 2,
+  OP_MOVE, 2, 0,                /* R2 = self */
+  OP_ARRAY, 2, 1,               /* R2 = [self] */
+  OP_RETURN, 2,
+};
+static const mrb_irep coerce_splat_irep = {
+  2, 7, 0, MRB_IREP_STATIC,
+  coerce_splat_iseq, NULL, coerce_splat_syms, NULL, NULL, NULL,
+  sizeof(coerce_splat_iseq), 0, 2, 0, 0,
+};
+mrb_alignas(8)
+static const struct RProc coerce_splat_proc = {
+  NULL, MRB_TT_PROC, MRB_GC_RED, MRB_OBJ_IS_FROZEN,
+  MRB_PROC_SCOPE | MRB_PROC_STRICT,
+  { &coerce_splat_irep }, NULL, { NULL }
+};
+/* `flatten` on mrb_vm_exec pulls every callee into the dispatch loop.  These
+   run only when a conversion is about to happen, and letting them inline
+   there costs the whole VM in register pressure: `fib(25)` ran 1.3% more
+   instructions before they were kept out of line. */
+#if defined(__clang__) || defined(__GNUC__)
+#define VM_COLD __attribute__((noinline))
+#define VM_FORCE_INLINE inline __attribute__((always_inline))
+#elif defined(_MSC_VER)
+#define VM_COLD __declspec(noinline)
+#define VM_FORCE_INLINE __forceinline
+#else
+#define VM_COLD
+#define VM_FORCE_INLINE inline
+#endif
+
+/* One decoded instruction, an OP_EXT1/2/3 prefix folded in. */
+struct vm_insn {
+  mrb_code insn;
+  uint16_t a, b, c;
+};
+
+/* The operand shape of each opcode, taken from the second column of ops.h so
+   that a change there is picked up rather than restated here. */
+enum vm_insn_shape {
+  VM_SHAPE_Z, VM_SHAPE_B, VM_SHAPE_BB, VM_SHAPE_BBB,
+  VM_SHAPE_BS, VM_SHAPE_BSS, VM_SHAPE_S, VM_SHAPE_W
+};
+
+static const uint8_t vm_insn_shape[] = {
+#define OPCODE(i,x) VM_SHAPE_ ## x,
+#include <mruby/ops.h>
+#undef OPCODE
+};
+
+/* Decode the instruction at `pc0` and return its length in bytes, 0 for a
+   byte that is not an opcode.  The operands are read with the very macros the
+   dispatch loop fetches with, so a change to a layout is picked up here
+   instead of drifting from a table written out by hand.  Reading the shape
+   from a table rather than switching on the opcode four times over keeps this
+   a few hundred bytes of code instead of ten thousand. */
+static VM_COLD uint32_t
+vm_insn_decode(const mrb_code *pc0, struct vm_insn *out)
+{
+  const mrb_code *pc = pc0;
+  uint16_t a = 0, b = 0, c = 0;
+  mrb_code insn = READ_B();
+  int ext = 0;
+
+  switch (insn) {
+  case OP_EXT1: ext = 1; insn = READ_B(); break;
+  case OP_EXT2: ext = 2; insn = READ_B(); break;
+  case OP_EXT3: ext = 3; insn = READ_B(); break;
+  default: break;
+  }
+  if (insn >= sizeof(vm_insn_shape)) return 0;
+
+#define VM_FETCH_SHAPE(x)                                       \
+    switch (ext) {                                              \
+    case 1: FETCH_ ## x ## _1(); break;                         \
+    case 2: FETCH_ ## x ## _2(); break;                         \
+    case 3: FETCH_ ## x ## _3(); break;                         \
+    default: FETCH_ ## x (); break;                             \
+    }                                                           \
+    break
+
+  switch (vm_insn_shape[insn]) {
+  case VM_SHAPE_Z:   VM_FETCH_SHAPE(Z);
+  case VM_SHAPE_B:   VM_FETCH_SHAPE(B);
+  case VM_SHAPE_BB:  VM_FETCH_SHAPE(BB);
+  case VM_SHAPE_BBB: VM_FETCH_SHAPE(BBB);
+  case VM_SHAPE_BS:  VM_FETCH_SHAPE(BS);
+  case VM_SHAPE_BSS: VM_FETCH_SHAPE(BSS);
+  case VM_SHAPE_S:   VM_FETCH_SHAPE(S);
+  case VM_SHAPE_W:   VM_FETCH_SHAPE(W);
+  default: return 0;
+  }
+#undef VM_FETCH_SHAPE
+
+  out->insn = insn;
+  out->a = a;
+  out->b = b;
+  out->c = c;
+  return (uint32_t)(pc - pc0);
+}
+
+/* Walk the iseq from the top and hand back the instruction that ends at
+   `end`.  Exact, and linear in the size of the method. */
+static VM_COLD const mrb_code *
+vm_insn_start_scan(const mrb_irep *irep, const mrb_code *end, struct vm_insn *out)
+{
+  const mrb_code *pc = irep->iseq;
+
+  while (pc < end) {
+    struct vm_insn d;
+    uint32_t len = vm_insn_decode(pc, &d);
+    if (len == 0) return NULL;
+    if (pc + len == end) {
+      *out = d;
+      return pc;
+    }
+    pc += len;
+  }
+  return NULL;
+}
+
+/* Where the instruction that just ran began.  `ci->pc` is past its operands
+   by then, and bytecode cannot be read backwards, so try the few lengths it
+   can have and keep the addresses that decode to `insn` and end exactly here.
+   A lone survivor is the answer.  Two survivors are possible when the bytes
+   before the instruction happen to decode as one too, and there the walk from
+   the top settles it. */
+/* Inlined into its callers on purpose.  Both are `VM_COLD`, so this reaches
+   the dispatch loop no more than they do, and leaving it out of line put a
+   call between them and the hints below: 36 instructions on every conversion,
+   for 528 bytes saved. */
+static VM_FORCE_INLINE const mrb_code *
+vm_insn_start(const mrb_irep *irep, const mrb_code *end, mrb_code insn,
+              struct vm_insn *out)
+{
+  const mrb_code *found = NULL;
+  struct vm_insn d;
+  int hits = 0;
+
+  /* The lengths an instruction of this shape can have.  These are hints, not
+     the answer: a candidate counts only once it decodes back to `insn` and to
+     that very length, and a shape no hint covers matches nothing here and
+     falls through to the walk from the top, which needs none. */
+#define VM_TRY_START(len, pfx) do {                                     \
+    const mrb_code *pc = end - (len);                                   \
+    if (pc >= irep->iseq &&                                             \
+        ((pfx) ? (pc[0] == (pfx) && pc[1] == insn) : (pc[0] == insn)) && \
+        vm_insn_decode(pc, &d) == (len) && d.insn == insn) {             \
+      found = pc;                                                       \
+      *out = d;                                                         \
+      hits++;                                                           \
+    }                                                                   \
+  } while (0)
+  switch (vm_insn_shape[insn]) {
+  case VM_SHAPE_BBB:            /* OP_AREF, OP_APOST */
+    VM_TRY_START(4, 0);
+    VM_TRY_START(6, OP_EXT1);
+    VM_TRY_START(6, OP_EXT2);
+    VM_TRY_START(7, OP_EXT3);
+    break;
+  case VM_SHAPE_B:              /* OP_ARYCAT, OP_ARYSPLAT */
+    VM_TRY_START(2, 0);
+    VM_TRY_START(4, OP_EXT1);   /* only the one operand can widen */
+    break;
+  default:
+    break;
+  }
+#undef VM_TRY_START
+  if (hits != 1) {
+    found = vm_insn_start_scan(irep, end, out);
+    if (found && out->insn != insn) found = NULL;
+  }
+#ifdef MRB_DEBUG
+  {
+    struct vm_insn d;
+    const mrb_code *exact = vm_insn_start_scan(irep, end, &d);
+    if (exact && d.insn != insn) exact = NULL;
+    mrb_assert(found == exact);
+  }
+#endif
+  return found;
+}
+
+/* `which` picks the operand holding the value: 0 for a, 1 for b. */
+static VM_COLD mrb_bool
+vm_coerce_ary(mrb_state *mrb, mrb_code op, int which)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  const mrb_irep *cirep = ci->proc->body.irep;
+  struct vm_insn d;
+  const mrb_code *start = vm_insn_start(cirep, ci->pc, op, &d);
+  if (start == NULL) return FALSE;
+
+  uint32_t reg = which ? d.b : d.a;
+  mrb_value v = ci->stack[reg];
+  struct RClass *c = mrb_class(mrb, v);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(to_ary));
+  if (MRB_METHOD_UNDEF_P(m)) return FALSE;
+
+  ci->pc = start;
+  ci = cipush(mrb, reg, CINFO_NONE, mrb->array_class, &coerce_ary_proc, NULL,
+              MRB_SYM(to_ary), 1);
+  stack_extend(mrb, coerce_ary_irep.nregs);
+  ci->stack[1] = mrb_obj_value(mrb->array_class);
+  return TRUE;
+}
+
+/* The splat expands the same way: the instruction rewinds, the trampoline is
+   pushed over the register it read, and the instruction runs again with an
+   Array there — which is also where the duplicate a splat owes its caller is
+   taken, since `mrb_ary_splat()` still makes one for an Array.
+
+   `to_a` is not an implicit conversion protocol, so there is no bit in
+   `conv_defined` to answer from and the guard stays a method search.  Its
+   answer is handed back rather than kept, because a splat wraps a value with
+   no `to_a` instead of raising: leaving that to `mrb_ary_splat()` would ask
+   the same question a second time, and a miss on a deep chain of ROM tables
+   is the most expensive search there is — 1,205 instructions on an Integer. */
+enum vm_splat_conv {
+  VM_SPLAT_PUSHED,              /* the conversion is on the stack; run it */
+  VM_SPLAT_WRAP,                /* no `to_a`: the value is its own array */
+  VM_SPLAT_SEND                 /* it has one, but no restart was arranged */
+};
+
+/* `off` says where the value sits relative to the instruction's operand:
+   `OP_ARYSPLAT` reads it, `OP_ARYCAT` the register above the accumulator. */
+static VM_COLD enum vm_splat_conv
+vm_coerce_splat(mrb_state *mrb, mrb_code op, int off, mrb_value v)
+{
+  struct RClass *c = mrb_class(mrb, v);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(to_a));
+  if (MRB_METHOD_UNDEF_P(m)) return VM_SPLAT_WRAP;
+  /* Only a `to_a` written in Ruby needs the dispatch loop to run it.
+     `mrb_funcall_argv()` calls a C one straight, without `mrb_run()`, so it
+     is neither the C recursion that overruns a small stack nor the frame a
+     fiber cannot yield across — the two things this is here to remove.  The
+     core's `to_a` is C every time (NilClass's, Hash's, Range's), and sending
+     those from here cost `[*nil]` 571 instructions for nothing. */
+  if (MRB_METHOD_CFUNC_P(m)) return VM_SPLAT_SEND;
+
+  mrb_callinfo *ci = mrb->c->ci;
+  const mrb_irep *cirep = ci->proc->body.irep;
+  struct vm_insn d;
+  const mrb_code *start = vm_insn_start(cirep, ci->pc, op, &d);
+  if (start == NULL) return VM_SPLAT_SEND;
+
+  uint32_t reg = d.a + off;
+  ci->pc = start;
+  ci = cipush(mrb, reg, CINFO_NONE, mrb->array_class, &coerce_splat_proc, NULL,
+              MRB_SYM(to_a), 1);
+  stack_extend(mrb, coerce_splat_irep.nregs);
+  ci->stack[1] = mrb_obj_value(mrb->array_class);
+  return VM_SPLAT_PUSHED;
+}
+
+/* ---- implicit conversion of a C method's argument ------------------------
+   `mrb_get_args` does not convert either: it hands the mismatch here, and
+   this arranges for the dispatch loop to run the conversion and then take
+   the send from the top again with the converted value in the argument's
+   register.  The C method is entered a second time, which is why only a
+   method that does nothing before `mrb_get_args` may take part.
+
+   Restarting the send is what makes the write-back implicit here too: the
+   trampoline is pushed over the argument's own register in the caller's
+   frame, so the value lands where the send will read it again. */
+
+/* Sends whose restart is known to put the frame back exactly as it was.
+   `OP_SEND` and `OP_SSEND` write nil over the block slot themselves, and
+   the operators reach the send through `L_SEND_SYM`, which does the same.
+   `OP_SENDB` reads a block out of a register the trampoline's frame lies
+   over, `OP_SETIDX` likewise, and `OP_ADDI` and `OP_SUBI` write their
+   immediate back into the argument's register, which would undo the
+   conversion and trap forever. */
+static mrb_bool
+conv_send_insn_p(const struct vm_insn *d, const mrb_irep *irep,
+                 uint16_t a, mrb_sym mid)
+{
+  switch (d->insn) {
+  case OP_SENDB: case OP_SSENDB:
+    /* A send that packs its arguments is answered above the caller's
+       registers rather than over the argument's own, so the block stays
+       where the restart will read it.  Only that one may carry a block. */
+    if ((d->c & 0xf) != CALL_MAXARGS) return FALSE;
+    /* fall through */
+  case OP_SEND: case OP_SSEND:
+    if (d->b >= irep->slen || irep->syms[d->b] != mid) return FALSE;
+    /* A send that packs keyword arguments of its own writes the dictionary
+       over the first key it read, and would read the dictionary back as a
+       key on the way through again. */
+    if ((d->c & 0xf) == CALL_MAXARGS && ((d->c >> 4) & 0xf) != CALL_MAXARGS &&
+        ((d->c >> 4) & 0xf) != 0) {
+      return FALSE;
+    }
+    break;
+  case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV:
+  case OP_EQ: case OP_LT: case OP_LE: case OP_GT: case OP_GE:
+  case OP_GETIDX:
+    break;
+  default:
+    return FALSE;
+  }
+  return d->a == a;
+}
+
+/* Where the send being served began.  Same problem as the instructions that
+   trap in place, without the opcode to key on: the lengths a send can have
+   are tried, and a candidate counts only once it decodes to one of them, to
+   that very length, and to this frame's own register and method. */
+static VM_COLD const mrb_code *
+vm_send_insn_start(const mrb_irep *irep, const mrb_code *end, uint16_t a,
+                   mrb_sym mid, struct vm_insn *out)
+{
+  const mrb_code *found = NULL;
+  int hits = 0;
+
+  for (uint32_t len = 2; len <= 7; len++) {
+    struct vm_insn d;
+    const mrb_code *pc = end - len;
+    if (pc < irep->iseq) break;
+    if (vm_insn_decode(pc, &d) != len) continue;
+    if (!conv_send_insn_p(&d, irep, a, mid)) continue;
+    found = pc;
+    *out = d;
+    hits++;
+  }
+  if (hits != 1) {
+    struct vm_insn d;
+    found = vm_insn_start_scan(irep, end, &d);
+    if (found && !conv_send_insn_p(&d, irep, a, mid)) found = NULL;
+    else if (found) *out = d;
+  }
+#ifdef MRB_DEBUG
+  {
+    struct vm_insn d;
+    const mrb_code *exact = vm_insn_start_scan(irep, end, &d);
+    if (exact && !conv_send_insn_p(&d, irep, a, mid)) exact = NULL;
+    mrb_assert(found == exact);
+  }
+#endif
+  return found;
+}
+
+/* An argument of a C method is of the wrong type where an implicit
+   conversion could answer.  Returns FALSE when the conversion cannot be
+   arranged, and then the caller raises `TypeError` as before; otherwise it
+   does not return, throwing to the dispatch loop with the trampoline
+   already pushed. */
+MRB_API mrb_bool
+mrb_convert_arg(mrb_state *mrb, mrb_int argidx, uint8_t conv)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  const struct RProc *tramp, *ptramp;
+  const mrb_irep *tirep, *ptirep;
+  struct RClass *target;
+  mrb_sym cmid;
+  mrb_value arg;
+  struct RArray *packed = NULL;
+
+  if (!(mrb->conv_defined & conv)) return FALSE;
+  /* Only a frame the dispatch loop pushed has a send to go back to: a
+     method reached from C through `mrb_funcall` and its kin has not. */
+  if (ci->cci != CINFO_NONE || ci <= mrb->c->cibase) return FALSE;
+
+  if (mrb_unlikely(ci->n == CALL_MAXARGS)) {
+    /* The arguments came packed into an array the send built before it ran,
+       so the restart re-reads that array rather than making a new one, and
+       the value is converted inside it.  Where the argument sits does not
+       matter here, because the trampoline is pushed clear of the caller's
+       registers instead of over the argument's own. */
+    if (!mrb_array_p(ci->stack[1])) return FALSE;
+    packed = mrb_ary_ptr(ci->stack[1]);
+    if (argidx < 0 || argidx >= ARY_LEN(packed)) return FALSE;
+    arg = ARY_PTR(packed)[argidx];
+  }
+  else {
+    /* The keyword dictionary is built by the send itself, out of registers
+       it then writes the dictionary over. */
+    if (ci->kw) return FALSE;
+    /* The trampoline's frame lies over the argument's register and the ones
+       above it, so an argument after it would not survive the restart. */
+    if (argidx != ci->n - 1) return FALSE;
+    arg = ci->stack[1+argidx];
+  }
+
+  switch (conv) {
+  case MRB_CONV_TO_STR:
+    tramp = &coerce_str_proc; tirep = &coerce_str_irep;
+    ptramp = &coerce_str_packed_proc; ptirep = &coerce_str_packed_irep;
+    target = mrb->string_class; cmid = MRB_SYM(to_str);
+    break;
+  case MRB_CONV_TO_ARY:
+    tramp = &coerce_ary_proc; tirep = &coerce_ary_irep;
+    ptramp = &coerce_ary_packed_proc; ptirep = &coerce_ary_packed_irep;
+    target = mrb->array_class; cmid = MRB_SYM(to_ary);
+    break;
+  case MRB_CONV_TO_HASH:
+    tramp = &coerce_hash_proc; tirep = &coerce_hash_irep;
+    ptramp = &coerce_hash_packed_proc; ptirep = &coerce_hash_packed_irep;
+    target = mrb->hash_class; cmid = MRB_SYM(to_hash);
+    break;
+  case MRB_CONV_TO_INT:
+    tramp = &coerce_int_proc; tirep = &coerce_int_irep;
+    ptramp = &coerce_int_packed_proc; ptirep = &coerce_int_packed_irep;
+    target = mrb->integer_class; cmid = MRB_SYM(to_int);
+    break;
+  default:
+    return FALSE;
+  }
+
+  if (packed) {
+    tramp = ptramp;
+    tirep = ptirep;
+  }
+
+  {
+    struct RClass *c = mrb_class(mrb, arg);
+    if (MRB_METHOD_UNDEF_P(mrb_method_search_vm(mrb, &c, cmid))) return FALSE;
+  }
+
+  const struct RProc *caller = ci[-1].proc;
+  if (caller == NULL || MRB_PROC_CFUNC_P(caller)) return FALSE;
+  const mrb_irep *cirep = caller->body.irep;
+  ptrdiff_t off = ci->stack - ci[-1].stack;
+  if (off < 0 || off > UINT16_MAX) return FALSE;
+
+  struct vm_insn d;
+  const mrb_code *start = vm_send_insn_start(cirep, ci[-1].pc, (uint16_t)off,
+                                             ci->mid, &d);
+  if (start == NULL) return FALSE;
+
+  mrb_assert(packed || ci->blk == NULL);
+  ci = cipop(mrb);
+  ci->pc = start;
+  if (packed) {
+    ci = cipush(mrb, cirep->nregs, CINFO_NONE, target, tramp, NULL, cmid, 3);
+    stack_extend(mrb, tirep->nregs);
+    ci->stack[0] = arg;
+    ci->stack[1] = mrb_obj_value(target);
+    ci->stack[2] = mrb_obj_value(packed);
+    ci->stack[3] = mrb_int_value(mrb, argidx);
+  }
+  else {
+    ci = cipush(mrb, off + 1 + argidx, CINFO_NONE, target, tramp, NULL, cmid, 1);
+    stack_extend(mrb, tirep->nregs);
+    ci->stack[1] = mrb_obj_value(target);
+  }
+  mrb->conv_signal = TRUE;
+  MRB_THROW(mrb->jmp);
+  /* not reached */
+  return FALSE;
+}
+
 MRB_FLATTEN MRB_API mrb_value
 mrb_vm_exec(mrb_state *mrb, const struct RProc *begin_proc, const mrb_code *iseq)
 {
@@ -3201,7 +3759,16 @@ RETRY_TRY_BLOCK:
 
   MRB_TRY(&c_jmp) {
 
-  if (mrb_unlikely(mrb->exc)) {
+  if (mrb_unlikely(mrb->conv_signal)) {
+    /* An argument of a C method needs converting.  `mrb_convert_arg()`
+       has rewound the send and pushed the trampoline over the argument's
+       register already, so there is nothing to do but run it: the send is
+       taken from the top once the frame returns. */
+    mrb->conv_signal = FALSE;
+    ci = mrb->c->ci;
+    irep = ci->proc->body.irep;
+  }
+  else if (mrb_unlikely(mrb->exc)) {
     mrb_gc_arena_restore(mrb, ai);
     if (mrb->exc->tt == MRB_TT_BREAK)
       goto L_BREAK;
@@ -4473,30 +5040,53 @@ RETRY_TRY_BLOCK:
 
     CASE(OP_ARYCAT, B) {
       mrb_value v = regs[a+1];
-      if (mrb_nil_p(regs[a])) {
-        /* becomes the argument accumulator, which OP_ARYPUSH/ARYCAT then
-           append to, so it must be a fresh array independent of v.
-           mrb_ary_splat() can call back into the VM (`to_a`) and move the
-           stack, so take the result first and store it through the refreshed
-           `regs`: the address of regs[a] is otherwise computed before the
-           call and would point into the freed buffer. */
-        mrb_value splat = mrb_ary_splat(mrb, v);
-        ci = mrb->c->ci;
-        regs[a] = splat;
+      if (mrb_unlikely(!mrb_array_p(v))) {
+        /* An Array is what the rest of this wants, so make one first.  A
+           `to_a` written in Ruby runs as bytecode and the instruction is
+           taken from the top; a value with no `to_a` at all stands for a
+           one-element array. */
+        switch (vm_coerce_splat(mrb, OP_ARYCAT, 1, v)) {
+        case VM_SPLAT_PUSHED:
+          irep = &coerce_splat_irep;
+          ci = mrb->c->ci;
+          JUMP;
+        case VM_SPLAT_WRAP:
+          if (mrb_nil_p(regs[a])) {
+            regs[a] = mrb_ary_splat_wrap(mrb, v);
+          }
+          else {
+            /* being appended is that array's only use here, so build none */
+            mrb_ensure_array_type(mrb, regs[a]);
+            mrb_ary_push(mrb, regs[a], v);
+          }
+          mrb_gc_arena_restore(mrb, ai);
+          NEXT;
+        default:
+          /* sending `to_a` from here can call back into the VM and move the
+             stack, so refresh `ci` before `regs` is read again */
+          v = mrb_ary_splat_to_a(mrb, v);
+          ci = mrb->c->ci;
+          break;
+        }
+        if (mrb_nil_p(regs[a])) {
+          regs[a] = v;
+        }
+        else {
+          mrb_ensure_array_type(mrb, regs[a]);
+          mrb_ary_concat(mrb, regs[a], v);
+        }
       }
-      else if (mrb_array_p(v)) {
+      else if (mrb_nil_p(regs[a])) {
+        /* becomes the argument accumulator, which OP_ARYPUSH/ARYCAT then
+           append to, so it must be a fresh array independent of v */
+        regs[a] = mrb_ary_splat(mrb, v);
+      }
+      else {
         /* concat only reads v, so splat here would just dup v and copy it
            twice; concatenate straight from v (ary_concat handles v aliasing
            regs[a]) */
         mrb_ensure_array_type(mrb, regs[a]);
         mrb_ary_concat(mrb, regs[a], v);
-      }
-      else {
-        /* non-array: to_a already yields a fresh array, no extra dup needed */
-        mrb_value splat = mrb_ary_splat(mrb, v);
-        ci = mrb->c->ci;
-        mrb_ensure_array_type(mrb, regs[a]);
-        mrb_ary_concat(mrb, regs[a], splat);
       }
       mrb_gc_arena_restore(mrb, ai);
       NEXT;
@@ -4511,9 +5101,26 @@ RETRY_TRY_BLOCK:
     }
 
     CASE(OP_ARYSPLAT, B) {
-      mrb_value ary = mrb_ary_splat(mrb, regs[a]);
-      ci = mrb->c->ci;
-      regs[a] = ary;
+      mrb_value v = regs[a];
+      if (mrb_unlikely(!mrb_array_p(v))) {
+        switch (vm_coerce_splat(mrb, OP_ARYSPLAT, 0, v)) {
+        case VM_SPLAT_PUSHED:
+          irep = &coerce_splat_irep;
+          ci = mrb->c->ci;
+          JUMP;
+        case VM_SPLAT_WRAP:
+          regs[a] = mrb_ary_splat_wrap(mrb, v);
+          break;
+        default:
+          v = mrb_ary_splat_to_a(mrb, v);
+          ci = mrb->c->ci;
+          regs[a] = v;
+          break;
+        }
+      }
+      else {
+        regs[a] = mrb_ary_splat(mrb, v);
+      }
       mrb_gc_arena_restore(mrb, ai);
       NEXT;
     }
@@ -4521,17 +5128,23 @@ RETRY_TRY_BLOCK:
     CASE(OP_AREF, BBB) {
       mrb_value v = regs[b];
 
-      if (!mrb_array_p(v)) {
+      if (mrb_likely(mrb_array_p(v))) {
+        v = mrb_ary_ref(mrb, v, c);
+        regs[a] = v;
+      }
+      else {
+        if (mrb_unlikely(mrb->conv_defined & MRB_CONV_TO_ARY) &&
+            vm_coerce_ary(mrb, OP_AREF, 1)) {
+          irep = &coerce_ary_irep;
+          ci = mrb->c->ci;
+          JUMP;
+        }
         if (c == 0) {
           regs[a] = v;
         }
         else {
           SET_NIL_VALUE(regs[a]);
         }
-      }
-      else {
-        v = mrb_ary_ref(mrb, v, c);
-        regs[a] = v;
       }
       NEXT;
     }
@@ -4547,7 +5160,13 @@ RETRY_TRY_BLOCK:
       int pre  = b;
       int post = c;
 
-      if (!mrb_array_p(v)) {
+      if (mrb_unlikely(!mrb_array_p(v))) {
+        if (mrb_unlikely(mrb->conv_defined & MRB_CONV_TO_ARY) &&
+            vm_coerce_ary(mrb, OP_APOST, 0)) {
+          irep = &coerce_ary_irep;
+          ci = mrb->c->ci;
+          JUMP;
+        }
         v = ary_new_from_regs(mrb, 1, a);
       }
       struct RArray *ary = mrb_ary_ptr(v);
@@ -4910,7 +5529,7 @@ RETRY_TRY_BLOCK:
 #undef regs
   }
   MRB_CATCH(&c_jmp) {
-    mrb_assert(mrb->exc != NULL);
+    mrb_assert(mrb->exc != NULL || mrb->conv_signal);
 
     ci = mrb->c->ci;
     while (ci > mrb->c->cibase && ci->cci == CINFO_DIRECT) {
