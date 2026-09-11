@@ -1589,3 +1589,45 @@ assert('String#bytesplice on a shared buffer') do
   assert_equal 2000, d.bytesize
   assert_equal "0123456789012345678901234567890123456789", d.byteslice(-40, 40)
 end
+
+assert('String literal freeze answers one frozen string') do
+  a = 'abc'.freeze
+  assert_predicate a, :frozen?
+  assert_equal 'abc', a
+  # The text alone decides the answer, so every literal of it, wherever it is
+  # written, is the same string.
+  assert_same a, 'abc'.freeze
+  assert_same ''.freeze, ''.freeze
+  # A literal that was not frozen is still a string written afresh each time.
+  assert_not_same a, 'abc'
+  assert_not_same 'abc', 'abc'
+  # A receiver that is not a literal is answered by the method itself, which
+  # freezes the receiver and hands it back.
+  s = 'abc'.dup
+  assert_same s, s.freeze
+  assert_predicate s, :frozen?
+  assert_not_same a, s
+end
+
+assert('a frozen literal is held by the code it is written in') do
+  # The code a literal is written in holds the string the literal answers
+  # with, as a CRuby iseq holds its operands, so the literal is one object for
+  # as long as that code lives, whether or not the program holds it.
+  site = -> { 'a literal only its code holds'.freeze }
+  # Two cycles: code freed in the first gives its strings back, and the second
+  # takes out what nothing holds any longer.
+  GC.start
+  GC.start
+  base = GC.stat[:frozen_string_count]
+
+  site.call
+  GC.start
+  GC.start
+  assert_equal base + 1, GC.stat[:frozen_string_count]
+  first = site.call.object_id
+  GC.start
+  assert_equal first, site.call.object_id
+
+  # Every literal of its text reads the same one.
+  assert_same site.call, 'a literal only its code holds'.freeze
+end
