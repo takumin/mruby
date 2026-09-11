@@ -281,8 +281,10 @@ static void ht_init(
   mrb_state *mrb, struct RHash *h, uint32_t size,
   hash_entry *ea, uint32_t ea_capa, hash_table *ht, uint32_t ib_bit);
 static mrb_value h_key_for(mrb_state *mrb, struct RHash *h, mrb_value key);
-static void h_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val);
-static void ar_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val);
+static void h_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val,
+                            const uint32_t *codep);
+static void ar_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val,
+                             const uint32_t *codep);
 static void ib_it_delete(index_buckets_iter *it);
 static mrb_bool ib_find_ea_index(struct RHash *h, uint32_t ea_index, index_buckets_iter *itp);
 
@@ -766,7 +768,7 @@ h_set_by_scan(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
     hash_entry *entry =
       ea_get_by_key(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key, h);
     if (entry) entry->val = val;
-    else ar_insert_absent(mrb, h, key, val);
+    else ar_insert_absent(mrb, h, key, val, NULL);
     return;
   }
   uint32_t idx;
@@ -774,7 +776,7 @@ h_set_by_scan(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
     h_ea(h)[idx].val = val;
     return;
   }
-  h_insert_absent(mrb, h, key, val);
+  h_insert_absent(mrb, h, key, val, NULL);
 }
 
 static mrb_bool
@@ -814,11 +816,14 @@ h_delete_by_scan(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp
   return TRUE;
 }
 
-/* The insert half of a store, for a key the hash has just been found not to
-   hold. It compares nothing, so it cannot be sent off course by the `eql?`
-   that a store reaching here has already been sent off course by once. */
+/* The insert half of a store into the flat shape, for a key the hash has just
+   been found not to hold. It compares nothing, so it cannot be sent off course
+   by the `eql?` that a store reaching here has already been sent off course by
+   once. `codep` is carried through to `h_insert_absent()` for the case where
+   this fills the flat array and turns it into an indexed table. */
 static void
-ar_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
+ar_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val,
+                 const uint32_t *codep)
 {
   uint32_t size = ar_size(h);
   uint32_t ea_capa = ar_ea_capa(h), ea_n_used = ar_ea_n_used(h);
@@ -827,7 +832,7 @@ ar_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
     if (size == ea_n_used) {
       if (size == AR_MAX_SIZE) {
         ht_init(mrb, h, size, ar_ea(h), ea_capa, NULL, IB_INIT_BIT);
-        h_insert_absent(mrb, h, key, val);
+        h_insert_absent(mrb, h, key, val, codep);
         return;
       }
       else {
@@ -1259,14 +1264,45 @@ ht_insert_at(mrb_state *mrb, struct RHash *h, index_buckets_iter *it,
   ht_set_ea_n_used(h, ++ea_n_used);
 }
 
+/*
+ * Insert a key the hash has just been found not to hold.
+ *
+ * An indexed table needs the key's hash code, and asking for one runs the key's
+ * own `hash`. That is the caller's code, and it can do anything to this hash:
+ * empty it, turn it back into a flat array, or store the very key that was just
+ * found to be absent. So neither the shape the caller saw nor the absence it
+ * established survives the question, and both are taken again when the answer
+ * says the hash changed.
+ *
+ * `codep` is a code already taken for `key`, and the key is not asked for one
+ * again where it is given. That is what makes the second attempt the last one:
+ * a `hash` that changes the hash every time it is called would otherwise be
+ * asked once more for every attempt, and no attempt would ever be the one that
+ * holds.
+ */
 static void
-h_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
+h_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val,
+                const uint32_t *codep)
 {
+  uint32_t hash_code;
+
   if (h_ht_p(h)) {
-    /* Unguarded: the key is known to be absent, so there is nothing for a
-       change made from here to invalidate. The code is taken before the table
-       is, and the bucket after it. */
-    uint32_t hash_code = obj_hash_code_checked(mrb, key, h, NULL);
+    if (codep) {
+      hash_code = *codep;
+    }
+    else {
+      mrb_bool modified = FALSE;
+      hash_code = obj_hash_code_checked(mrb, key, h, &modified);
+      if (modified) {
+        uint32_t idx;
+        if (ea_scan_by_key(mrb, h, key, &idx)) {
+          h_ea(h)[idx].val = val;
+          return;
+        }
+        h_insert_absent(mrb, h, key, val, &hash_code);
+        return;
+      }
+    }
     ht_make_room(mrb, h);
     if (h_ht_p(h)) {
       index_buckets_iter it[1] = { ib_it_init_with_code(h, hash_code) };
@@ -1276,8 +1312,9 @@ h_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
       ht_insert_at(mrb, h, it, key, val);
       return;
     }
+    codep = &hash_code;
   }
-  ar_insert_absent(mrb, h, key, val);
+  ar_insert_absent(mrb, h, key, val, codep);
 }
 
 static void

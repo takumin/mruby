@@ -1099,6 +1099,49 @@ assert('Hash operations with a hash or eql? that stores into the hash') do
   assert_predicate(c, :empty?)
 end
 
+assert('Hash#[]= with a hash that changes the shape of the hash') do
+  # A store asks a key for its hash code only once it has somewhere indexed to
+  # put it, and that question runs the key's own `hash`. What comes back is a
+  # code for a hash that may no longer be the one the store was looking at: the
+  # entry array may be gone, an indexed table may be a flat one again, and the
+  # key may have been stored by the call itself. The store has to read the shape
+  # and the key's absence again rather than either of the ones it saw before.
+  shaper = Class.new do
+    def initialize(h, &blk) @h, @blk = h, blk end
+    def eql?(other) false end
+    def hash; @blk.call(@h); 0 end
+  end
+  # A flat array at its limit is what first reaches the question: the store
+  # fills it, turns it into an indexed table, and asks.
+  full = lambda do
+    h = {}
+    16.times { |i| h[i] = i }
+    h
+  end
+  indexed = lambda do
+    h = {}
+    30.times { |i| h[i] = i }
+    h
+  end
+
+  [full, indexed].each do |make|
+    h = make.call
+    h[shaper.new(h) { |x| x.clear }] = :v
+    assert_equal(1, h.size)
+    assert_equal(1, h.keys.size)
+
+    h = make.call
+    h[shaper.new(h) { |x| x.keys.each { |k| x.delete(k) unless k == 0 } }] = :v
+    assert_equal(2, h.size)
+    assert_equal(2, h.keys.size)
+
+    h = make.call
+    h[shaper.new(h) { |x| 40.times { |i| x["z#{i}"] = i } }] = :v
+    assert_equal(h.keys.size, h.size)
+    assert_equal(:v, h.values.last)
+  end
+end
+
 assert('Hash#assoc, Hash#rassoc') do
   h = {foo: 0, bar: 1, baz: 2}
   assert_equal([:bar, 1], h.assoc(:bar))
