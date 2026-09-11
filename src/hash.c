@@ -337,6 +337,46 @@ float_hash_code(mrb_float f)
 }
 #endif
 
+/* Whether mrb_obj_hash_code() below answers a key of this kind itself. The
+   kinds are listed rather than the code computed, so the function that
+   computes it is left exactly as it was: it inlines into ib_it_init() and so
+   into ht_get(), and growing it costs every lookup 56 instructions. A kind
+   added to the switch below belongs here too. */
+static mrb_bool
+hash_code_kind_p(mrb_value key)
+{
+  switch (mrb_type(key)) {
+  case MRB_TT_STRING:
+  case MRB_TT_TRUE:
+  case MRB_TT_FALSE:
+  case MRB_TT_SYMBOL:
+  case MRB_TT_INTEGER:
+#ifndef MRB_NO_FLOAT
+  case MRB_TT_FLOAT:
+#endif
+    return TRUE;
+  default:
+    return FALSE;
+  }
+}
+
+/* The code mrb_obj_hash_code() gives, and whether it could be had without
+   running Ruby code. A `hash` written in Ruby is reported rather than sent, so
+   that a caller which cannot afford to re-enter the VM hands that send over
+   itself. One written in C is sent as usual: it runs on no nested
+   mrb_vm_exec() and there is nothing to hand over. */
+mrb_bool
+mrb_obj_hash_code_in_c(mrb_state *mrb, mrb_value key, uint32_t *codep)
+{
+  if (!hash_code_kind_p(key)) {
+    struct RClass *c = mrb_class(mrb, key);
+    mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(hash));
+    if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m)) return FALSE;
+  }
+  *codep = mrb_obj_hash_code(mrb, key);
+  return TRUE;
+}
+
 uint32_t
 mrb_obj_hash_code(mrb_state *mrb, mrb_value key)
 {
