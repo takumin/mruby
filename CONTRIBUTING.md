@@ -144,10 +144,10 @@ loop sends the protocol method and takes the send from the top again with what
 it answered. A method whose format reads `o` because it decides the type
 itself asks with `mrb_convert_arg()` instead.
 
-That is what keeps *Avoid re-entering the VM from C* below: no C function that
+That is what keeps _Avoid re-entering the VM from C_ below: no C function that
 validates or normalizes a value re-enters the VM, so no conversion can fail
 with `FiberError: can't cross C function boundary`. It is also why a marked
-argument must be read before the method changes anything -- the method is
+argument must be read before the method changes anything — the method is
 entered a second time.
 
 Ask for a value without offering the conversion with
