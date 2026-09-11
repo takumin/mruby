@@ -199,11 +199,6 @@ DEFINE_SWITCHER(ht, HT)                                         /* h_ht_on  h_ht
        (ib_it_next(it_var), TRUE);                                            \
        /* do nothing */)
 
-#define IB_FIND_BY_KEY(mrb, h, key, it_var)                                   \
-  for (index_buckets_iter it_var[1] = { ib_it_init(mrb, h, key) };            \
-       ib_it_find_by_key(mrb, it_var, key);                                   \
-       it_var[0].h = NULL)
-
 /* Same live-entry iteration as EA_EACH (visit the live count of entries,
    skipping deleted slots), but the deleted-entry skip is bounded by the end of
    the entry allocation (ea + ea_capa). For valid iterations the live count is
@@ -285,8 +280,11 @@ static hash_entry *ib_it_entry(index_buckets_iter *it);
 static void ht_init(
   mrb_state *mrb, struct RHash *h, uint32_t size,
   hash_entry *ea, uint32_t ea_capa, hash_table *ht, uint32_t ib_bit);
-static void ht_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val);
 static mrb_value h_key_for(mrb_state *mrb, struct RHash *h, mrb_value key);
+static void h_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val);
+static void ar_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val);
+static void ib_it_delete(index_buckets_iter *it);
+static mrb_bool ib_find_ea_index(struct RHash *h, uint32_t ea_index, index_buckets_iter *itp);
 
 static uint32_t
 next_power2(uint32_t v)
@@ -334,16 +332,22 @@ h_check_modified_init(mrb_state *mrb, struct RHash *h)
   return checker;
 }
 
+static mrb_bool
+h_modified_p(const struct h_check_modified *checker, struct RHash *h)
+{
+  return checker->flags != (h->flags & H_CHECK_MODIFIED_FLAGS_MASK) ||
+         checker->tbl != h->hsh.ht ||
+         ((H_CHECK_MODIFIED_USE_HT_EA_CAPA_FOR_AR || h_ht_p(h)) &&
+          checker->ht_ea_capa != ht_ea_capa(h)) ||
+         ((H_CHECK_MODIFIED_USE_HT_EA_FOR_AR || h_ht_p(h)) &&
+          checker->ht_ea != ht_ea(h)) ||
+         checker->size != h_size(h);
+}
+
 static void
 h_check_modified_validate(mrb_state *mrb, struct h_check_modified *checker, struct RHash *h)
 {
-  if (checker->flags != (h->flags & H_CHECK_MODIFIED_FLAGS_MASK) ||
-      checker->tbl != h->hsh.ht ||
-      ((H_CHECK_MODIFIED_USE_HT_EA_CAPA_FOR_AR || h_ht_p(h)) &&
-       checker->ht_ea_capa != ht_ea_capa(h)) ||
-      ((H_CHECK_MODIFIED_USE_HT_EA_FOR_AR || h_ht_p(h)) &&
-       checker->ht_ea != ht_ea(h)) ||
-      checker->size != h_size(h)) {
+  if (h_modified_p(checker, h)) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "hash modified");
   }
 }
@@ -409,19 +413,65 @@ mrb_obj_hash_code(mrb_state *mrb, mrb_value key)
   return hash_code;
 }
 
+/*
+ * The hash code of a key the hash is being searched for, and, in `*modp`,
+ * whether asking for it changed the hash: a key of a kind the hash does not
+ * compute itself is asked for its `hash`, and that is the key's own code. `modp`
+ * is NULL where the caller holds nothing across the call and has nothing to be
+ * told.
+ */
 static uint32_t
-obj_hash_code(mrb_state *mrb, mrb_value key, struct RHash *h)
+obj_hash_code_checked(mrb_state *mrb, mrb_value key, struct RHash *h, mrb_bool *modp)
 {
-  uint32_t hash_code = 0;
+  if (!modp) return mrb_obj_hash_code(mrb, key);
 
-  H_CHECK_MODIFIED(mrb, h) {
-    hash_code = mrb_obj_hash_code(mrb, key);
-  }
+  struct h_check_modified checker = h_check_modified_init(mrb, h);
+  uint32_t hash_code = mrb_obj_hash_code(mrb, key);
+  if (h_modified_p(&checker, h)) *modp = TRUE;
   return hash_code;
 }
 
+static uint32_t
+obj_hash_code(mrb_state *mrb, mrb_value key, struct RHash *h)
+{
+  mrb_bool modified = FALSE;
+  uint32_t hash_code = obj_hash_code_checked(mrb, key, h, &modified);
+  if (modified) mrb_raise(mrb, E_RUNTIME_ERROR, "hash modified");
+  return hash_code;
+}
+
+/*
+ * Whether `obj_eql_checked()` below answers a comparison against a key of this
+ * kind itself rather than sending `eql?`, and so whether a walk over the entries
+ * can hold the array it is walking. The kinds are listed again rather than the
+ * comparison being made here, so that the function that makes it is left exactly
+ * as it was.
+ */
 static mrb_bool
-obj_eql(mrb_state *mrb, mrb_value a, mrb_value b, struct RHash *h)
+eql_kind_p(mrb_value key)
+{
+  switch (mrb_type(key)) {
+  case MRB_TT_STRING:
+  case MRB_TT_SYMBOL:
+  case MRB_TT_INTEGER:
+#ifndef MRB_NO_FLOAT
+  case MRB_TT_FLOAT:
+#endif
+    return TRUE;
+  default:
+    return FALSE;
+  }
+}
+
+/*
+ * The comparison a hash makes between a key it is given and a key it holds,
+ * reporting in `*modp` whether running it changed the hash. The comparisons
+ * listed by type are the hash's own and change nothing; `eql?` is the caller's
+ * and can do anything, this hash included. `modp` is NULL where the caller
+ * carries nothing across the comparison and so has nothing to be told.
+ */
+MRB_INLINE mrb_bool
+obj_eql_checked(mrb_state *mrb, mrb_value a, mrb_value b, struct RHash *h, mrb_bool *modp)
 {
   mrb_bool eql = FALSE;
 
@@ -452,9 +502,24 @@ obj_eql(mrb_state *mrb, mrb_value a, mrb_value b, struct RHash *h)
 #endif
 
   default:
-    H_CHECK_MODIFIED(mrb, h) {eql = mrb_eql(mrb, a, b);}
-    return eql;
+    break;
   }
+
+  if (!modp) return mrb_eql(mrb, a, b);
+
+  struct h_check_modified checker = h_check_modified_init(mrb, h);
+  eql = mrb_eql(mrb, a, b);
+  if (h_modified_p(&checker, h)) *modp = TRUE;
+  return eql;
+}
+
+static mrb_bool
+obj_eql(mrb_state *mrb, mrb_value a, mrb_value b, struct RHash *h)
+{
+  mrb_bool modified = FALSE;
+  mrb_bool eql = obj_eql_checked(mrb, a, b, h, &modified);
+  if (modified) mrb_raise(mrb, E_RUNTIME_ERROR, "hash modified");
+  return eql;
 }
 
 static inline mrb_bool
@@ -480,6 +545,25 @@ entry_skip_deleted_bounded(hash_entry *e, const hash_entry *end)
   for (; e < end && entry_deleted_p(e); e++)
     ;
   return e;
+}
+
+/*
+ * The entry array and the capacity of it, whichever shape the hash is in. A
+ * walk that runs Ruby code between two entries reads them through these on
+ * every turn instead of keeping them in a local: the code it runs can store
+ * into the same hash, and a store moves the entry array (CWE-416) or turns a
+ * flat array into an indexed table.
+ */
+static hash_entry*
+h_ea(struct RHash *h)
+{
+  return h_ar_p(h) ? ar_ea(h) : ht_ea(h);
+}
+
+static uint32_t
+h_ea_capa(struct RHash *h)
+{
+  return h_ar_p(h) ? ar_ea_capa(h) : ht_ea_capa(h);
 }
 
 static uint32_t
@@ -564,6 +648,44 @@ ea_get_by_key(mrb_state *mrb, hash_entry *ea, uint32_t ea_capa, uint32_t size,
   return NULL;
 }
 
+/*
+ * The search for `key` among the entries.
+ *
+ * A comparison the hash makes itself runs no Ruby code, so nothing can move
+ * under the walk and it reads the array once, the way every other walk over the
+ * entries does. A comparison that sends `eql?` can do whatever the key's class
+ * wants, this hash included: a store from there moves the entry array
+ * (CWE-416), rebuilds the index buckets, or turns an indexed table back into a
+ * flat array, and a walk holding any of those in a local is left reading memory
+ * that has been freed. That walk holds nothing but an index, reads the array
+ * and each slot from the hash again on every turn, and on a match reads the
+ * slot once more, because the comparison that matched may have been the thing
+ * that removed it.
+ *
+ * The index walk stops at the capacity and the size it started with, so it
+ * visits each slot at most once. That is what makes it finish against an `eql?`
+ * that stores another entry every time it is called. Which entry such a search
+ * lands on is not defined beyond that, the same way CRuby leaves a hash mutated
+ * from `hash` or `eql?` unspecified. What is promised is that the walk stays
+ * inside live memory and returns.
+ */
+static mrb_bool
+ea_scan_by_key(mrb_state *mrb, struct RHash *h, mrb_value key, uint32_t *idxp)
+{
+  uint32_t capa = h_ea_capa(h), size = h_size(h);
+  for (uint32_t i = 0, live = 0; i < capa && live < size; i++) {
+    if (h_ea_capa(h) <= i) return FALSE;
+    mrb_value stored = h_ea(h)[i].key;
+    if (mrb_undef_p(stored)) continue;
+    live++;
+    if (!obj_eql_checked(mrb, key, stored, h, NULL)) continue;
+    if (h_ea_capa(h) <= i || !mrb_obj_eq(mrb, h_ea(h)[i].key, stored)) return FALSE;
+    *idxp = i;
+    return TRUE;
+  }
+  return FALSE;
+}
+
 static hash_entry*
 ea_get(hash_entry *ea, uint32_t index)
 {
@@ -612,59 +734,114 @@ ar_compress(mrb_state *mrb, struct RHash *h)
   ar_adjust_ea(mrb, h, size, lesser(ar_ea_capa(h), AR_MAX_SIZE));
 }
 
+/*
+ * The three operations carried out on the entries alone. They are what the
+ * flat-array shape does, and what an indexed lookup finishes with once a
+ * comparison has moved the table under it, so each reads the hash's shape again
+ * rather than assuming the one it was called for. Where the comparison is one
+ * the hash makes itself, the flat shape walks as it always has; everything else
+ * goes through `ea_scan_by_key()`.
+ */
 static mrb_bool
-ar_get(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp)
+h_get_by_scan(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp)
 {
-  EA_EACH(ar_ea(h), ar_ea_capa(h), ar_size(h), entry) {
-    if (!obj_eql(mrb, key, entry->key, h)) continue;
-    *valp = entry->val;
-    return TRUE;
+  if (h_ar_p(h) && eql_kind_p(key)) {
+    EA_EACH(ar_ea(h), ar_ea_capa(h), ar_size(h), entry) {
+      if (!obj_eql_checked(mrb, key, entry->key, h, NULL)) continue;
+      *valp = entry->val;
+      return TRUE;
+    }
+    return FALSE;
   }
-  return FALSE;
+  uint32_t idx;
+  if (!ea_scan_by_key(mrb, h, key, &idx)) return FALSE;
+  *valp = h_ea(h)[idx].val;
+  return TRUE;
 }
 
 static void
-ar_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
+h_set_by_scan(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
 {
-  uint32_t size = ar_size(h);
-  hash_entry *entry;
-  if ((entry = ea_get_by_key(mrb, ar_ea(h), ar_ea_capa(h), size, key, h))) {
-    entry->val = val;
+  if (h_ar_p(h) && eql_kind_p(key)) {
+    hash_entry *entry =
+      ea_get_by_key(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key, h);
+    if (entry) entry->val = val;
+    else ar_insert_absent(mrb, h, key, val);
+    return;
   }
-  else {
-    uint32_t ea_capa = ar_ea_capa(h), ea_n_used = ar_ea_n_used(h);
-    key = h_key_for(mrb, h, key);
-    if (ea_capa == ea_n_used) {
-      if (size == ea_n_used) {
-        if (size == AR_MAX_SIZE) {
-          ht_init(mrb, h, size, ar_ea(h), ea_capa, NULL, IB_INIT_BIT);
-          ht_set(mrb, h, key, val);
-          return;
-        }
-        else {
-          ar_adjust_ea(mrb, h, size, AR_MAX_SIZE);
-        }
-      }
-      else {
-        ar_compress(mrb, h);
-        ea_n_used = size;
-      }
-    }
-    ea_set(ar_ea(h), ea_n_used, key, val);
-    ar_set_size(h, ++size);
-    ar_set_ea_n_used(h, ++ea_n_used);
+  uint32_t idx;
+  if (ea_scan_by_key(mrb, h, key, &idx)) {
+    h_ea(h)[idx].val = val;
+    return;
   }
+  h_insert_absent(mrb, h, key, val);
 }
 
 static mrb_bool
-ar_delete(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp)
+h_delete_by_scan(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp)
 {
-  hash_entry *entry = ea_get_by_key(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key, h);
-  if (!entry) return FALSE;
-  *valp = entry->val;
-  entry_delete(entry);
-  ar_dec_size(h);
+  if (h_ar_p(h) && eql_kind_p(key)) {
+    hash_entry *entry =
+      ea_get_by_key(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key, h);
+    if (!entry) return FALSE;
+    *valp = entry->val;
+    entry_delete(entry);
+    ar_dec_size(h);
+    return TRUE;
+  }
+  uint32_t idx;
+  if (!ea_scan_by_key(mrb, h, key, &idx)) return FALSE;
+  if (h_ht_p(h)) {
+    /* The bucket that points at the entry has to go with it, and it is found
+       by reading the buckets rather than by hashing the key again: asking a
+       key for its `hash` here would be asking the very code that moved the
+       table under the walk. */
+    index_buckets_iter it[1];
+    /* Every live entry of an indexed table is pointed at by a bucket, so this
+       finds one; a table left without that much intact is reported as not
+       holding the key rather than half-deleted from. */
+    if (!ib_find_ea_index(h, idx, it)) return FALSE;
+    *valp = h_ea(h)[idx].val;
+    ib_it_delete(it);
+    entry_delete(h_ea(h) + idx);
+    ht_dec_size(h);
+  }
+  else {
+    *valp = h_ea(h)[idx].val;
+    entry_delete(h_ea(h) + idx);
+    ar_dec_size(h);
+  }
   return TRUE;
+}
+
+/* The insert half of a store, for a key the hash has just been found not to
+   hold. It compares nothing, so it cannot be sent off course by the `eql?`
+   that a store reaching here has already been sent off course by once. */
+static void
+ar_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
+{
+  uint32_t size = ar_size(h);
+  uint32_t ea_capa = ar_ea_capa(h), ea_n_used = ar_ea_n_used(h);
+  key = h_key_for(mrb, h, key);
+  if (ea_capa == ea_n_used) {
+    if (size == ea_n_used) {
+      if (size == AR_MAX_SIZE) {
+        ht_init(mrb, h, size, ar_ea(h), ea_capa, NULL, IB_INIT_BIT);
+        h_insert_absent(mrb, h, key, val);
+        return;
+      }
+      else {
+        ar_adjust_ea(mrb, h, size, AR_MAX_SIZE);
+      }
+    }
+    else {
+      ar_compress(mrb, h);
+      ea_n_used = size;
+    }
+  }
+  ea_set(ar_ea(h), ea_n_used, key, val);
+  ar_set_size(h, ++size);
+  ar_set_ea_n_used(h, ++ea_n_used);
 }
 
 static void
@@ -749,16 +926,25 @@ ib_it_active_p(const index_buckets_iter *it)
 }
 
 static index_buckets_iter
-ib_it_init(mrb_state *mrb, struct RHash *h, mrb_value key)
+ib_it_init_with_code(struct RHash *h, uint32_t hash_code)
 {
   index_buckets_iter it;
   it.h = h;
   it.bit = ib_bit(h);
   it.mask = ib_bit_to_capa(it.bit) - 1;
-  it.initial_pos = ib_it_pos_for(&it, obj_hash_code(mrb, key, h));
+  it.initial_pos = ib_it_pos_for(&it, hash_code);
   it.pos = it.initial_pos;
   it.step = 0;
   return it;
+}
+
+/* The hash code is asked for before the table is read, not after: asking for it
+   can run the key's own `hash`, and that can rebuild the index buckets the
+   width of a bucket is about to be taken from. */
+static index_buckets_iter
+ib_it_init(mrb_state *mrb, struct RHash *h, mrb_value key)
+{
+  return ib_it_init_with_code(h, obj_hash_code(mrb, key, h));
 }
 
 static void
@@ -801,21 +987,6 @@ ib_it_next(index_buckets_iter *it)
   it->pos = ib_it_pos_for(it, it->initial_pos + (it->step * it->step + it->step) / 2);
 }
 
-static mrb_bool
-ib_it_find_by_key(mrb_state *mrb, index_buckets_iter *it, mrb_value key)
-{
-  if (!it->h) return FALSE;
-
-  for (;;) {
-    ib_it_next(it);
-    if (ib_it_empty_p(it)) return FALSE;
-    if (!ib_it_deleted_p(it) &&
-        obj_eql(mrb, key, ib_it_entry(it)->key, it->h)) {
-      return TRUE;
-    }
-  }
-}
-
 static uint32_t
 ib_it_get(const index_buckets_iter *it)
 {
@@ -847,6 +1018,32 @@ static hash_entry*
 ib_it_entry(index_buckets_iter *it)
 {
   return ea_get(ht_ea(it->h), it->ea_index);
+}
+
+/*
+ * The bucket that points at entry `ea_index`, found by reading every bucket
+ * rather than by probing for the key's hash code. Every live entry of an
+ * indexed table is pointed at by exactly one bucket, so this finds it, and it
+ * asks no key for anything on the way.
+ */
+static mrb_bool
+ib_find_ea_index(struct RHash *h, uint32_t ea_index, index_buckets_iter *itp)
+{
+  uint32_t capa = ib_bit_to_capa(ib_bit(h));
+  index_buckets_iter it;
+  it.h = h;
+  it.bit = ib_bit(h);
+  it.mask = capa - 1;
+  for (uint32_t pos = 0; pos < capa; pos++) {
+    it.initial_pos = it.pos = pos;
+    it.step = 0;
+    ib_it_next(&it);
+    if (ib_it_active_p(&it) && ib_it_get(&it) == ea_index) {
+      *itp = it;
+      return TRUE;
+    }
+  }
+  return FALSE;
 }
 
 static uint32_t
@@ -961,25 +1158,64 @@ ht_to_ar(mrb_state *mrb, struct RHash *h)
   ar_init(h, size, ea, ea_capa, size);
 }
 
+/*
+ * How far a probe of the index buckets got. `HT_PROBE_MODIFIED` says a
+ * comparison ran Ruby code that stored into this hash: the probe positions, the
+ * buckets and the entry array are all stale then, and the caller has to finish
+ * by index instead of trusting any of them.
+ */
+enum ht_probe_result {
+  HT_PROBE_EMPTY,
+  HT_PROBE_FOUND,
+  HT_PROBE_MODIFIED
+};
+
+static enum ht_probe_result
+ht_probe_by_key(mrb_state *mrb, struct RHash *h, mrb_value key,
+                index_buckets_iter *it)
+{
+  mrb_bool code_modified = FALSE;
+  uint32_t hash_code = obj_hash_code_checked(mrb, key, h, &code_modified);
+  if (code_modified) return HT_PROBE_MODIFIED;
+
+  *it = ib_it_init_with_code(h, hash_code);
+  for (;;) {
+    ib_it_next(it);
+    if (ib_it_empty_p(it)) return HT_PROBE_EMPTY;
+    if (ib_it_deleted_p(it)) continue;
+    mrb_bool modified = FALSE;
+    mrb_bool eql = obj_eql_checked(mrb, key, ib_it_entry(it)->key, h, &modified);
+    if (modified) return HT_PROBE_MODIFIED;
+    if (eql) return HT_PROBE_FOUND;
+  }
+}
+
 static mrb_bool
 ht_get(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp)
 {
-  IB_FIND_BY_KEY(mrb, h, key, it) {
+  index_buckets_iter it[1];
+  switch (ht_probe_by_key(mrb, h, key, it)) {
+  case HT_PROBE_FOUND:
     *valp = ib_it_entry(it)->val;
     return TRUE;
+  case HT_PROBE_EMPTY:
+    return FALSE;
+  default:
+    return h_get_by_scan(mrb, h, key, valp);
   }
-  return FALSE;
 }
 
-static void
-ht_set_as_ar(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
-{
-  ht_to_ar(mrb, h);
-  ar_set(mrb, h, key, val);
-}
-
-static void
-ht_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
+/*
+ * Make room for one more entry. Nothing here compares keys, but the rebuilds do
+ * ask the keys the table already holds for their `hash` again, and that is
+ * still guarded by raising: an iteration over stored keys is a different shape
+ * from a search for one, and this change does not touch it.
+ *
+ * Room can be made by turning the table back into a flat array, so the caller
+ * looks at the shape again afterwards.
+ */
+MRB_INLINE void
+ht_make_room(mrb_state *mrb, struct RHash *h)
 {
   uint32_t size = ht_size(h);
   uint32_t ib_bit_width = ib_bit(h), ib_capa = ib_bit_to_capa(ib_bit_width);
@@ -991,7 +1227,7 @@ ht_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
     if (ib_capa - EA_N_RESERVED_INDICES <= ht_ea_n_used(h)) goto compress;
     if (ht_ea_capa(h) == ht_ea_n_used(h)) {
       if (size <= AR_MAX_SIZE) {
-        ht_set_as_ar(mrb, h, key, val);
+        ht_to_ar(mrb, h);
         return;
       }
       if (ea_next_capa_for(size, EA_MAX_CAPA) <= ht_ea_capa(h)) {
@@ -1002,29 +1238,68 @@ ht_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
       }
     }
   }
+}
+
+/* Put a key the table has been found not to hold into the bucket a probe
+   stopped on. */
+MRB_INLINE void
+ht_insert_at(mrb_state *mrb, struct RHash *h, index_buckets_iter *it,
+             mrb_value key, mrb_value val)
+{
+  uint32_t ea_n_used = ht_ea_n_used(h);
+  if (ea_n_used == H_MAX_SIZE) {
+    mrb_assert(ht_size(h) == ea_n_used);
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "hash too big");
+  }
+  key = h_key_for(mrb, h, key);
+  if (ea_n_used == ht_ea_capa(h)) ht_adjust_ea(mrb, h, ea_n_used, EA_MAX_CAPA);
+  ib_it_set(it, ea_n_used);
+  ea_set(ht_ea(h), ea_n_used, key, val);
+  ht_inc_size(h);
+  ht_set_ea_n_used(h, ++ea_n_used);
+}
+
+static void
+h_insert_absent(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
+{
+  if (h_ht_p(h)) {
+    /* Unguarded: the key is known to be absent, so there is nothing for a
+       change made from here to invalidate. The code is taken before the table
+       is, and the bucket after it. */
+    uint32_t hash_code = obj_hash_code_checked(mrb, key, h, NULL);
+    ht_make_room(mrb, h);
+    if (h_ht_p(h)) {
+      index_buckets_iter it[1] = { ib_it_init_with_code(h, hash_code) };
+      do {
+        ib_it_next(it);
+      } while (!ib_it_empty_p(it));
+      ht_insert_at(mrb, h, it, key, val);
+      return;
+    }
+  }
+  ar_insert_absent(mrb, h, key, val);
+}
+
+static void
+ht_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
+{
+  ht_make_room(mrb, h);
+  if (h_ar_p(h)) {
+    h_set_by_scan(mrb, h, key, val);
+    return;
+  }
 
   mrb_assert(ht_size(h) < ib_bit_to_capa(ib_bit(h)));
-  IB_CYCLE_BY_KEY(mrb, h, key, it) {
-    if (ib_it_active_p(it)) {
-      if (!obj_eql(mrb, key, ib_it_entry(it)->key, h)) continue;
-      ib_it_entry(it)->val = val;
-    }
-    else if (ib_it_deleted_p(it)) {
-      continue;
-    }
-    else {
-      uint32_t ea_n_used = ht_ea_n_used(h);
-      if (ea_n_used == H_MAX_SIZE) {
-        mrb_assert(ht_size(h) == ea_n_used);
-        mrb_raise(mrb, E_ARGUMENT_ERROR, "hash too big");
-      }
-      key = h_key_for(mrb, h, key);
-      if (ea_n_used == ht_ea_capa(h)) ht_adjust_ea(mrb, h, ea_n_used, EA_MAX_CAPA);
-      ib_it_set(it, ea_n_used);
-      ea_set(ht_ea(h), ea_n_used, key, val);
-      ht_inc_size(h);
-      ht_set_ea_n_used(h, ++ea_n_used);
-    }
+  index_buckets_iter it[1];
+  switch (ht_probe_by_key(mrb, h, key, it)) {
+  case HT_PROBE_FOUND:
+    ib_it_entry(it)->val = val;
+    return;
+  case HT_PROBE_EMPTY:
+    ht_insert_at(mrb, h, it, key, val);
+    return;
+  default:
+    h_set_by_scan(mrb, h, key, val);
     return;
   }
 }
@@ -1032,7 +1307,9 @@ ht_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
 static mrb_bool
 ht_delete(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp)
 {
-  IB_FIND_BY_KEY(mrb, h, key, it) {
+  index_buckets_iter it[1];
+  switch (ht_probe_by_key(mrb, h, key, it)) {
+  case HT_PROBE_FOUND: {
     hash_entry *entry = ib_it_entry(it);
     *valp = entry->val;
     ib_it_delete(it);
@@ -1040,7 +1317,11 @@ ht_delete(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp)
     ht_dec_size(h);
     return TRUE;
   }
-  return FALSE;
+  case HT_PROBE_EMPTY:
+    return FALSE;
+  default:
+    return h_delete_by_scan(mrb, h, key, valp);
+  }
 }
 
 static void
@@ -1149,19 +1430,20 @@ h_clear(mrb_state *mrb, struct RHash *h)
 static mrb_bool
 h_get(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp)
 {
-  return (h_ar_p(h) ? ar_get : ht_get)(mrb, h, key, valp);
+  return h_ar_p(h) ? h_get_by_scan(mrb, h, key, valp) : ht_get(mrb, h, key, valp);
 }
 
 static void
 h_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
 {
-  (h_ar_p(h) ? ar_set : ht_set)(mrb, h, key, val);
+  if (h_ar_p(h)) h_set_by_scan(mrb, h, key, val);
+  else ht_set(mrb, h, key, val);
 }
 
 static mrb_bool
 h_delete(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp)
 {
-  return (h_ar_p(h) ? ar_delete : ht_delete)(mrb, h, key, valp);
+  return h_ar_p(h) ? h_delete_by_scan(mrb, h, key, valp) : ht_delete(mrb, h, key, valp);
 }
 
 /* find first element in the table, and remove it. */
