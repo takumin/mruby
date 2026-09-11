@@ -1752,6 +1752,17 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
   return i;
 }
 
+/*
+ * The modifiers a specifier can carry, in one byte rather than in a `mrb_bool`
+ * apiece.  All three stay live across the scan that answers the specifiers, and
+ * a third register held for that long is enough to change how gcc lays the
+ * scan's switches out: as three variables they cost a send through the general
+ * path some 25 instructions, whatever its format says.
+ */
+#define MOD_ALT    1  /* `!` */
+#define MOD_MODIFY 2  /* `+` */
+#define MOD_CONV   4  /* `~` */
+
 static mrb_int
 get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 {
@@ -1840,29 +1851,27 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
   opt = FALSE;
   i = 0;
   while ((c = *format++)) {
-    mrb_bool altmode = FALSE;
-    mrb_bool needmodify = FALSE;
-    mrb_bool convmode = FALSE;
+    uint8_t mods = 0;
 
     for (; *format; format++) {
       switch (*format) {
       case '!':
-        if (altmode) goto modifier_exit; /* not accept for multiple '!' */
-        altmode = TRUE;
+        if (mods & MOD_ALT) goto modifier_exit; /* not accept for multiple '!' */
+        mods |= MOD_ALT;
         break;
       case '+':
-        if (needmodify) goto modifier_exit; /* not accept for multiple '+' */
-        needmodify = TRUE;
+        if (mods & MOD_MODIFY) goto modifier_exit; /* not accept for multiple '+' */
+        mods |= MOD_MODIFY;
         break;
       case '~':
-        if (convmode) goto modifier_exit; /* not accept for multiple '~' */
+        if (mods & MOD_CONV) goto modifier_exit; /* not accept for multiple '~' */
         /* only the specifiers that name a type to convert to take `~`; the
            test sits here so that a format without one pays nothing for it */
         if (c != 'S' && c != 'A' && c != 'H' &&
             c != 's' && c != 'z' && c != 'a' && c != 'i') {
           mrb_raisef(mrb, E_ARGUMENT_ERROR, "wrong `%c~` modified specifier", c);
         }
-        convmode = TRUE;
+        mods |= MOD_CONV;
         break;
       default:
         goto modifier_exit;
@@ -1872,7 +1881,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
   modifier_exit:
     switch (c) {
     case '|': case '*': case '&': case '?': case ':':
-      if (needmodify) {
+      if (mods & MOD_MODIFY) {
       bad_needmodify:
         mrb_raisef(mrb, E_ARGUMENT_ERROR, "wrong `%c+` modified specifier`", c);
       }
@@ -1880,7 +1889,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
     default:
       if (i < argc) {
         pickarg = &argv[i++];
-        if (needmodify && !mrb_nil_p(*pickarg)) {
+        if ((mods & MOD_MODIFY) && !mrb_nil_p(*pickarg)) {
           mrb_check_frozen_value(mrb, *pickarg);
         }
       }
@@ -1906,24 +1915,24 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         p = GET_ARG(mrb_value*);
         if (pickarg) {
-          if (!(altmode && mrb_nil_p(*pickarg))) {
+          if (!((mods & MOD_ALT) && mrb_nil_p(*pickarg))) {
             switch (c) {
             case 'C': ensure_class_type(mrb, *pickarg); break;
             case 'S':
               if (!mrb_string_p(*pickarg)) {
-                if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+                if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
                 else mrb_ensure_string_type(mrb, *pickarg);
               }
               break;
             case 'A':
               if (!mrb_array_p(*pickarg)) {
-                if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_ARY);
+                if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_ARY);
                 else mrb_ensure_array_type(mrb, *pickarg);
               }
               break;
             case 'H':
               if (!mrb_hash_p(*pickarg)) {
-                if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_HASH);
+                if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_HASH);
                 else mrb_ensure_hash_type(mrb, *pickarg);
               }
               break;
@@ -1939,7 +1948,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         p = GET_ARG(struct RClass**);
         if (pickarg) {
-          if (altmode && mrb_nil_p(*pickarg)) {
+          if ((mods & MOD_ALT) && mrb_nil_p(*pickarg)) {
             *p = NULL;
           }
           else {
@@ -1956,15 +1965,15 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         ps = GET_ARG(const char**);
         pl = GET_ARG(mrb_int*);
-        if (needmodify) goto bad_needmodify;
+        if (mods & MOD_MODIFY) goto bad_needmodify;
         if (pickarg) {
-          if (altmode && mrb_nil_p(*pickarg)) {
+          if ((mods & MOD_ALT) && mrb_nil_p(*pickarg)) {
             *ps = NULL;
             *pl = 0;
           }
           else {
             if (!mrb_string_p(*pickarg)) {
-              if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+              if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
               else mrb_ensure_string_type(mrb, *pickarg);
             }
             *ps = RSTRING_PTR(*pickarg);
@@ -1978,14 +1987,14 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
         const char **ps;
 
         ps = GET_ARG(const char**);
-        if (needmodify) goto bad_needmodify;
+        if (mods & MOD_MODIFY) goto bad_needmodify;
         if (pickarg) {
-          if (altmode && mrb_nil_p(*pickarg)) {
+          if ((mods & MOD_ALT) && mrb_nil_p(*pickarg)) {
             *ps = NULL;
           }
           else {
             if (!mrb_string_p(*pickarg)) {
-              if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
+              if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_STR);
               else mrb_ensure_string_type(mrb, *pickarg);
             }
             *ps = RSTRING_CSTR(mrb, *pickarg);
@@ -2001,15 +2010,15 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         pb = GET_ARG(const mrb_value**);
         pl = GET_ARG(mrb_int*);
-        if (needmodify) goto bad_needmodify;
+        if (mods & MOD_MODIFY) goto bad_needmodify;
         if (pickarg) {
-          if (altmode && mrb_nil_p(*pickarg)) {
+          if ((mods & MOD_ALT) && mrb_nil_p(*pickarg)) {
             *pb = NULL;
             *pl = 0;
           }
           else {
             if (!mrb_array_p(*pickarg)) {
-              if (convmode) arg_conv(mrb, argv, i-1, MRB_CONV_TO_ARY);
+              if (mods & MOD_CONV) arg_conv(mrb, argv, i-1, MRB_CONV_TO_ARY);
               else mrb_ensure_array_type(mrb, *pickarg);
             }
             a = mrb_ary_ptr(*pickarg);
@@ -2040,7 +2049,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
           if (mrb_likely(mrb_integer_p(*pickarg))) {
             *p = mrb_integer(*pickarg);
           }
-          else if (convmode) {
+          else if (mods & MOD_CONV) {
             *p = arg_as_int(mrb, argv, i-1);
           }
           else {
@@ -2076,7 +2085,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
         datap = GET_ARG(void**);
         type = GET_ARG(struct mrb_data_type const*);
         if (pickarg) {
-          if (altmode && mrb_nil_p(*pickarg)) {
+          if ((mods & MOD_ALT) && mrb_nil_p(*pickarg)) {
             *datap = NULL;
           }
           else {
@@ -2092,7 +2101,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
         p = GET_ARG(mrb_value*);
         bp = ci->stack + mrb_ci_bidx(ci);
-        if (altmode && mrb_nil_p(*bp)) {
+        if ((mods & MOD_ALT) && mrb_nil_p(*bp)) {
           mrb_raise(mrb, E_ARGUMENT_ERROR, "no block given");
         }
         *p = *bp;
@@ -2115,7 +2124,7 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
       {
         const mrb_value **var;
         mrb_int *pl;
-        mrb_bool nocopy = (altmode || !argv_on_stack) ? TRUE : FALSE;
+        mrb_bool nocopy = ((mods & MOD_ALT) || !argv_on_stack) ? TRUE : FALSE;
 
         var = GET_ARG(const mrb_value**);
         pl = GET_ARG(mrb_int*);
@@ -2299,6 +2308,10 @@ finish:
  *   '+': Request a modifiable (not frozen) object. Raises a FrozenError if the
  *        retrieved object is frozen (this check does not apply to nil values).
  */
+#undef MOD_ALT
+#undef MOD_MODIFY
+#undef MOD_CONV
+
 MRB_API mrb_int
 mrb_get_args(mrb_state *mrb, mrb_args_format format, ...)
 {
