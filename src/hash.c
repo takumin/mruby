@@ -13,6 +13,7 @@
 #include <mruby/variable.h>
 #include <mruby/proc.h>
 #include <mruby/internal.h>
+#include <mruby/throw.h>
 
 
 /*
@@ -169,6 +170,7 @@ DEFINE_DECREMENTER(ht, size)                                    /* ht_dec_size  
 DEFINE_GETTER(h, size, uint32_t, size)                          /* h_size                        */
 DEFINE_ACCESSOR(h, ht, hash_table*, hsh.ht)                     /* h_ht         h_set_ht         */
 DEFINE_SWITCHER(ht, HT)                                         /* h_ht_on  h_ht_off  h_ht_p     */
+DEFINE_SWITCHER(reindex, REINDEX)                               /* h_reindex_on h_reindex_off h_reindex_p */
 
 #define EA_EACH_USED(ea, n_used, entry_var)                                   \
   for (hash_entry *entry_var = (ea), *ea_end__ = (entry_var) + (n_used);      \
@@ -196,6 +198,12 @@ DEFINE_SWITCHER(ht, HT)                                         /* h_ht_on  h_ht
 
 #define IB_CYCLE_BY_KEY(mrb, h, key, it_var)                                  \
   for (index_buckets_iter it_var[1] = { ib_it_init(mrb, h, key) };            \
+       (ib_it_next(it_var), TRUE);                                            \
+       /* do nothing */)
+
+/* As IB_CYCLE_BY_KEY, for a key whose hash code is already in hand. */
+#define IB_CYCLE_BY_CODE(h, code, it_var)                                     \
+  for (index_buckets_iter it_var[1] = { ib_it_init_code(h, code) };           \
        (ib_it_next(it_var), TRUE);                                            \
        /* do nothing */)
 
@@ -284,7 +292,8 @@ static uint32_t ib_bit_to_capa(uint32_t bit);
 static hash_entry *ib_it_entry(index_buckets_iter *it);
 static void ht_init(
   mrb_state *mrb, struct RHash *h, uint32_t size,
-  hash_entry *ea, uint32_t ea_capa, hash_table *ht, uint32_t ib_bit);
+  hash_entry *ea, uint32_t ea_capa, hash_table *ht, uint32_t ib_bit,
+  const uint32_t *codes);
 static void ht_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val);
 static mrb_value h_key_for(mrb_state *mrb, struct RHash *h, mrb_value key);
 
@@ -418,6 +427,30 @@ obj_hash_code(mrb_state *mrb, mrb_value key, struct RHash *h)
     hash_code = mrb_obj_hash_code(mrb, key);
   }
   return hash_code;
+}
+
+/*
+ * Whether the hash code of `key` is obtained by calling `#hash` on it, which
+ * runs Ruby code and so can raise or re-enter the hash. Every other key type
+ * is hashed in C. This mirrors the type switch of `mrb_obj_hash_code()`; the
+ * two must be kept in step.
+ */
+static mrb_bool
+key_hash_dispatch_p(mrb_value key)
+{
+  switch (mrb_type(key)) {
+  case MRB_TT_STRING:
+  case MRB_TT_TRUE:
+  case MRB_TT_FALSE:
+  case MRB_TT_SYMBOL:
+  case MRB_TT_INTEGER:
+#ifndef MRB_NO_FLOAT
+  case MRB_TT_FLOAT:
+#endif
+    return FALSE;
+  default:
+    return TRUE;
+  }
 }
 
 static mrb_bool
@@ -570,6 +603,98 @@ ea_get(hash_entry *ea, uint32_t index)
   return &ea[index];
 }
 
+static uint32_t
+h_ea_n_used(const struct RHash *h)
+{
+  return h_ar_p(h) ? ar_ea_n_used(h) : ht_ea_n_used(h);
+}
+
+/*
+ * Whether re-indexing the `size` live entries of `ea` would call `#hash` on
+ * any of their keys, and so run Ruby code.
+ */
+static mrb_bool
+ea_has_dispatch_key(hash_entry *ea, uint32_t ea_capa, uint32_t size)
+{
+  EA_EACH(ea, ea_capa, size, entry) {
+    if (key_hash_dispatch_p(entry->key)) return TRUE;
+  }
+  return FALSE;
+}
+
+static void
+ea_hash_codes(mrb_state *mrb, struct RHash *h, hash_entry *ea, uint32_t ea_capa,
+              uint32_t size, uint32_t *codes)
+{
+  uint32_t i = 0;
+  EA_EACH(ea, ea_capa, size, entry) {
+    codes[i++] = obj_hash_code(mrb, entry->key, h);
+  }
+}
+
+/*
+ * The hash code of each of the `size` live entries of `ea`, in entry order,
+ * in a buffer the caller frees -- or NULL when none of the keys is hashed by
+ * Ruby code, which leaves nothing for a caller to run ahead of time.
+ *
+ * This is where a re-index calls the `#hash` methods of its keys: ahead of
+ * touching the table, so that a key that raises (or that modifies the hash
+ * and trips the modification check) leaves the hash as it was. See
+ * `ht_reindex`.
+ *
+ * Those methods see a hash that is whole and can therefore store into it,
+ * which is what would otherwise ask for the re-index already under way. So
+ * the hash is marked as being re-indexed for as long as they run, and a
+ * store made from one of them goes into the table as it stands rather than
+ * re-entering here, where nothing has changed yet and the same `#hash` would
+ * be called again (see `ht_set`). The mark is given back on the way out,
+ * raise or no raise.
+ *
+ * Each of those stores raises on the way out of the `#hash` that made it,
+ * where `H_CHECK_MODIFIED` sees the count it changed -- except a store that
+ * pairs with a delete, which puts the count back. That pair leaves the codes
+ * standing for entries the caller is about to compact away, so the count of
+ * slots EA has ever used, which only a store moves, is compared across the
+ * whole pass as well.
+ */
+static uint32_t*
+h_hash_codes(mrb_state *mrb, struct RHash *h, hash_entry *ea, uint32_t ea_capa,
+             uint32_t size)
+{
+  mrb_assert(!h_reindex_p(h));
+  if (!ea_has_dispatch_key(ea, ea_capa, size)) return NULL;
+
+  uint32_t ea_n_used = h_ea_n_used(h);
+  uint32_t *codes = (uint32_t*)mrb_malloc(mrb, sizeof(uint32_t) * size);
+  h_reindex_on(h);
+  if (mrb->jmp) {
+    /* Give back the buffer and the flag on the way out of a raising `#hash`,
+       as gc_drive() does for its own flag. Without an outer handler a raise
+       aborts instead of unwinding, and neither would be given back anyway. */
+    struct mrb_jmpbuf *prev_jmp = mrb->jmp;
+    struct mrb_jmpbuf c_jmp;
+    MRB_TRY(&c_jmp) {
+      mrb->jmp = &c_jmp;
+      ea_hash_codes(mrb, h, ea, ea_capa, size, codes);
+      mrb->jmp = prev_jmp;
+    } MRB_CATCH(&c_jmp) {
+      mrb->jmp = prev_jmp;
+      h_reindex_off(h);
+      mrb_free(mrb, codes);
+      MRB_THROW(prev_jmp);
+    } MRB_END_EXC(&c_jmp);
+  }
+  else {
+    ea_hash_codes(mrb, h, ea, ea_capa, size, codes);
+  }
+  h_reindex_off(h);
+  if (ea_n_used != h_ea_n_used(h) || size != h_size(h)) {
+    mrb_free(mrb, codes);
+    mrb_raise(mrb, E_RUNTIME_ERROR, "hash modified");
+  }
+  return codes;
+}
+
 static void
 ea_set(hash_entry *ea, uint32_t index, mrb_value key, mrb_value val)
 {
@@ -637,7 +762,17 @@ ar_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
     if (ea_capa == ea_n_used) {
       if (size == ea_n_used) {
         if (size == AR_MAX_SIZE) {
-          ht_init(mrb, h, size, ar_ea(h), ea_capa, NULL, IB_INIT_BIT);
+          /* As in `ht_reindex`: the `#hash` methods of the keys run while the
+             hash is still an untouched AR, so that one of them raising leaves
+             it that way instead of half converted, with the entries past the
+             raise in no bucket. A full AR has no room for a store made from
+             one of those `#hash` methods, so that store raises (see
+             `ht_set`); one that replaces the value of a key already present
+             never reaches here. */
+          if (h_reindex_p(h)) mrb_raise(mrb, E_RUNTIME_ERROR, "hash modified");
+          uint32_t *codes = h_hash_codes(mrb, h, ar_ea(h), ea_capa, size);
+          ht_init(mrb, h, size, ar_ea(h), ea_capa, NULL, IB_INIT_BIT, codes);
+          mrb_free(mrb, codes);
           ht_set(mrb, h, key, val);
           return;
         }
@@ -749,16 +884,22 @@ ib_it_active_p(const index_buckets_iter *it)
 }
 
 static index_buckets_iter
-ib_it_init(mrb_state *mrb, struct RHash *h, mrb_value key)
+ib_it_init_code(struct RHash *h, uint32_t hash_code)
 {
   index_buckets_iter it;
   it.h = h;
   it.bit = ib_bit(h);
   it.mask = ib_bit_to_capa(it.bit) - 1;
-  it.initial_pos = ib_it_pos_for(&it, obj_hash_code(mrb, key, h));
+  it.initial_pos = ib_it_pos_for(&it, hash_code);
   it.pos = it.initial_pos;
   it.step = 0;
   return it;
+}
+
+static index_buckets_iter
+ib_it_init(mrb_state *mrb, struct RHash *h, mrb_value key)
+{
+  return ib_it_init_code(h, obj_hash_code(mrb, key, h));
 }
 
 static void
@@ -894,14 +1035,28 @@ ib_byte_size_for(uint32_t ib_bit)
   return U32(sizeof(uint32_t) * ary_size);
 }
 
+/*
+ * Fill the buckets with the positions of the `ht_ea_n_used(h)` entries of EA.
+ *
+ * `codes` holds the hash code of each entry, in entry order, or is NULL to
+ * have each computed here. A caller that hands over `codes` has already run
+ * whatever Ruby code the keys call (see `h_hash_codes`), which is what lets
+ * this run to the end once the old buckets are gone: an exception escaping
+ * midway would leave the entries past it in no bucket at all, unreachable by
+ * key although `size` still counts them.
+ */
 static void
-ib_init(mrb_state *mrb, struct RHash *h, uint32_t ib_bit, size_t ib_byte_size)
+ib_init(mrb_state *mrb, struct RHash *h, uint32_t ib_bit, size_t ib_byte_size,
+        const uint32_t *codes)
 {
   hash_entry *ea = ht_ea(h);
+  uint32_t i = 0;
   memset(ht_ib(h), 0xff, ib_byte_size);
   ib_set_bit(h, ib_bit);
   EA_EACH_USED(ea, ht_ea_n_used(h), entry) {
-    IB_CYCLE_BY_KEY(mrb, h, entry->key, it) {
+    uint32_t code = codes ? codes[i] : obj_hash_code(mrb, entry->key, h);
+    i++;
+    IB_CYCLE_BY_CODE(h, code, it) {
       if (!ib_it_empty_p(it)) continue;
       ib_it_set(it, U32(entry - ea));
       break;
@@ -911,7 +1066,8 @@ ib_init(mrb_state *mrb, struct RHash *h, uint32_t ib_bit, size_t ib_byte_size)
 
 static void
 ht_init(mrb_state *mrb, struct RHash *h, uint32_t size,
-        hash_entry *ea, uint32_t ea_capa, hash_table *ht, uint32_t ib_bit)
+        hash_entry *ea, uint32_t ea_capa, hash_table *ht, uint32_t ib_bit,
+        const uint32_t *codes)
 {
   size_t ib_byte_size = ib_byte_size_for(ib_bit);
   size_t ht_byte_size = sizeof(hash_table) + ib_byte_size;
@@ -922,7 +1078,7 @@ ht_init(mrb_state *mrb, struct RHash *h, uint32_t size,
   ht_set_ea(h, ea);
   ht_set_ea_capa(h, ea_capa);
   ht_set_ea_n_used(h, size);
-  ib_init(mrb, h, ib_bit, ib_byte_size);
+  ib_init(mrb, h, ib_bit, ib_byte_size, codes);
 }
 
 static void
@@ -948,6 +1104,40 @@ ht_adjust_ea(mrb_state *mrb, struct RHash *h, uint32_t size, uint32_t max_ea_cap
   hash_entry *ea = ea_adjust(mrb, ht_ea(h), &ea_capa, max_ea_capa);
   ht_set_ea(h, ea);
   ht_set_ea_capa(h, ea_capa);
+}
+
+/*
+ * Rebuild the buckets of `h` for `ib_bit_width` buckets, compacting EA
+ * beforehand when it holds deleted slots and, when `adjust_ea`, resizing it
+ * to `size`.
+ *
+ * A key of a class of its own is hashed by its `#hash` method, so a rebuild
+ * can find itself running Ruby code, which may raise and may reach back into
+ * `h`. The old buckets are gone by then, and an exception escaping a rebuild
+ * that had placed part of EA used to leave the remaining entries in no
+ * bucket at all: `size` still counted them and iteration still walked over
+ * them, but no lookup could find them again.
+ *
+ * So when EA holds such a key, the `#hash` of every entry is called first,
+ * into a scratch buffer, while the hash is still whole and answering
+ * lookups. An exception there loses the store that caused the rebuild and
+ * nothing else. Placing the entries afterwards reads the codes from the
+ * buffer, runs no Ruby code, and cannot raise.
+ *
+ * A table without such a key -- the common one, and the one insertion is
+ * measured on -- is rebuilt as it always was, hashing each key in C as its
+ * entry is placed.
+ */
+static void
+ht_reindex(mrb_state *mrb, struct RHash *h, uint32_t size, uint32_t ib_bit_width,
+           mrb_bool adjust_ea)
+{
+  uint32_t *codes = h_hash_codes(mrb, h, ht_ea(h), ht_ea_capa(h), size);
+
+  if (size != ht_ea_n_used(h)) ea_compress(ht_ea(h), ht_ea_n_used(h));
+  if (adjust_ea) ht_adjust_ea(mrb, h, size, ht_ea_capa(h));
+  ht_init(mrb, h, size, ht_ea(h), ht_ea_capa(h), h_ht(h), ib_bit_width, codes);
+  mrb_free(mrb, codes);
 }
 
 static void
@@ -983,9 +1173,27 @@ ht_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
 {
   uint32_t size = ht_size(h);
   uint32_t ib_bit_width = ib_bit(h), ib_capa = ib_bit_to_capa(ib_bit_width);
-  if (ib_upper_bound_for(ib_capa) <= size) {
-    if (size != ht_ea_n_used(h)) ea_compress(ht_ea(h), ht_ea_n_used(h));
-    ht_init(mrb, h, size, ht_ea(h), ht_ea_capa(h), h_ht(h), ++ib_bit_width);
+  if (h_reindex_p(h)) {
+    /*
+     * A store made from a `#hash` that `h_hash_codes` is calling for this
+     * very hash. Re-indexing here would ask for those same `#hash` methods
+     * again and would not terminate, since nothing has changed yet that
+     * would stop it asking. The entry goes into the table as it stands
+     * instead, which holds it: the load factor that asked for the re-index
+     * leaves room to spare, and what is out of room raises here.
+     *
+     * The store is seen as a modification of a hash being re-indexed on the
+     * way out of the `#hash` that made it, where any other modification made
+     * from there is seen too, and it raises there. A store that only
+     * replaced the value of a key already present changes nothing the check
+     * looks at, and the re-index goes on to finish.
+     */
+    if (ib_capa - EA_N_RESERVED_INDICES <= ht_ea_n_used(h) + 1) {
+      mrb_raise(mrb, E_RUNTIME_ERROR, "hash modified");
+    }
+  }
+  else if (ib_upper_bound_for(ib_capa) <= size) {
+    ht_reindex(mrb, h, size, ++ib_bit_width, FALSE);
   }
   else if (size != ht_ea_n_used(h)) {
     if (ib_capa - EA_N_RESERVED_INDICES <= ht_ea_n_used(h)) goto compress;
@@ -996,9 +1204,7 @@ ht_set(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
       }
       if (ea_next_capa_for(size, EA_MAX_CAPA) <= ht_ea_capa(h)) {
        compress:
-        ea_compress(ht_ea(h), ht_ea_n_used(h));
-        ht_adjust_ea(mrb, h, size, ht_ea_capa(h));
-        ht_init(mrb, h, size, ht_ea(h), ht_ea_capa(h), h_ht(h), ib_bit_width);
+        ht_reindex(mrb, h, size, ib_bit_width, TRUE);
       }
     }
   }
@@ -1075,7 +1281,7 @@ ht_rehash(mrb_state *mrb, struct RHash *h)
   }
   uint32_t w_size = 0, ea_capa = ht_ea_capa(h);
   hash_entry *ea = ht_ea(h);
-  ht_init(mrb, h, 0, ea, ea_capa, h_ht(h), ib_bit_for(size));
+  ht_init(mrb, h, 0, ea, ea_capa, h_ht(h), ib_bit_for(size), NULL);
   ht_set_size(h, size);
   ht_set_ea_n_used(h, ht_ea_n_used(h));
   EA_EACH(ea, ea_capa, size, r_entry) {
@@ -1342,7 +1548,7 @@ mrb_hash_new_capa(mrb_state *mrb, mrb_int capa)
       ar_init(h, 0, ea, size, 0);
     }
     else {
-      ht_init(mrb, h, 0, ea, size, NULL, ib_bit_for(size));
+      ht_init(mrb, h, 0, ea, size, NULL, ib_bit_for(size), NULL);
     }
     return mrb_obj_value(h);
   }
