@@ -687,31 +687,6 @@ ar_shift(mrb_state *mrb, struct RHash *h, mrb_value *keyp, mrb_value *valp)
   }
 }
 
-static void
-ar_rehash(mrb_state *mrb, struct RHash *h)
-{
-  /* see comments in `h_rehash` */
-  uint32_t size = ar_size(h), w_size = 0, ea_capa = ar_ea_capa(h);
-  hash_entry *ea = ar_ea(h), *w_entry;
-  EA_EACH(ea, ea_capa, size, r_entry) {
-    if ((w_entry = ea_get_by_key(mrb, ea, ea_capa, w_size, r_entry->key, h))) {
-      w_entry->val = r_entry->val;
-      ar_set_size(h, --size);
-      entry_delete(r_entry);
-    }
-    else {
-      if (w_size != U32(r_entry - ea)) {
-        ea_set(ea, w_size, r_entry->key, r_entry->val);
-        entry_delete(r_entry);
-      }
-      w_size++;
-    }
-  }
-  mrb_assert(size == w_size);
-  ar_set_ea_n_used(h, size);
-  ar_adjust_ea(mrb, h, size, ea_capa);
-}
-
 static uint32_t
 ib_it_pos_for(index_buckets_iter *it, uint32_t v)
 {
@@ -1063,44 +1038,6 @@ ht_shift(mrb_state *mrb, struct RHash *h, mrb_value *keyp, mrb_value *valp)
   }
 }
 
-static void
-ht_rehash(mrb_state *mrb, struct RHash *h)
-{
-  /* see comments in `h_rehash` */
-  uint32_t size = ht_size(h);
-  if (size <= AR_MAX_SIZE) {
-    ht_to_ar(mrb, h);
-    ar_rehash(mrb, h);
-    return;
-  }
-  uint32_t w_size = 0, ea_capa = ht_ea_capa(h);
-  hash_entry *ea = ht_ea(h);
-  ht_init(mrb, h, 0, ea, ea_capa, h_ht(h), ib_bit_for(size));
-  ht_set_size(h, size);
-  ht_set_ea_n_used(h, ht_ea_n_used(h));
-  EA_EACH(ea, ea_capa, size, r_entry) {
-    IB_CYCLE_BY_KEY(mrb, h, r_entry->key, it) {
-      if (ib_it_active_p(it)) {
-        if (!obj_eql(mrb, r_entry->key, ib_it_entry(it)->key, h)) continue;
-        ib_it_entry(it)->val = r_entry->val;
-        ht_set_size(h, --size);
-        entry_delete(r_entry);
-      }
-      else {
-        if (w_size != U32(r_entry - ea)) {
-          ea_set(ea, w_size, r_entry->key, r_entry->val);
-          entry_delete(r_entry);
-        }
-        ib_it_set(it, w_size++);
-      }
-      break;
-    }
-  }
-  mrb_assert(size == w_size);
-  ht_set_ea_n_used(h, size);
-  size <= AR_MAX_SIZE ? ht_to_ar(mrb, h) : ht_adjust_ea(mrb, h, size, ea_capa);
-}
-
 /*
  * The key an entry is given: an unfrozen `String` is stored as a frozen copy,
  * so that changing the caller's string cannot move an entry away from the
@@ -1171,20 +1108,101 @@ h_shift(mrb_state *mrb, struct RHash *h, mrb_value *keyp, mrb_value *valp)
   (h_ar_p(h) ? ar_shift : ht_shift)(mrb, h, keyp, valp);
 }
 
+/* Hand the table of `src` to `dst` and leave `src` empty. Whatever table
+   `dst` held is leaked unless it was freed first. */
+static void
+h_move_table(struct RHash *dst, struct RHash *src)
+{
+  if (h_ar_p(src)) {
+    ar_init(dst, ar_size(src), ar_ea(src), ar_ea_capa(src), ar_ea_n_used(src));
+  }
+  else {
+    h_ht_on(dst);
+    h_set_ht(dst, h_ht(src));
+    ht_set_size(dst, ht_size(src));
+#ifdef MRB_64BIT
+    /* On a 32-bit build these two live in the table that the pointer above
+       carried over; on a 64-bit one they are fields of the hash itself. */
+    ht_set_ea_capa(dst, ht_ea_capa(src));
+    ht_set_ea_n_used(dst, ht_ea_n_used(src));
+#endif
+    ib_set_bit(dst, ib_bit(src));
+  }
+  h_init(src);
+}
+
 static void
 h_rehash(mrb_state *mrb, struct RHash *h)
 {
   /*
-   * ==== Comments common to `ar_rehash` and `ht_rehash`
+   * Reindexing asks every key for its hash code and compares the keys that
+   * collide, so each step of it can re-enter Ruby and raise. Rebuilt in
+   * place, the table is then left in whatever state the raise interrupted:
+   * the entries already reached carry an index, the rest do not, and `size`
+   * counts them all. A lookup for one of the keys that were not reached
+   * answers nil while `size` and an iteration still show it, and a later
+   * store, reading the count as the number of entry slots in use, writes
+   * over the entries the index was never given.
    *
-   * - Because reindex (such as elimination of duplicate keys) must be
-   *   guaranteed, it is necessary to set one by one.
+   * The new table is built beside the old one instead, and adopted once
+   * every entry is in it. A raise on the way leaves `h` as it was, and the
+   * half-built table, an ordinary hash object, goes to the GC.
    *
-   * - To prevent EA from breaking if an exception occurs in the middle,
-   *   delete the slot before moving when moving the entry, and update size
-   *   at any time when overwriting.
+   * Setting the entries one by one is what reindexes them, and also what
+   * eliminates the duplicate keys that a mutated key leaves behind: the
+   * position of the first and the value of the last, as a store gives.
    */
-  (h_size(h) == 0 ? h_clear : h_ar_p(h) ? ar_rehash : ht_rehash)(mrb, h);
+  uint32_t size = h_size(h);
+  if (size == 0) {
+    h_clear(mrb, h);
+    return;
+  }
+  struct RHash *new_h = h_alloc(mrb);  /* on the arena, so the GC keeps it */
+  /* Sized for every entry up front, so that no store below grows the table:
+     a growth reindexes what is already in it, asking those keys for their
+     hash codes again. */
+  ar_init(new_h, 0, ea_resize(mrb, NULL, 0, size), size, 0);
+  if (AR_MAX_SIZE < size) {
+    ht_init(mrb, new_h, 0, ar_ea(new_h), size, NULL, ib_bit_for(size));
+  }
+  H_EACH(h, entry) {
+    mrb_value key = entry->key, val = entry->val;
+    /* `h` itself is only read here. The guard is for what the callbacks do
+       to it: the entry the loop stands on can be freed from inside one. */
+    H_CHECK_MODIFIED(mrb, h) {
+      if (h_ar_p(new_h)) {
+        ar_set(mrb, new_h, key, val);
+      }
+      else {
+        /* A store without the checks for growth, which the sizing above
+           rules out, and without `h_key_for`, which gave the key its copy
+           already. */
+        IB_CYCLE_BY_KEY(mrb, new_h, key, it) {
+          if (ib_it_active_p(it)) {
+            if (!obj_eql(mrb, key, ib_it_entry(it)->key, new_h)) continue;
+            ib_it_entry(it)->val = val;
+          }
+          else {
+            uint32_t ea_n_used = ht_ea_n_used(new_h);
+            ib_it_set(it, ea_n_used);
+            ea_set(ht_ea(new_h), ea_n_used, key, val);
+            ht_inc_size(new_h);
+            ht_set_ea_n_used(new_h, ++ea_n_used);
+          }
+          break;
+        }
+      }
+    }
+  }
+  /* Duplicate keys that became one leave the table wider than it needs. */
+  if (!h_ar_p(new_h) && ht_size(new_h) < size) {
+    if (ht_size(new_h) <= AR_MAX_SIZE) ht_to_ar(mrb, new_h);
+    else ht_adjust_ea(mrb, new_h, ht_size(new_h), size);
+  }
+  /* Nothing between these two allocates: `h` is pointing at a freed table
+     until the move, and a GC reached from here would read it. */
+  h_free_table(mrb, h);
+  h_move_table(h, new_h);
 }
 
 static void
