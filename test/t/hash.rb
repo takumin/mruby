@@ -982,11 +982,12 @@ end
 
 assert('Hash lookup with entries deleted by an eql? callback') do
   # Regression for GHSA-2778-fvwg-5m8w: a delete touches the count and the
-  # slot's key and nothing else, so it reallocates nothing and the reentry
-  # guard, which watched the capacity and the pointers, did not see it. A
-  # lookup that had already read the count then walked past the end of the
-  # entry array and handed what it found there to eql? as a key. Each entry
-  # below has to answer with the exception, never by reading out of bounds.
+  # slot's key and nothing else, so it reallocates nothing, and a lookup that
+  # had read the array and the count once walked past the end of the array and
+  # handed what it found there to eql? as a key. The search now walks by index
+  # and reads the array, its bounds and the count from the hash on every turn,
+  # so each entry below answers instead of raising, and none of them reads out
+  # of bounds.
   evil = Class.new do
     def initialize(h, keys) @h, @keys = h, keys end
     def eql?(other) @keys.each { |k| @h.delete(k) }; false end
@@ -997,35 +998,33 @@ assert('Hash lookup with entries deleted by an eql? callback') do
 
   # Hash#[], and the two that reach the same scan through it.
   h = ar.call
-  assert_raise(RuntimeError) { h[evil.new(h, ar_keys)] }
+  assert_nil(h[evil.new(h, ar_keys)])
+  assert_equal(1, h.size)
   h3 = ar.call
-  assert_raise(RuntimeError) { h3.key?(evil.new(h3, ar_keys)) }
+  assert_false(h3.key?(evil.new(h3, ar_keys)))
 
   # A store reads the array the same way before it writes.
   h4 = ar.call
-  assert_raise(RuntimeError) { h4[evil.new(h4, ar_keys)] = 9 }
+  k4 = evil.new(h4, ar_keys)
+  assert_equal(9, h4[k4] = 9)
+  assert_equal(2, h4.size)
 
   # An HT-form hash reaches it too.
   t = {}
   20.times { |i| t["h#{i}"] = i }
-  assert_raise(RuntimeError) { t[evil.new(t, (1...20).map { |i| "h#{i}" })] }
+  assert_nil(t[evil.new(t, (1...20).map { |i| "h#{i}" })])
+  assert_equal(1, t.size)
 
-  # A delete and an add together leave the count where it was, which is what
-  # the guard reads, so the bound on the entry array is what has to answer for
-  # this one. Whether the add also moves the array, and so is seen by the
-  # guard after all, is up to the allocator, so the lookup is asked only to
-  # finish: either it raises or it answers, never reads past the end.
+  # A delete and an add together leave the count where it was, so neither the
+  # count nor the pointers tell the walk anything; the bound on the array and
+  # the per-turn re-read are what carry it.
   swapper = Class.new do
     def initialize(h) @h = h end
     def eql?(other) @h.delete("k1"); @h["zz"] = 99; false end
     def hash; 0 end
   end
   m = ar.call
-  begin
-    assert_nil(m[swapper.new(m)])
-  rescue RuntimeError
-    # the guard saw the array move; either way nothing was read out of bounds
-  end
+  assert_nil(m[swapper.new(m)])
   assert_true(m.size >= 4)
 
   # A hash nothing touched during the lookup still answers.
@@ -1040,10 +1039,9 @@ assert('Hash lookup with the matched entry vacated by an eql? callback') do
   # the very entry the search matched and inserts another, which puts the count
   # back: the guard watches the count and the pointers and so sees nothing, and
   # the slot the search is standing on has been vacated all the same. Answering
-  # from it hands #[] the value of an entry the collector no longer keeps and
-  # lets #delete take it a second time, dropping the count below the entries the
-  # table still holds. Each operation has to report the change, not answer from
-  # the vacated slot.
+  # from it would hand #[] the value of an entry the collector no longer keeps
+  # and let #delete take it a second time, dropping the count below the entries
+  # the table still holds. Each operation answers without reading that slot.
   swapper = Class.new do
     def initialize(h) @h, @fired = h, false end
     def eql?(other)
@@ -1068,10 +1066,13 @@ assert('Hash lookup with the matched entry vacated by an eql? callback') do
       lambda { |h, k| h[k] = :stored },
       lambda { |h, k| h.key?(k) } ].each do |op|
       h = build.call
-      assert_raise(RuntimeError) { op.call(h, swapper.new(h)) }
+      op.call(h, swapper.new(h))
       # What the table can find and what it iterates stay the same entries.
+      assert_equal(h.keys.size, h.size)
       h.keys.each { |k| assert_true(h.key?(k)) }
-      assert_equal(h.key?(:added), h.keys.include?(:added))
+      assert_true(h.key?(:added))
+      assert_true(h.keys.include?(:added))
+      assert_equal(:added_value, h[:added])
     end
   end
 end
@@ -1124,6 +1125,184 @@ assert('Hash scans with the matched entry vacated by an eql? callback') do
     assert_raise(RuntimeError) { h1.__send__(op, h2) }
     h1.keys.each { |x| assert_true(h1.key?(x)) }
   end
+end
+
+assert('Hash operations with a hash or eql? that stores into the hash') do
+  # A key whose `hash` or `eql?` writes to the hash it is being looked up in
+  # used to raise RuntimeError: "hash modified", where CRuby answers. The
+  # search no longer carries anything across the comparison that such a write
+  # could invalidate, so there is nothing left to guard: each operation below
+  # finishes and gives the answer CRuby gives.
+  adder = Class.new do
+    attr_reader :calls
+    def initialize(h) @h, @calls = h, 0 end
+    def hash; 0 end
+    def eql?(other) @calls += 1; @h["added#{@calls}"] = @calls; false end
+  end
+
+  base = lambda do
+    h = {}
+    30.times { |i| h["s#{i}"] = i }
+    h
+  end
+
+  h = base.call
+  k = adder.new(h)
+  assert_nil(h[k])
+  assert_true(k.calls > 0)
+
+  h = base.call
+  k = adder.new(h)
+  assert_equal(:v, h[k] = :v)
+  assert_equal(:v, h[k])
+
+  h = base.call
+  k = adder.new(h)
+  assert_nil(h.delete(k))
+
+  h = base.call
+  h[:kept] = :value
+  k = adder.new(h)
+  h.key?(k)
+  assert_equal(:value, h[:kept])
+
+  # The same from `hash` rather than from `eql?`. Only the indexed shape asks a
+  # key for its hash code at all; the flat one compares keys and never calls it.
+  writer = Class.new do
+    def initialize(h) @h = h end
+    def hash; @h["from_hash"] = 1; 0 end
+    def eql?(other) false end
+  end
+  small = {"a" => 1, "b" => 2}
+  assert_nil(small[writer.new(small)])
+  assert_nil(small["from_hash"])
+
+  big = base.call
+  assert_nil(big[writer.new(big)])
+  assert_equal(1, big["from_hash"])
+
+  # A key that empties the hash from `eql?` leaves nothing to find.
+  clearer = Class.new do
+    def initialize(h) @h = h end
+    def hash; 0 end
+    def eql?(other) @h.clear; false end
+  end
+  c = base.call
+  assert_nil(c[clearer.new(c)])
+  assert_predicate(c, :empty?)
+end
+
+assert('Hash#[]= with a hash that changes the shape of the hash') do
+  # A store asks a key for its hash code only once it has somewhere indexed to
+  # put it, and that question runs the key's own `hash`. What comes back is a
+  # code for a hash that may no longer be the one the store was looking at: the
+  # entry array may be gone, an indexed table may be a flat one again, and the
+  # key may have been stored by the call itself. The store has to read the shape
+  # and the key's absence again rather than either of the ones it saw before.
+  shaper = Class.new do
+    def initialize(h, &blk) @h, @blk = h, blk end
+    def eql?(other) false end
+    def hash; @blk.call(@h); 0 end
+  end
+  # A flat array at its limit is what first reaches the question: the store
+  # fills it, turns it into an indexed table, and asks.
+  full = lambda do
+    h = {}
+    16.times { |i| h[i] = i }
+    h
+  end
+  indexed = lambda do
+    h = {}
+    30.times { |i| h[i] = i }
+    h
+  end
+
+  [full, indexed].each do |make|
+    h = make.call
+    h[shaper.new(h) { |x| x.clear }] = :v
+    assert_equal(1, h.size)
+    assert_equal(1, h.keys.size)
+
+    h = make.call
+    h[shaper.new(h) { |x| x.keys.each { |k| x.delete(k) unless k == 0 } }] = :v
+    assert_equal(2, h.size)
+    assert_equal(2, h.keys.size)
+
+    h = make.call
+    h[shaper.new(h) { |x| 40.times { |i| x["z#{i}"] = i } }] = :v
+    assert_equal(h.keys.size, h.size)
+    assert_equal(:v, h.values.last)
+  end
+end
+
+assert('Hash#[]= with a key that stores itself from its own eql?') do
+  # A store that ran the key's own code has to take the key's absence again
+  # before it inserts: that code can store the very key, past where the search
+  # stops or in a bucket it has already passed, and a second entry for it is
+  # one that `#[]` finds and `#delete` leaves behind.
+  stored = Class.new do
+    def hash; 0 end
+    def eql?(other) false end
+  end
+  # stores itself on the at-th call, and is equal to nothing but itself
+  storer = Class.new do
+    def initialize(h, at) @h, @at, @calls = h, at, 0 end
+    def hash; 0 end
+    def eql?(other)
+      @calls += 1
+      @h[self] = :inner if @calls == @at
+      equal?(other)
+    end
+  end
+  once = lambda do |h, k|
+    n = 0
+    h.keys.each { |x| n += 1 if x.equal?(k) }
+    assert_equal(1, n)
+    assert_equal(h.keys.size, h.size)
+    assert_equal(:outer, h[k])
+    h.delete(k)
+    assert_false(h.key?(k))
+  end
+
+  # The flat shape, and the indexed one; the third call is one the indexed
+  # store makes from the scan it falls back to once the first call has changed
+  # the hash.
+  [3, 20].each do |size|
+    [1, 3].each do |at|
+      h = {}
+      size.times { h[stored.new] = 0 }
+      h[:filler] = 0 if at == 3
+      k = storer.new(h, at)
+      h[k] = :outer
+      once.call(h, k)
+    end
+  end
+
+  # A store sent off course falls back to a scan, and asks the key for its
+  # hash again before it inserts. A `hash` that stores the key on that call and
+  # deletes another entry leaves nothing the check compares changed.
+  second_hash = Class.new do
+    def initialize(h) @h, @hashes, @eqls = h, 0, 0 end
+    def hash
+      @hashes += 1
+      if @hashes == 2
+        @h[self] = :inner
+        @h.delete(0)
+      end
+      0
+    end
+    def eql?(other)
+      @eqls += 1
+      @h[:filler] = 1 if @eqls == 1
+      equal?(other)
+    end
+  end
+  h = {}
+  3.times { h[stored.new] = 0 }
+  40.times { |i| h[i] = i }
+  k = second_hash.new(h)
+  h[k] = :outer
+  once.call(h, k)
 end
 
 assert('Hash#assoc, Hash#rassoc') do
