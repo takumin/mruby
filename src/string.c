@@ -75,10 +75,13 @@ struct mrb_frzstrs {
    bytes. */
 #define FRZSTR_NONE UINT32_MAX
 
+/* The encoding is part of the key, as it is in CRuby: the same bytes read as
+   another encoding are another string, and answering one with the other would
+   hand a literal back reading its bytes the way some other string asked for. */
 static inline uint32_t
-frzstr_hash(const char *p, mrb_int len)
+frzstr_hash(const char *p, mrb_int len, uint32_t enc)
 {
-  return mrb_byte_hash((const uint8_t*)p, len);
+  return mrb_byte_hash((const uint8_t*)p, len) ^ enc;
 }
 
 /* The count of a string that code which is never freed was answered with. */
@@ -1923,10 +1926,10 @@ frzstr_pins(struct mrb_frzstrs *t)
   return (uint32_t*)(t->str + t->capa);
 }
 
-/* The slot of the string for the `len` bytes at `p`, whose hash is `hash`,
-   or FRZSTR_NONE when there is none. */
+/* The slot of the string for the `len` bytes at `p` read as `enc`, whose
+   hash is `hash`, or FRZSTR_NONE when there is none. */
 static uint32_t
-frzstr_find(mrb_state *mrb, const char *p, mrb_int len, uint32_t hash)
+frzstr_find(mrb_state *mrb, const char *p, mrb_int len, uint32_t enc, uint32_t hash)
 {
   struct mrb_frzstrs *t = mrb->frozen_strings;
   struct RString *s;
@@ -1937,7 +1940,7 @@ frzstr_find(mrb_state *mrb, const char *p, mrb_int len, uint32_t hash)
   for (i = hash & mask; (s = t->str[i]) != NULL; i = (i + 1) & mask) {
     /* memcmp() takes no NULL, which the empty literal of an irep pool may be,
        so equal lengths of zero answer before either pointer is read. */
-    if (RSTR_LEN(s) == len &&
+    if (RSTR_LEN(s) == len && RSTR_ENCODING(s) == enc &&
         (len == 0 || memcmp(RSTR_PTR(s), p, (size_t)len) == 0)) {
       return i;
     }
@@ -1977,7 +1980,7 @@ frzstr_grow(mrb_state *mrb)
       struct RString *s = old->str[i];
 
       if (s) {
-        uint32_t k = frzstr_empty(t, frzstr_hash(RSTR_PTR(s), RSTR_LEN(s)));
+        uint32_t k = frzstr_empty(t, frzstr_hash(RSTR_PTR(s), RSTR_LEN(s), RSTR_ENCODING(s)));
 
         t->str[k] = s;
         pins[k] = old_pins[i];
@@ -2008,6 +2011,13 @@ frzstr_put(mrb_state *mrb, struct RString *s, uint32_t hash)
   k = frzstr_empty(t, hash);
   t->str[k] = s;
   t->size++;
+  /* The bit is written on the string itself so that a later ask about it is
+     answered without the table being read.  A string the collector never
+     touches is one an image put in read-only memory, where the write would
+     fault, so that one stays in the table alone and is looked up as before. */
+  if (((struct RBasic*)s)->gc_color != MRB_GC_RED) {
+    RSTR_SET_FSTR_FLAG(s);
+  }
   return k;
 }
 
@@ -2024,7 +2034,7 @@ frzstr_remove(struct mrb_frzstrs *t, uint32_t i)
   struct RString *s;
 
   for (uint32_t j = (i + 1) & mask; (s = t->str[j]) != NULL; j = (j + 1) & mask) {
-    uint32_t home = frzstr_hash(RSTR_PTR(s), RSTR_LEN(s)) & mask;
+    uint32_t home = frzstr_hash(RSTR_PTR(s), RSTR_LEN(s), RSTR_ENCODING(s)) & mask;
 
     if (((j - home) & mask) >= ((j - i) & mask)) {
       t->str[i] = s;
@@ -2143,7 +2153,9 @@ mrb_str_frozen_literal(mrb_state *mrb, const struct mrb_irep *irep, uint32_t idx
   const char *p = irep->pool[idx].u.str;
   mrb_int len = (mrb_int)(irep->pool[idx].tt >> 2);
   mrb_bool forever = (irep->flags & MRB_IREP_NO_FREE) != 0;
-  uint32_t hash = frzstr_hash(p, len);
+  /* A literal carries no encoding of its own: a string made from a pool entry
+     reads its bytes the default way, and so is looked up as one. */
+  uint32_t hash = frzstr_hash(p, len, MRB_STR_ENCODING_DEFAULT);
   uint8_t *bits = NULL;
   uint32_t k, *pin;
   mrb_value str;
@@ -2152,7 +2164,7 @@ mrb_str_frozen_literal(mrb_state *mrb, const struct mrb_irep *irep, uint32_t idx
      which may move the one found. */
   if (!forever) bits = frzsite_bits(mrb, irep);
 
-  k = frzstr_find(mrb, p, len, hash);
+  k = frzstr_find(mrb, p, len, MRB_STR_ENCODING_DEFAULT, hash);
   if (k != FRZSTR_NONE) {
     str = mrb_obj_value(mrb->frozen_strings->str[k]);
   }
@@ -2172,6 +2184,52 @@ mrb_str_frozen_literal(mrb_state *mrb, const struct mrb_irep *irep, uint32_t idx
     (*pin)++;
   }
   return str;
+}
+
+/* The one frozen string standing for the bytes of `str` read as its encoding,
+   which `String#-@` is answered with.  The caller asked for a frozen string
+   equal to `str` and not for a particular object, so every ask for the same
+   bytes and encoding is answered with one string, wherever the bytes came
+   from; CRuby answers `-@` from its fstring table on the same terms.
+
+   A frozen receiver is its own answer unless the table already holds another
+   string for its bytes, which is where CRuby draws the line too.  One that has
+   been given a singleton class answers for more than its bytes, so it is kept
+   out of the table and answered with as it is.  One that is not stands in the
+   table itself, whether it owns its bytes or shares them: a frozen string's
+   bytes stay where its key points for as long as it lives, and strings are
+   freed only by the sweep, which the entry is taken out ahead of. */
+mrb_value
+mrb_str_frozen_shared(mrb_state *mrb, mrb_value str)
+{
+  struct RString *s = mrb_str_ptr(str);
+  uint32_t enc, hash, k;
+  mrb_value frozen;
+
+  /* A string the table already holds under its own bytes is the answer for
+     them, so it answers for itself.  This is the ask a program makes of a key
+     it has already been given back once, and taking it here is what keeps it
+     from being hashed again every time it is passed on. */
+  if (RSTR_FSTR_P(s)) return str;
+  if (mrb_frozen_p((struct RBasic*)s) && s->c != mrb->string_class) return str;
+
+  enc = RSTR_ENCODING(s);
+  hash = frzstr_hash(RSTR_PTR(s), RSTR_LEN(s), enc);
+  k = frzstr_find(mrb, RSTR_PTR(s), RSTR_LEN(s), enc, hash);
+  if (k != FRZSTR_NONE) return mrb_obj_value(mrb->frozen_strings->str[k]);
+
+  if (mrb_frozen_p((struct RBasic*)s)) {
+    frzstr_put(mrb, s, hash);
+    return str;
+  }
+
+  /* The copy holds exactly the receiver's bytes, so it reads them the way the
+     receiver does and has already been found to. */
+  frozen = mrb_str_new(mrb, RSTR_PTR(s), RSTR_LEN(s));
+  RSTR_ENC_CR_COPY(mrb_str_ptr(frozen), s);
+  mrb_obj_freeze(mrb, frozen);
+  frzstr_put(mrb, mrb_str_ptr(frozen), hash);
+  return frozen;
 }
 
 /* How many strings the table holds, which `GC.stat` reports as
@@ -2281,7 +2339,8 @@ mrb_frozen_strings_forget_irep(mrb_state *mrb, const struct mrb_irep *irep)
       uint32_t k;
 
       if (!(bits[i / 8] & (1 << (i % 8)))) continue;
-      k = frzstr_find(mrb, p, len, frzstr_hash(p, len));
+      k = frzstr_find(mrb, p, len, MRB_STR_ENCODING_DEFAULT,
+                      frzstr_hash(p, len, MRB_STR_ENCODING_DEFAULT));
       if (k != FRZSTR_NONE) {
         uint32_t *pin = &frzstr_pins(mrb->frozen_strings)[k];
 

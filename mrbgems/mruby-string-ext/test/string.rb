@@ -1796,3 +1796,117 @@ assert('String#-@ on a literal answers one frozen string') do
   assert_predicate(-s, :frozen?)
   assert_equal 'abc', -s
 end
+
+assert('String#-@ answers one frozen string for equal receivers') do
+  a = 'sh'.dup
+  a << 'ared'
+  b = 'share'.dup
+  b << 'd'
+  assert_not_same a, b
+
+  # The bytes are what decides, so a string the program built reaches the same
+  # one a literal of that text does.
+  assert_same(-a, -b)
+  assert_same(-a, -'shared')
+  assert_same(-a, 'shared'.freeze)
+  assert_predicate(-a, :frozen?)
+
+  # The receiver is left as it was.
+  assert_false a.frozen?
+  assert_not_same(-a, a)
+end
+
+assert('String#-@ on a frozen receiver of the program own') do
+  s = ('u' * 9).dup.freeze
+  # Nothing stood for those bytes, so the receiver stands for them itself.
+  assert_same(-s, s)
+  assert_same(-('u' * 9), s)
+end
+
+assert('String#-@ on an instance of a subclass') do
+  cls = Class.new(String)
+  f = cls.new('subclassed by a test')
+  m = -f
+  assert_predicate m, :frozen?
+  assert_equal 'subclassed by a test', m
+  # It answers for its class as well as its bytes, so it is kept out of the
+  # strings those bytes are shared through, and keeps the class it answers for.
+  assert_equal cls, m.class
+  assert_not_same m, -'subclassed by a test'
+end
+
+assert('String#-@ on a receiver with a singleton class') do
+  s = 'given a singleton by a test'.dup
+  def s.tagged?; true; end
+  m = -s
+  assert_predicate m, :frozen?
+  # What comes back answers for the bytes alone.
+  assert_false m.respond_to?(:tagged?)
+  assert_same m, -'given a singleton by a test'
+end
+
+assert('String#-@ on a string it has already answered with') do
+  s = ('re' + 'asked').dup
+  t = -s
+  # The answer stands for its own bytes, so asking it is asking about them
+  # again and reaches itself.
+  assert_same t, -t
+  assert_same t, -(-t)
+  GC.start
+  assert_same t, -t
+  assert_same t, -'reasked'
+
+  # A copy of it is a string of its own again, with nothing to say that those
+  # bytes are already stood for by another.
+  d = t.dup.freeze
+  assert_not_same t, d
+  assert_same t, -d
+end
+
+assert('String#-@ on a frozen receiver with a singleton class') do
+  s = 'frozen with a singleton by a test'.dup
+  def s.tagged?; true; end
+  s.freeze
+  # Frozen already, it is its own answer, singleton class and all, and is kept
+  # out of the strings its bytes are shared through.
+  assert_same s, -s
+  assert_true((-s).tagged?)
+  assert_not_same s, -'frozen with a singleton by a test'
+end
+
+assert('String#-@ on a frozen receiver sharing its bytes') do
+  # A copy of a string this long shares the bytes of the one it copies.
+  s = ('w' * 40).dup.freeze
+  assert_same s, -s
+  assert_same s, -('w' * 40)
+end
+
+assert('String#-@ lets go of a string only the program held') do
+  # No code was answered with what `-s` put in the table, so the table names
+  # it without holding it and lets it go with the program's last reference.
+  GC.start
+  GC.start
+  base = GC.stat[:frozen_string_count]
+  held = -('let go by ' + 'String#-@')
+  GC.start
+  assert_equal base + 1, GC.stat[:frozen_string_count]
+  held = nil
+  GC.start
+  assert_equal base, GC.stat[:frozen_string_count]
+end
+
+assert('String#-@ keeps the encoding of its receiver') do
+  b = "\xC3\xA9".b.freeze
+  assert_same b, -b
+  # The same bytes read another way are another string, so a literal of them
+  # is not answered with the one that stands for them as binary.
+  assert_not_same b, "\xC3\xA9".freeze
+  assert_not_same b, -"\xC3\xA9"
+  assert_not_same b, -"\xC3\xA9".dup
+  assert_same b, -"\xC3\xA9".b
+
+  # A copy made for a receiver that is not frozen reads its bytes the same way.
+  m = "\xE3\x81\x82 as bytes".b
+  assert_equal m.size, (-m).size
+  assert_equal 1, "\xC3\xA9".freeze.size if UTF8STRING
+end
