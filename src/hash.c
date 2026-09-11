@@ -443,26 +443,95 @@ obj_hash_code(mrb_state *mrb, mrb_value key, struct RHash *h)
 }
 
 /*
- * Whether `obj_eql_checked()` below answers a comparison against a key of this
- * kind itself rather than sending `eql?`, and so whether a walk over the entries
- * can hold the array it is walking. The kinds are listed again rather than the
- * comparison being made here, so that the function that makes it is left exactly
- * as it was.
+ * The comparison for a key the table answers for itself. It sends nothing, so
+ * there is nothing to check and nothing to report, and a walk that reached it
+ * knows that much before it starts. `obj_eql_checked()` below is left to the
+ * walks that do not, and carries what they need and this does not: the check,
+ * and the `mrb_eql()` that sends.
+ *
+ * `eql_kind_p()` and `const_kind_p()` say which keys arrive here. The two are
+ * asked separately because the walks pay differently for the answer, not
+ * because they classify differently.
  */
-static mrb_bool
+MRB_INLINE mrb_bool
+eql_fast(mrb_state *mrb, mrb_value a, mrb_value b)
+{
+  switch (mrb_type(a)) {
+  case MRB_TT_SYMBOL:
+    if (!mrb_symbol_p(b)) return FALSE;
+    return mrb_symbol(a) == mrb_symbol(b);
+
+  case MRB_TT_INTEGER:
+    if (!mrb_integer_p(b)) return FALSE;
+    return mrb_integer(a) == mrb_integer(b);
+
+#ifndef MRB_NO_FLOAT
+  case MRB_TT_FLOAT: {
+    if (!mrb_float_p(b)) return FALSE;
+    mrb_float fa = mrb_float(a);
+    if (fa == mrb_float(b)) return TRUE;
+    /* see obj_eql_checked() */
+    return fa != fa && mrb_obj_eq(mrb, a, b);
+  }
+#endif
+
+  case MRB_TT_STRING:
+    return mrb_str_equal(mrb, a, b);
+
+  default:
+    /* nil, true and false: the one value each can match is itself */
+    return mrb_obj_eq(mrb, a, b);
+  }
+}
+
+#ifdef MRB_NO_FLOAT
+#define EQL_KIND_FLOAT_BIT 0
+#else
+#define EQL_KIND_FLOAT_BIT (1u << MRB_TT_FLOAT)
+#endif
+
+/* The kinds the table hashes and compares itself whatever their class says,
+   one bit per `mrb_vtype`. Every one of them is below 32, so the test is a
+   shift and an and. */
+#define EQL_KIND_MASK                                                         \
+  ((1u << MRB_TT_STRING) | (1u << MRB_TT_SYMBOL) | (1u << MRB_TT_INTEGER) |   \
+   EQL_KIND_FLOAT_BIT)
+
+/*
+ * Whether a key is of a kind `eql_fast()` answers by type, and so whether a
+ * walk comparing it can hold the array it is walking. Nothing is asked of the
+ * key's class, so a walk may ask this as cheaply as it likes.
+ */
+MRB_INLINE mrb_bool
 eql_kind_p(mrb_value key)
 {
-  switch (mrb_type(key)) {
-  case MRB_TT_STRING:
-  case MRB_TT_SYMBOL:
-  case MRB_TT_INTEGER:
-#ifndef MRB_NO_FLOAT
-  case MRB_TT_FLOAT:
-#endif
-    return TRUE;
-  default:
-    return FALSE;
-  }
+  return (EQL_KIND_MASK >> mrb_type(key)) & 1;
+}
+
+/*
+ * The same for nil, true and false, which `eql_fast()` answers by identity.
+ * The table hashes them itself, and each is equal to nothing but itself, so
+ * the only way a comparison against one can run Ruby code is a redefined
+ * `eql?`. That is what the second half asks, and a key whose class has one
+ * takes the walk that reports instead, the way it did before this was asked at
+ * all.
+ *
+ * The question costs a method lookup, so it is asked once for an operation,
+ * never once for a comparison.
+ */
+MRB_INLINE mrb_bool
+const_kind_p(mrb_state *mrb, mrb_value key)
+{
+  return mrb_type(key) <= MRB_TT_TRUE &&
+         mrb_func_basic_p(mrb, key, MRB_SYM_Q(eql), mrb_obj_equal_m);
+}
+
+/* Both, for the indexed probe, which makes at most a handful of comparisons
+   after asking. */
+MRB_INLINE mrb_bool
+probe_kind_p(mrb_state *mrb, mrb_value key)
+{
+  return eql_kind_p(key) || const_kind_p(mrb, key);
 }
 
 /*
@@ -688,6 +757,33 @@ ea_scan_by_key(mrb_state *mrb, struct RHash *h, mrb_value key, uint32_t *idxp)
   return FALSE;
 }
 
+/* The flat walk for a key of a kind `eql_kind_p()` accepts. */
+static hash_entry*
+ea_get_by_key_fast(mrb_state *mrb, hash_entry *ea, uint32_t ea_capa, uint32_t size,
+                   mrb_value key)
+{
+  EA_EACH(ea, ea_capa, size, entry) {
+    if (eql_fast(mrb, key, entry->key)) return entry;
+  }
+  return NULL;
+}
+
+/* The flat walk for nil, true and false. It compares by identity, which is
+   `eql_fast()` narrowed to what these three need, and it is a walk of its own
+   rather than a fifth kind in the one above because this one asks the question
+   once and then compares every entry: a comparison that grows by a branch
+   costs the walk once per entry, and an 8-entry Integer lookup is the more
+   common of the two by a wide margin. */
+static hash_entry*
+ea_get_by_key_const(mrb_state *mrb, hash_entry *ea, uint32_t ea_capa, uint32_t size,
+                    mrb_value key)
+{
+  EA_EACH(ea, ea_capa, size, entry) {
+    if (mrb_obj_eq(mrb, key, entry->key)) return entry;
+  }
+  return NULL;
+}
+
 static hash_entry*
 ea_get(hash_entry *ea, uint32_t index)
 {
@@ -743,17 +839,28 @@ ar_compress(mrb_state *mrb, struct RHash *h)
  * rather than assuming the one it was called for. Where the comparison is one
  * the hash makes itself, the flat shape walks as it always has; everything else
  * goes through `ea_scan_by_key()`.
+ *
+ * Which of the two flat walks a key takes is `eql_kind_p()` and
+ * `const_kind_p()`; a key neither accepts is one whose comparison can run Ruby
+ * code, and only that key reaches the scan.
  */
 static mrb_bool
 h_get_by_scan(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp)
 {
   if (h_ar_p(h) && eql_kind_p(key)) {
     EA_EACH(ar_ea(h), ar_ea_capa(h), ar_size(h), entry) {
-      if (!obj_eql_checked(mrb, key, entry->key, h, NULL)) continue;
+      if (!eql_fast(mrb, key, entry->key)) continue;
       *valp = entry->val;
       return TRUE;
     }
     return FALSE;
+  }
+  if (h_ar_p(h) && const_kind_p(mrb, key)) {
+    hash_entry *entry =
+      ea_get_by_key_const(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key);
+    if (!entry) return FALSE;
+    *valp = entry->val;
+    return TRUE;
   }
   uint32_t idx;
   if (!ea_scan_by_key(mrb, h, key, &idx)) return FALSE;
@@ -766,7 +873,14 @@ h_set_by_scan(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value val)
 {
   if (h_ar_p(h) && eql_kind_p(key)) {
     hash_entry *entry =
-      ea_get_by_key(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key, h);
+      ea_get_by_key_fast(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key);
+    if (entry) entry->val = val;
+    else ar_insert_absent(mrb, h, key, val, NULL);
+    return;
+  }
+  if (h_ar_p(h) && const_kind_p(mrb, key)) {
+    hash_entry *entry =
+      ea_get_by_key_const(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key);
     if (entry) entry->val = val;
     else ar_insert_absent(mrb, h, key, val, NULL);
     return;
@@ -784,7 +898,16 @@ h_delete_by_scan(mrb_state *mrb, struct RHash *h, mrb_value key, mrb_value *valp
 {
   if (h_ar_p(h) && eql_kind_p(key)) {
     hash_entry *entry =
-      ea_get_by_key(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key, h);
+      ea_get_by_key_fast(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key);
+    if (!entry) return FALSE;
+    *valp = entry->val;
+    entry_delete(entry);
+    ar_dec_size(h);
+    return TRUE;
+  }
+  if (h_ar_p(h) && const_kind_p(mrb, key)) {
+    hash_entry *entry =
+      ea_get_by_key_const(mrb, ar_ea(h), ar_ea_capa(h), ar_size(h), key);
     if (!entry) return FALSE;
     *valp = entry->val;
     entry_delete(entry);
@@ -1212,22 +1335,23 @@ ht_probe_by_sending_key(mrb_state *mrb, struct RHash *h, mrb_value key,
 
 /*
  * A String, Symbol, Integer or Float is hashed and compared by the table
- * itself, so no Ruby runs between asking for a code and standing on a bucket:
- * that probe holds its position the way every walk over the table does, and
- * the one above is for every other key.
+ * itself, and so are nil, true and false while their `eql?` is the default one:
+ * no Ruby runs between asking for a code and standing on a bucket, so this
+ * probe holds its position the way every walk over the table does, and the one
+ * above is for every other key.
  */
 static enum ht_probe_result
 ht_probe_by_key(mrb_state *mrb, struct RHash *h, mrb_value key,
                 index_buckets_iter *it)
 {
-  if (!eql_kind_p(key)) return ht_probe_by_sending_key(mrb, h, key, it);
+  if (!probe_kind_p(mrb, key)) return ht_probe_by_sending_key(mrb, h, key, it);
 
   *it = ib_it_init_with_code(h, mrb_obj_hash_code(mrb, key));
   for (;;) {
     ib_it_next(it);
     if (ib_it_empty_p(it)) return HT_PROBE_EMPTY;
     if (ib_it_deleted_p(it)) continue;
-    if (obj_eql(mrb, key, ib_it_entry(it)->key, h)) return HT_PROBE_FOUND;
+    if (eql_fast(mrb, key, ib_it_entry(it)->key)) return HT_PROBE_FOUND;
   }
 }
 
