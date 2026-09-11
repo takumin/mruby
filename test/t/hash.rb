@@ -956,6 +956,41 @@ assert('Hash#rehash') do
   assert_equal([[1, 2], [17, 34]], h.to_a)
   assert_equal(2, h.size)
   [1, 17].each{assert_equal(_1 * 2, h[_1])}
+
+  # A hash the deletes emptied keeps nothing of the table it had, and takes
+  # entries again afterwards.
+  h = {}
+  (1..17).each{h[_1] = _1}
+  (1..17).each{h.delete(_1)}
+  assert_same(h, h.rehash)
+  assert_predicate(h, :empty?)
+  assert_equal([], h.to_a)
+  h[:after] = 1
+  assert_equal([[:after, 1]], h.to_a)
+
+  # Keys that all became one key leave one entry, in the place of the first
+  # and with the value of the last, from a table that was the wide form.
+  keys = (0...20).map{HashKey[_1]}
+  h = {}
+  keys.each_with_index{|k, i| h[k] = i}
+  keys.each{_1.value = 0}
+  assert_same(h, h.rehash)
+  assert_equal(1, h.size)
+  assert_equal(1, h.to_a.size)
+  assert_same(keys[0], h.to_a[0][0])
+  assert_equal(19, h.to_a[0][1])
+  keys.each{assert_equal(19, h[_1])}
+
+  # The default, the default proc and the frozen check belong to the hash and
+  # not to the table, which is what a rehash replaces.
+  pr = ->(hash, key){:from_proc}
+  h = Hash.new(&pr)
+  (1..20).each{h[_1] = _1}
+  assert_same(pr, h.rehash.default_proc)
+  assert_equal(:from_proc, h[:missing])
+  assert_equal(20, h.size)
+  assert_raise(FrozenError){{}.freeze.rehash}
+  assert_raise(FrozenError){{1 => 2}.freeze.rehash}
 end
 
 assert('Hash#rehash interrupted by an exception') do
@@ -969,15 +1004,18 @@ assert('Hash#rehash interrupted by an exception') do
   # hash that comes out is the one that went in.
   #
   # The AR form compares the keys without asking for a hash code, so only
-  # `eql?` speaks for it; the HT form is reached with 17 entries or more.
-  [[:eql?, 7], [:eql?, 24], [:hash, 24]].each do |failing, n|
+  # `eql?` speaks for it; the HT form is reached with 17 entries or more. A
+  # key that fails where the new table is still empty is asked for its hash
+  # code all the same, when the sixteen entries before it turn it into an
+  # index, so both ends of the walk are covered.
+  [[:hash, 24, 0], [:hash, 24, 23], [:eql?, 7, 6], [:eql?, 24, 23]].each do |failing, n, at|
     keys = (0...n).map{HashKey[_1]}
     h = {}
     keys.each_with_index{|k, i| h[k] = i}
     pairs = h.to_a
-    keys[n-1].error = failing
+    keys[at].error = failing
     assert_raise(RuntimeError){h.rehash}
-    keys[n-1].error = nil
+    keys[at].error = nil
 
     assert_equal(pairs, h.to_a)
     assert_equal(n, h.size)
