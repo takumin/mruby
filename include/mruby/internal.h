@@ -394,6 +394,7 @@ mrb_bool mrb_gc_unreached_p(mrb_state *mrb, struct RBasic *obj);
 void mrb_gc_free_str(mrb_state*, struct RString*);
 uint32_t mrb_str_hash(mrb_state *mrb, mrb_value str);
 mrb_value mrb_str_frozen_literal(mrb_state *mrb, const char *p, mrb_int len);
+mrb_value mrb_str_frozen_shared(mrb_state *mrb, mrb_value str);
 size_t mrb_frozen_strings_count(mrb_state *mrb);
 void mrb_gc_sweep_frozen_strings(mrb_state *mrb);
 void mrb_free_frozen_strings(mrb_state *mrb);

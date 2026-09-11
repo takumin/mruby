@@ -1602,3 +1602,68 @@ assert('String#-@ on a literal answers one frozen string') do
   assert_predicate(-s, :frozen?)
   assert_equal 'abc', -s
 end
+
+assert('String#-@ answers one frozen string for equal receivers') do
+  a = 'sh'.dup
+  a << 'ared'
+  b = 'share'.dup
+  b << 'd'
+  assert_not_same a, b
+
+  # The bytes are what decides, so a string the program built reaches the same
+  # one a literal of that text does.
+  assert_same(-a, -b)
+  assert_same(-a, -'shared')
+  assert_same(-a, 'shared'.freeze)
+  assert_predicate(-a, :frozen?)
+
+  # The receiver is left as it was.
+  assert_false a.frozen?
+  assert_not_same(-a, a)
+end
+
+assert('String#-@ on a frozen receiver of the program own') do
+  s = ('u' * 9).dup.freeze
+  # Nothing stood for those bytes, so the receiver stands for them itself.
+  assert_same(-s, s)
+  assert_same(-('u' * 9), s)
+end
+
+assert('String#-@ on an instance of a subclass') do
+  cls = Class.new(String)
+  f = cls.new('subclassed by a test')
+  m = -f
+  assert_predicate m, :frozen?
+  assert_equal 'subclassed by a test', m
+  # It answers for its class as well as its bytes, so it is kept out of the
+  # strings those bytes are shared through.
+  assert_not_same m, -'subclassed by a test'
+end
+
+assert('String#-@ on a receiver with a singleton class') do
+  s = 'given a singleton by a test'.dup
+  def s.tagged?; true; end
+  m = -s
+  assert_predicate m, :frozen?
+  # What comes back answers for the bytes alone.
+  assert_false m.respond_to?(:tagged?)
+  assert_same m, -'given a singleton by a test'
+end
+
+assert('String#-@ on a string it has already answered with') do
+  s = ('re' + 'asked').dup
+  t = -s
+  # The answer stands for its own bytes, so asking it is asking about them
+  # again and reaches itself.
+  assert_same t, -t
+  assert_same t, -(-t)
+  GC.start
+  assert_same t, -t
+  assert_same t, -'reasked'
+
+  # A copy of it is a string of its own again, with nothing to say that those
+  # bytes are already stood for by another.
+  d = t.dup.freeze
+  assert_not_same t, d
+  assert_same t, -d
+end

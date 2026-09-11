@@ -1792,10 +1792,17 @@ str_uplus(mrb_state *mrb, mrb_value str)
 static mrb_value
 str_uminus(mrb_state *mrb, mrb_value str)
 {
-  if (mrb_frozen_p(mrb_obj_ptr(str))) {
-    return str;
+  /* Only a plain String stands for its bytes and nothing else, so only one is
+     answered out of the strings those bytes are shared through.  An instance
+     of a subclass answers for its class as well, and is frozen as a copy of
+     its own as it was before there was anything to share. */
+  if (mrb_obj_class(mrb, str) != mrb->string_class) {
+    if (mrb_frozen_p(mrb_obj_ptr(str))) {
+      return str;
+    }
+    return mrb_obj_freeze(mrb, mrb_str_dup(mrb, str));
   }
-  return mrb_obj_freeze(mrb, mrb_str_dup(mrb, str));
+  return mrb_str_frozen_shared(mrb, str);
 }
 
 /* Internal helper for String#ascii_only? - checks if string contains only ASCII characters */

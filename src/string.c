@@ -1915,6 +1915,13 @@ frzstr_put(mrb_state *mrb, struct RString *s)
   key.len = RSTR_LEN(s);
   k = kh_put(frzstr, mrb, mrb->frozen_strings, key);
   kh_value(frzstr, mrb->frozen_strings, k) = s;
+  /* The bit is written on the string itself so that a later ask about it is
+     answered without the table being read.  A string the collector never
+     touches is one an image put in read-only memory, where the write would
+     fault, so that one stays in the table alone and is looked up as before. */
+  if (((struct RBasic*)s)->gc_color != MRB_GC_RED) {
+    RSTR_SET_FSTR_FLAG(s);
+  }
 }
 
 /* The frozen string standing for the `len` bytes at `p`, which the VM answers
@@ -1937,6 +1944,47 @@ mrb_str_frozen_literal(mrb_state *mrb, const char *p, mrb_int len)
   mrb_obj_freeze(mrb, str);
   frzstr_put(mrb, mrb_str_ptr(str));
   return str;
+}
+
+/* The one frozen string standing for the bytes of `str`, which `String#-@` is
+   answered with.  The caller asked for a frozen string of those bytes and not
+   for a particular object, so every ask for the same bytes is answered with
+   one string, wherever the bytes came from; CRuby answers `-@` from its
+   fstring table on the same terms.
+
+   The receiver stands in the table itself where it can.  It has to be frozen,
+   or the program could still write to what the table is holding for its bytes,
+   and a plain String that no singleton class has been given, or it answers for
+   more than its bytes and would be handed to a caller that asked only about
+   them.  And it has to own the bytes under its key: one sharing them with
+   another string, or pointing at bytes it never owned, may be outlived by its
+   entry and leave the key pointing into freed memory. */
+mrb_value
+mrb_str_frozen_shared(mrb_state *mrb, mrb_value str)
+{
+  struct RString *s = mrb_str_ptr(str);
+  struct RString *f;
+  mrb_value frozen;
+
+  /* A string the table already holds under its own bytes is the answer for
+     them, so it answers for itself.  This is the ask a program makes of a key
+     it has already been given back once, and taking it here is what keeps it
+     from being hashed again every time it is passed on. */
+  if (RSTR_FSTR_P(s)) return str;
+
+  f = frzstr_get(mrb, RSTR_PTR(s), RSTR_LEN(s));
+  if (f) return mrb_obj_value(f);
+
+  if (mrb_frozen_p((struct RBasic*)s) && s->c == mrb->string_class &&
+      !RSTR_SHARED_P(s) && !RSTR_FSHARED_P(s) && !RSTR_NOFREE_P(s)) {
+    frzstr_put(mrb, s);
+    return str;
+  }
+
+  frozen = mrb_str_new(mrb, RSTR_PTR(s), RSTR_LEN(s));
+  mrb_obj_freeze(mrb, frozen);
+  frzstr_put(mrb, mrb_str_ptr(frozen));
+  return frozen;
 }
 
 /* How many strings the table holds, which `GC.stat` reports as
