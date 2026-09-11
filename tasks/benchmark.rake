@@ -45,6 +45,10 @@ def plot
       p.puts "e"
     end
   end
+  # A gnuplot that never ran leaves the same trace as one that plotted: what
+  # the shell writes goes to the terminal rather than here, and the status is
+  # the only thing that tells the two apart.
+  raise "gnuplot exited #{$?.exitstatus}" unless $?.success?
 
   puts "Benchmark results output to #{plot_file}"
 end
@@ -69,6 +73,9 @@ MRuby.each_target do |target|
 
       data = (0...MRuby::BENCHMARK_REPEAT).map do |n|
         str = %x{(time -p #{mruby_bin} #{bm_file}) 2>&1 >/dev/null}
+        # Without this a failed run records the 0.0 its missing timings
+        # average to, which reads as a benchmark that finished instantly.
+        raise "#{bm_file} exited #{$?.exitstatus}:\n#{str}" unless $?.success?
         str.scan(/\d+\.\d+$/).map(&:to_f) # [real, user, sys]
       end
 

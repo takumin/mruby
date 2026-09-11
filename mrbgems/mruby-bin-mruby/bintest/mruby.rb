@@ -21,6 +21,89 @@ assert('regression for #1564') do
   assert_mruby("", /\A-e:1:\d+: syntax error,/, false, %w[-e <<-])
 end
 
+assert('a construct the generator refuses is named on standard error') do
+  # The generator writes its own message; the diagnostic list it also fills is
+  # read by `mrbc`, not here.
+  assert_mruby("", "-e:1: END not supported\n", false, ['-e', 'END { }'])
+end
+
+assert('OP_CALL on a receiver that is not a Proc is refused') do
+  # OP_CALL reads ci->stack[0] as an RProc*. No compiled program contains the
+  # instruction (the only iseq holding one is call_iseq in src/proc.c, entered
+  # where a proc has just been put in place), so a forged image is the only way
+  # to hand it something else: an immediate, whose bits become a misaligned
+  # pointer, or a heap object, whose own contents are used as one.
+  #
+  # The opcode numbers are their position in include/mruby/ops.h. The image
+  # built from them is run once as a whole below, which is what would notice
+  # if a renumbering left these behind.
+  op_loadi_0, op_string, op_call, op_stop = 6, 92, 53, 118
+
+  image = lambda do |iseq, pool|
+    body = [1, 4, 0, 0].pack('nnnn') + [iseq.length].pack('N') + iseq +
+           [pool.length].pack('n') + pool.join + [0].pack('n')
+    rec = [4 + body.length].pack('N') + body
+    irep = 'IREP' + [8 + 4 + rec.length].pack('N') + '0400' + rec
+    fin = "END\0" + [8].pack('N')
+    total = 8 + 4 + 8 + irep.length + fin.length
+    'RITE' + '0400' + [total].pack('N') + "MRB\0" + '0000' + irep + fin
+  end
+
+  str = 'AAAAAAAA'
+  forged = {
+    'Integer' => image.call([op_loadi_0, 0, op_call, op_stop].pack('C*'), []),
+    'String'  => image.call([op_string, 0, 0, op_call, op_stop].pack('C*'),
+                            [[0].pack('C') + [str.length].pack('n') + str + "\0"]),
+  }
+  forged.each do |type, bytes|
+    file = Tempfile.new('call.mrb')
+    File.binwrite(file.path, bytes)
+    o, s = Open3.capture2e(*(cmd_list(MRUBY_BIN) + ['-b', file.path]))
+    assert_false s.success?, o
+    assert_include o, "wrong type #{type} (expected Proc)"
+  end
+
+  # A proc still answers where one was really put.
+  script, bin = Tempfile.new('call.rb'), Tempfile.new('call2.mrb')
+  File.write script.path, 'p Proc.new { 41 + 1 }.call'
+  assert_run('mrbc', '--remove-lv', '-o', bin.path, script.path)
+  o, s = Open3.capture2e(*(cmd_list(MRUBY_BIN) + ['-b', bin.path]))
+  assert_true s.success?, o
+  assert_equal '42', o.strip
+end
+
+assert('an irep record claiming more locals than registers is refused') do
+  # The VM sizes a frame's registers by nregs and reaches for locals within
+  # it, so a record with nlocals > nregs describes a frame that cannot exist:
+  # OP_ENTER cleared nlocals slots of an nregs-sized stack and wrote past it.
+  # The compiler never emits such a record, so the loader states the invariant.
+  script, bin = Tempfile.new('test.rb'), Tempfile.new('test.mrb')
+  File.write script.path, "def m(a); a; end\nm(1)\n"
+  # --remove-lv: the LVAR section names nlocals-1 symbols, so leaving it in
+  # would have the record refused for that instead of for what is tested here.
+  assert_run('mrbc', '--remove-lv', '-o', bin.path, script.path)
+  image = File.binread(bin.path)
+
+  # The record of the method body is the one after the top-level record.
+  irep = image.index('IREP')
+  first = irep + 12
+  second = first + image[first, 4].unpack1('N')
+  nlocals, nregs = image[second + 4, 4].unpack('nn')
+  assert_true nlocals <= nregs, "compiler emitted nlocals=#{nlocals} nregs=#{nregs}"
+
+  forged = image.dup
+  forged[second + 4, 2] = [nregs + 1].pack('n')
+  forged_file = Tempfile.new('forged.mrb')
+  File.binwrite(forged_file.path, forged)
+  o, s = Open3.capture2e(*(cmd_list(MRUBY_BIN) + ['-b', forged_file.path]))
+  assert_false s.success?, o
+  assert_include o, 'irep load error'
+
+  # The image it was forged from still runs.
+  o, s = Open3.capture2e(*(cmd_list(MRUBY_BIN) + ['-b', bin.path]))
+  assert_true s.success?, o
+end
+
 assert('regression for #1572') do
   script, bin = Tempfile.new('test.rb'), Tempfile.new('test.mrb')
   File.write script.path, 'p "ok"'

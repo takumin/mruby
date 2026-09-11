@@ -391,6 +391,20 @@ mrb_vm_ci_env_clear(mrb_state *mrb, mrb_callinfo *ci)
   mrb_ci_svar_set(mrb, mrb->c, ci, NULL);
 }
 
+/* A proc that is a scope of its own: one the VM made for a `def` body or a
+ * class body, which captured no env. `mrb_define_method_raw()` marks a
+ * block installed by `define_method` a scope too, but that block keeps the
+ * env it was made in, and its special variables belong to the scope it was
+ * written in, the way its locals do (MRB_PROC_LVAR_BOUNDARY_P() in
+ * mruby/proc.h, the same condition read for the other walk). CRuby resolves
+ * the same way: the block's ep is unchanged by the install, so its svar is
+ * still its lep's. */
+static mrb_bool
+svar_own_scope_p(const struct RProc *p)
+{
+  return MRB_PROC_SCOPE_P(p) && !MRB_PROC_ENV_P(p);
+}
+
 /* The local scope of a block or lambda: following p->upper toward the
  * scope proc, MRB_PROC_ENV() of each step is the env of the frame the
  * proc was defined in, instance by instance, so the env in hand when the
@@ -406,7 +420,7 @@ svar_scope_env(const struct RProc *p)
   if (!e) return NULL;
   for (;;) {
     const struct RProc *up = p->upper;
-    if (!up || MRB_PROC_CFUNC_P(up) || MRB_PROC_SCOPE_P(up)) return e;
+    if (!up || MRB_PROC_CFUNC_P(up) || svar_own_scope_p(up)) return e;
     struct REnv *upenv = MRB_PROC_ENV(up);
     if (!upenv) return e;
     p = up;
@@ -431,8 +445,10 @@ svar_scopeless_frame_p(const mrb_callinfo *ci)
 {
   const struct RProc *p = ci->proc;
 
+  /* `svar_scope_env()` answers NULL for exactly the procs that captured
+     nothing, so the walk it makes is not one this question needs. */
   return p && !MRB_PROC_CFUNC_P(p) &&
-         !MRB_PROC_SCOPE_P(p) && svar_scope_env(p) == NULL;
+         !MRB_PROC_SCOPE_P(p) && !MRB_PROC_ENV_P(p);
 }
 
 /* An escaped scope's slot (MRB_ENV_SVAR_SLOT in internal.h):
@@ -489,8 +505,8 @@ svar_slot_ensure(mrb_state *mrb, struct REnv *e)
 
 /* The owner of the frame-scoped special variables, resolved the way CRuby
  * resolves its svar: walking down from the top, a C frame has no slot of
- * its own, a scope frame owns its own slot, a frame with no
- * scope of its own is as transparent as a C frame (see
+ * its own, a scope frame owns its own slot (see `svar_own_scope_p()`), a
+ * frame with no scope of its own is as transparent as a C frame (see
  * `svar_scopeless_frame_p()`), and a block or lambda frame resolves to the
  * scope it was defined in, wherever that scope now is: a live frame on
  * this or on another context's stack, or the env the scope left behind. A
@@ -537,7 +553,7 @@ svar_owner_from(struct mrb_context *c, mrb_callinfo *top, mrb_callinfo **cip, st
     const struct RProc *p = ci->proc;
 
     if (p && !MRB_PROC_CFUNC_P(p)) {
-      if (MRB_PROC_SCOPE_P(p)) {
+      if (svar_own_scope_p(p)) {
         *cip = ci;
         *ocp = wc;
         return;
@@ -1326,11 +1342,29 @@ mrb_funcall_id(mrb_state *mrb, mrb_value self, mrb_sym mid, mrb_int argc, ...)
   return mrb_funcall_argv(mrb, self, mid, argc, argv);
 }
 
+/* The register the caller left the keyword dictionary in.  A frame that has
+   run its `OP_ENTER` moved the dictionary elsewhere; `enter_kwpos()` answers
+   where. */
 static mrb_int
 mrb_ci_kidx(const mrb_callinfo *ci)
 {
   if (!ci->kw) return -1;
   return (ci->n == CALL_MAXARGS) ? 2 : ci->n + 1;
+}
+
+/* The register the frame's own `OP_ENTER` put the keyword dictionary in.
+   `ci->n` names it directly, except for a method that declares 15 or more
+   positional parameters: the field is 4 bits wide, so `vm_op_enter()` can
+   only saturate it there and the layout is read back off the `OP_ENTER`
+   operand instead, the way `mrb_proc_arity()` reads it. */
+static mrb_int
+enter_kwpos(const mrb_callinfo *ci, const mrb_irep *irep)
+{
+  if (mrb_likely(ci->n < CALL_MAXARGS)) return ci->n + 1;
+  mrb_assert(irep->ilen > 0 && irep->iseq[0] == OP_ENTER);
+  uint32_t aspec = PEEK_W(irep->iseq+1);
+  return MRB_ASPEC_REQ(aspec) + MRB_ASPEC_OPT(aspec)
+       + MRB_ASPEC_REST(aspec) + MRB_ASPEC_POST(aspec) + 1;
 }
 
 static inline mrb_int
@@ -2536,7 +2570,7 @@ vm_op_argary(mrb_state *mrb, uint32_t a, uint16_t b)
   else {
     struct REnv *e = uvenv(mrb, lv-1);
     if (!e) goto L_NOSUPER;
-    if (MRB_ENV_LEN(e) <= m1+r+m2+1)
+    if (MRB_ENV_LEN(e) <= m1+r+m2+kd+1)
       goto L_NOSUPER;
     stack = e->stack + 1;
   }
@@ -2733,8 +2767,12 @@ vm_op_enter(mrb_state *mrb, uint32_t a)
     ci->kw = TRUE;
   }
 
-  /* format arguments for generated code */
-  ci->n = (uint8_t)len;
+  /* format arguments for generated code.  The field is 4 bits wide, so 15 or
+     more positional parameters saturate it rather than wrap around into a
+     count the frame does not have; `enter_kwpos()` reads the layout of such a
+     frame back off this `OP_ENTER`, and `mrb_ci_nregs()` answers the irep's
+     own register count for it. */
+  ci->n = (uint8_t)(len < CALL_MAXARGS ? len : CALL_MAXARGS);
 
   /* clear local (but non-argument) variables */
   if (irep->nlocals-blk_pos-1 > 0) {
@@ -4130,7 +4168,8 @@ RETRY_TRY_BLOCK:
         RAISE_LIT(mrb, E_TYPE_ERROR, "class or module required for rescue clause");
       }
       ec = mrb_class_ptr(e);
-      regs[b] = mrb_bool_value(mrb_obj_is_kind_of(mrb, exc, ec));
+      /* A break unwinding through an ensure has no class to ask. */
+      regs[b] = mrb_bool_value(!mrb_break_p(exc) && mrb_obj_is_kind_of(mrb, exc, ec));
       NEXT;
     }
 
@@ -4398,6 +4437,17 @@ RETRY_TRY_BLOCK:
     }
 
     CASE(OP_CALL, Z) {
+      /* The receiver is whatever the frame was entered with, and this reads
+         it as a proc. No compiled program contains OP_CALL: the compiler never
+         emits it, and the only iseq that holds one is `call_iseq` in
+         src/proc.c, entered where a proc has just been put in place. The check
+         therefore answers for an irep that arrived by another road, whose
+         bytes would otherwise be used as an RProc* (an immediate becomes a
+         misaligned pointer, a heap object lends its own contents). OP_BLKCALL
+         below asks the same of the same kind of value. */
+      if (mrb_unlikely(!mrb_proc_p(ci->stack[0]))) {
+        mrb_raisef(mrb, E_TYPE_ERROR, "wrong type %T (expected Proc)", ci->stack[0]);
+      }
       const struct RProc *p = mrb_proc_ptr(ci->stack[0]);
       int r = vm_call_proc(mrb, p, ci_bidx(ci)+1, &irep, ai);
       ci = mrb->c->ci;
@@ -4461,10 +4511,10 @@ RETRY_TRY_BLOCK:
 
     CASE(OP_KARG, BB) {
       mrb_value k = mrb_symbol_value(irep->syms[b]);
-      mrb_int kidx = mrb_ci_kidx(ci);
+      mrb_int kidx = enter_kwpos(ci, irep);
       mrb_value kdict, v;
 
-      if (kidx < 0 || !mrb_hash_p(kdict=regs[kidx]) || !mrb_hash_key_p(mrb, kdict, k)) {
+      if (!mrb_hash_p(kdict=regs[kidx]) || !mrb_hash_key_p(mrb, kdict, k)) {
         RAISE_FORMAT(mrb, E_ARGUMENT_ERROR, "missing keyword: %v", k);
       }
 
@@ -4476,11 +4526,11 @@ RETRY_TRY_BLOCK:
 
     CASE(OP_KEY_P, BB) {
       mrb_value k = mrb_symbol_value(irep->syms[b]);
-      mrb_int kidx = mrb_ci_kidx(ci);
+      mrb_int kidx = enter_kwpos(ci, irep);
       mrb_value kdict;
       mrb_bool key_p = FALSE;
 
-      if (kidx >= 0 && mrb_hash_p(kdict=regs[kidx])) {
+      if (mrb_hash_p(kdict=regs[kidx])) {
         key_p = mrb_hash_key_p(mrb, kdict, k);
         ci = mrb->c->ci;
       }
@@ -4489,10 +4539,10 @@ RETRY_TRY_BLOCK:
     }
 
     CASE(OP_KEYEND, Z) {
-      mrb_int kidx = mrb_ci_kidx(ci);
+      mrb_int kidx = enter_kwpos(ci, irep);
       mrb_value kdict;
 
-      if (kidx >= 0 && mrb_hash_p(kdict=regs[kidx]) && !mrb_hash_empty_p(mrb, kdict)) {
+      if (mrb_hash_p(kdict=regs[kidx]) && !mrb_hash_empty_p(mrb, kdict)) {
         mrb_value key1 = mrb_hash_first_key(mrb, kdict);
         RAISE_FORMAT(mrb, E_ARGUMENT_ERROR, "unknown keyword: %v", key1);
       }

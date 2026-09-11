@@ -54,6 +54,19 @@ assert 'eval syntax error' do
   end
 end
 
+assert 'eval names the line a generator error is on' do
+  # eval reads the diagnostic list, and the generator's entries in it used to
+  # carry no position at all, so every one of them read as line 0.
+  assert_raise_with_message(SyntaxError,
+                            "file (eval) line 2: generator error, END not supported") do
+    eval("p 1\nEND { }")
+  end
+  assert_raise_with_message(SyntaxError,
+                            "file (eval) line 3: generator error, END not supported") do
+    eval("p 1\np 2\nEND { }")
+  end
+end
+
 assert 'eval deeply nested input does not crash the parser' do
   # The recursive-descent parser must hit its nesting cap and report an error
   # rather than overflowing the C stack on pathologically nested source.
@@ -824,6 +837,68 @@ assert('eval of a nesting Prism would recurse through') do
   assert_equal 1, a
   assert_equal 2, eval("[1].map { |v| eval('[[[2]]]')[0][0][0] }[0]")
   assert_equal [1, 2], eval("q = [1, 2]; q => [a, b]; [a, b]")
+end
+
+assert 'eval a `super` and a `yield` at the width of the forwarding level' do
+  # `OP_ARGARY` and `OP_BLKPUSH` carry the level between the asker and its
+  # method scope in four bits of their operand, so fifteen nested blocks is
+  # the deepest either can still name the frame it forwards from.  Deeper
+  # than that the level wrapped and the pair read another frame's registers.
+  zsuper = lambda do |depth|
+    "class EvalLevelParent; def m(a) [a, :parent] end end\n" \
+    "class EvalLevelChild < EvalLevelParent; def m(a)\n" +
+    "[1].each { " * depth + "$eval_level = super" + " }" * depth +
+    "\n$eval_level\nend end\nEvalLevelChild.new.m(1)"
+  end
+  assert_equal [1, :parent], eval(zsuper.call(15))
+  assert_raise(SyntaxError) { eval(zsuper.call(16)) }
+
+  yielder = lambda do |depth|
+    "def eval_level_yielder\n" +
+    "[1].each { " * depth + "$eval_level = yield" + " }" * depth +
+    "\n$eval_level\nend\neval_level_yielder { :ok }"
+  end
+  assert_equal :ok, eval(yielder.call(15))
+  assert_raise(SyntaxError) { eval(yielder.call(16)) }
+end
+
+assert 'eval a `super` and a `yield` at the width of the forwarded layout' do
+  # The rest of that operand holds `ainfo`, the layout of the arguments being
+  # forwarded, whose mandatory and optional parameters share a field of six
+  # bits that only twelve bits of room are left for.  The compiler allows 31
+  # of each, so 32 counted together is where the layout runs into the level.
+  params = lambda do |ma, oa|
+    ((1..ma).map { |i| "a#{i}" } + (1..oa).map { |i| "b#{i} = #{i}" }).join(', ')
+  end
+
+  zsuper = lambda do |ma, oa|
+    "class EvalWideParent; def m(#{params.call(ma, oa)}) a1 end end\n" \
+    "class EvalWideChild < EvalWideParent; def m(#{params.call(ma, oa)}) super end end\n" \
+    "EvalWideChild.new.m(#{(1..ma).to_a.join(', ')})"
+  end
+  assert_equal 1, eval(zsuper.call(16, 15))
+  assert_raise(SyntaxError) { eval(zsuper.call(16, 16)) }
+
+  yielder = lambda do |ma, oa|
+    "def eval_wide_yielder(#{params.call(ma, oa)}) yield a1 end\n" \
+    "eval_wide_yielder(#{(1..ma).to_a.join(', ')}) { |v| v }"
+  end
+  assert_equal 1, eval(yielder.call(16, 15))
+  assert_raise(SyntaxError) { eval(yielder.call(16, 16)) }
+end
+
+assert('eval of a multiple assignment with more post-splat targets than fit') do
+  # The post count is the third operand of a `BBB` instruction, and `OP_EXT1`
+  # to `OP_EXT3` widen only the first two. The pre targets stay in range by
+  # rebasing the source array once their index reaches the width, which the
+  # post targets cannot do: whether they are filled from the front or from the
+  # back depends on how long the array turns out to be, and every rebase would
+  # decide that over again for the group it splits off.
+  masgn = lambda do |n|
+    "*r, " + (0...n).map { |i| "@masgn_post#{i}" }.join(", ") + " = (0...#{n + 1}).to_a"
+  end
+  assert_equal 255, eval(masgn.call(255) + "; @masgn_post254")
+  assert_raise(SyntaxError) { eval(masgn.call(256)) }
 end
 
 assert('eval takes an implicit conversion for the code and the file name') do
