@@ -7,6 +7,10 @@
 #ifndef MRUBY_INTERNAL_H
 #define MRUBY_INTERNAL_H
 
+/* For MRB_FSTRING_LITERALS_P, which the declarations below are written
+   against and which the C the compiler dumps asks for too. */
+#include <mruby/string.h>
+
 #ifdef MRUBY_ARRAY_H
 void mrb_ary_decref(mrb_state*, mrb_shared_array*);
 mrb_value mrb_ary_subseq(mrb_state *mrb, mrb_value ary, mrb_int beg, mrb_int len);
@@ -340,9 +344,15 @@ size_t mrb_gc_mark_range(mrb_state *mrb, struct RRange *r);
    another encoding. What is written is one of the four either way, spelled
    outright or read back out of another string's field, so nothing is left of
    this at -O3. */
+/* A string of the program's own read-only data is left as it stands: what
+   reading its bytes found cannot be written back to it, since the memory it
+   stands in may be read-only in earnest. What the compiler found when it
+   wrote the string is what such a string carries (MRB_ROM_STRING in
+   mruby/string.h), and reading it again costs the walk over the bytes. */
 # define RSTR_CODERANGE_SET(s, cr) \
-  ((s)->flags = ((s)->flags & ~MRB_STR_CODERANGE_MASK) | \
-                (((cr) & ((1 << MRB_STR_CODERANGE_BITS) - 1)) << MRB_STR_CODERANGE_SHIFT))
+  ((void)(RSTR_RO_P(s) ? (void)0 : \
+    (void)((s)->flags = ((s)->flags & ~MRB_STR_CODERANGE_MASK) | \
+                        (((cr) & ((1 << MRB_STR_CODERANGE_BITS) - 1)) << MRB_STR_CODERANGE_SHIFT))))
 #else
 /* A build that indexes by byte hands every byte back as a character and asks
    the bytes nothing, so every string in it stands where 7BIT stands and there
@@ -387,7 +397,68 @@ size_t mrb_gc_mark_range(mrb_state *mrb, struct RRange *r);
                            ? MRB_STR_CODERANGE_7BIT : MRB_STR_CODERANGE_UNKNOWN))
 
 void mrb_gc_free_str(mrb_state*, struct RString*);
+
+/* How many strings `defined?` has to answer with, which is the length of
+   mrb->defined_answers: the collector marks them (root_scan_phase() in gc.c)
+   and defined_answer_str() in kernel.c fills them in. */
+#define MRB_DEFINED_ANSWER_COUNT 14
 uint32_t mrb_str_hash(mrb_state *mrb, mrb_value str);
+
+#if MRB_FSTRING_CACHE_MAX > 0
+/* The cache of frozen strings: what `String#-@` answers out of, and where a
+ * `String` key stored in a `Hash` comes from. mrb_str_fstring() in
+ * src/string.c is the way in.
+ *
+ * It is a table of slots, each holding a frozen string or nothing, addressed
+ * by the hash of the bytes. A hash names a row of MRB_FSTR_CACHE_WAYS
+ * neighbouring slots rather than a single one, and a string may stand
+ * anywhere in its row; every lookup reads the whole row, so a slot is emptied
+ * by writing NULL over it and nothing else has to be repaired.
+ *
+ * The table holds no string of its own: what it costs is its slots, which is
+ * why the bound (MRB_FSTRING_CACHE_MAX, in include/mrbconf.h) is written in
+ * slots. Nor does a slot keep its string alive -- the collector empties the
+ * slot of a string it is about to sweep, in sweep_fstr_cache() -- so a string
+ * the program has dropped leaves the cache along with the memory it held.
+ */
+#define MRB_FSTR_CACHE_WAYS 4
+
+struct mrb_fstr_cache {
+  uint32_t capa;                /* slots, a power of two, never past the bound */
+  uint32_t used;                /* slots holding a string */
+  uint32_t victim;              /* which way of a full row the next insertion takes */
+  struct RString **slots;       /* capa of them, NULL where empty */
+};
+
+void mrb_fstr_cache_free(mrb_state *mrb);
+
+#ifndef MRB_NO_FSTRING_LITERALS
+/* The interned literals: the string every literal of every loaded irep is
+ * answered with, so that a program handed the bytes of a literal is handed
+ * the literal, as it is in CRuby. Unlike the cache above it holds its strings
+ * rather than naming them -- the collector marks every slot, and nothing is
+ * ever dropped -- so what it costs is one string to a distinct literal, and a
+ * build says no to that with MRB_NO_FSTRING_LITERALS. Open addressing, and
+ * never more than three quarters full, so a walk over a row ends at a hole.
+ */
+struct mrb_fstr_literals {
+  uint32_t capa;                /* slots, a power of two */
+  uint32_t used;                /* slots holding a string */
+  struct RString **slots;       /* capa of them, NULL where empty */
+};
+
+void mrb_fstr_literals_free(mrb_state *mrb);
+void mrb_fstr_intern_irep(mrb_state *mrb, const struct mrb_irep *irep);
+#endif
+#endif
+
+/* A build with no literals to intern -- either of the two knobs turns them
+   off (MRB_FSTRING_LITERALS_P in mruby/string.h) -- reads the walk over an
+   irep's pool as nothing at all. */
+#if !MRB_FSTRING_LITERALS_P
+#define mrb_fstr_intern_irep(mrb, irep) ((void)0)
+#endif
+
 mrb_value mrb_str_dump(mrb_state *mrb, mrb_value str);
 mrb_value mrb_str_inspect(mrb_state *mrb, mrb_value str);
 mrb_bool mrb_str_beg_len(mrb_int str_len, mrb_int *begp, mrb_int *lenp);

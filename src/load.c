@@ -746,6 +746,11 @@ read_irep(mrb_state *mrb, const uint8_t *bin, size_t bufsize, uint8_t flags)
     bin_size -= section_size;
   }
 
+  /* The literals arrive with the code that carries them, before a line of it
+     runs, which is what makes the source the first answer for the bytes it
+     spells (mrb_fstr_intern_irep() in string.c). */
+  if (proc) mrb_fstr_intern_irep(mrb, proc->body.irep);
+
   return proc;
 }
 
@@ -819,6 +824,10 @@ mrb_load_irep_buf(mrb_state *mrb, const void *buf, size_t bufsize)
 MRB_API mrb_value
 mrb_load_proc(mrb_state *mrb, const struct RProc *proc)
 {
+  /* Code compiled into the binary arrives here rather than through
+     read_irep(): mrblib and every gem's Ruby half are loaded this way, so
+     this is where their literals are interned. */
+  mrb_fstr_intern_irep(mrb, proc->body.irep);
   return mrb_top_run(mrb, proc, mrb_top_self(mrb), 0);
 }
 

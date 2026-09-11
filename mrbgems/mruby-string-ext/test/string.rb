@@ -1728,3 +1728,196 @@ assert('String#chars of a multibyte receiver longer than the GC arena') do
   assert_equal 300, ("\u3042" * 300).chars.size
   assert_equal "\u3042", ("\u3042" * 300).chars.last
 end if UTF8STRING
+
+assert('String#-@') do
+  s = "a string longer than one that embeds itself"
+  frozen = -s
+  assert_true frozen.frozen?
+  assert_equal s, frozen
+  assert_false s.frozen?
+  assert_true (-frozen).equal?(frozen)
+
+  empty = -""
+  assert_true empty.frozen?
+  assert_equal "", empty
+end
+
+assert('String#-@ answers equal strings with one string') do
+  skip unless GC.stat.key?(:fstring_count)
+  a = -"shared between the two"
+  b = -("shared between" + " the two")
+  assert_true a.equal?(b)
+  assert_false a.equal?("shared between the two")
+end
+
+assert('String#-@ and a frozen literal answer alike') do
+  skip unless GC.stat.key?(:fstring_count)
+  # `"lit".freeze` is compiled as a call answered out of the same cache, so
+  # the two ways of asking for a frozen string with those bytes meet there.
+  assert_true (-"asked for both ways").equal?("asked for both ways".freeze)
+end
+
+assert('a string of the read-only data answers as any other frozen string') do
+  s = __fstr_readonly_sample
+  assert_true __fstr_readonly?(s)
+  assert_equal String, s.class
+  assert_true s.frozen?
+  assert_true s.end_with?(" read-only")
+  # Reading the bytes of such a string cannot write back what it finds, which
+  # is what inspect and the character walks below ask for.
+  assert_include s.inspect, "read-only"
+  assert_operator s.length, :<=, s.bytesize
+  assert_equal s, s.dup
+  assert_equal s.bytesize, (-s).bytesize
+  assert_raise(FrozenError) { s << "x" }
+end
+
+assert('a literal of compiled-in code stands in the read-only data') do
+  skip unless GC.stat.key?(:fstring_literal_count)
+  # mrblib is dumped as C and built into the binary, so `mrbc` writes its
+  # literals into the read-only data and a state answers with them where they
+  # stand. This one is spelled in mrblib/enum.rb.
+  assert_true __fstr_readonly?(-"too many arguments")
+  # What the program builds for itself stands in the heap, as it must.
+  assert_false __fstr_readonly?(-("built at " + "run time"))
+end
+
+assert('String#-@ answers with the literal the source carries') do
+  skip unless GC.stat.key?(:fstring_literal_count)
+  own = "spelled out in this file as well".dup.freeze
+  assert_false (-own).equal?(own)
+  assert_true (-own).equal?(-"spelled out in this file as well")
+  assert_equal own, -own
+end
+
+assert('String#-@ keeps a subclass out of the shared strings') do
+  cls = Class.new(String)
+  sub = -cls.new("as a subclass")
+  assert_true sub.frozen?
+  assert_equal "as a subclass", sub
+  # A subclass instance answers for more than its bytes, so it is neither
+  # handed to a later caller nor answered with what one left behind, and what
+  # it is answered with carries the class it answers for.
+  assert_equal cls, sub.class
+  assert_false sub.equal?(-"as a subclass")
+  assert_false (-cls.new("as a subclass")).equal?(sub)
+
+  # Frozen already, there is nothing to copy and nothing to exchange it for.
+  frozen = cls.new("as a frozen subclass").freeze
+  assert_true (-frozen).equal?(frozen)
+end
+
+assert('String#-@ shares a string that carries a singleton method') do
+  skip unless GC.stat.key?(:fstring_count)
+  tagged = "carrying a singleton method"
+  def tagged.tagged?; true; end
+  shared = -tagged
+  # The singleton class is the string's own; what stands for its bytes is a
+  # plain String, and that is shared like any other.
+  assert_equal String, shared.class
+  assert_false shared.respond_to?(:tagged?)
+  assert_true shared.equal?(-"carrying a singleton method")
+
+  frozen = "carrying a singleton method while frozen"
+  def frozen.tagged?; true; end
+  frozen.freeze
+  assert_true (-frozen).equal?(frozen)
+end
+
+assert('String#-@ tells the encodings apart') do
+  skip unless "".respond_to?(:b)
+  a = -"bytes"
+  b = -"bytes".b
+  assert_equal a, b
+  assert_false a.equal?(b)
+end
+
+assert('the frozen string cache lets go of what nothing refers to') do
+  skip unless GC.stat.key?(:fstring_count)
+  # A string reachable only from the cache is collected like any other, and
+  # the slot it stood in is emptied by the collection that frees it. The
+  # strings are held while they are counted, since a build that collects on
+  # every allocation would otherwise have taken them back before the count.
+  held_strings = []
+  i = 0
+  while i < 200
+    held_strings << -"transient #{i}"
+    i += 1
+  end
+  held = GC.stat[:fstring_count]
+  assert_operator held, :>, 0
+  held_strings = nil
+  GC.start
+  assert_operator GC.stat[:fstring_count], :<, held
+end
+
+assert('the frozen string cache keeps what is still referred to') do
+  skip unless GC.stat.key?(:fstring_count)
+  kept = -"still referred to across a collection"
+  GC.start
+  assert_true (-"still referred to across a collection").equal?(kept)
+end
+
+assert('the frozen string cache stops growing at its bound') do
+  skip unless GC.stat.key?(:fstring_count)
+  live = []
+  i = 0
+  while i < 600
+    live << -"bounded #{i}"
+    i += 1
+  end
+  bound = GC.stat[:fstring_capa]
+  while i < 1200
+    live << -"bounded #{i}"
+    i += 1
+  end
+  # Six hundred more strings than the first batch, and not one slot more.
+  assert_equal bound, GC.stat[:fstring_capa]
+  assert_operator GC.stat[:fstring_count], :<=, bound
+  assert_equal 1200, live.size
+end
+
+assert('freezing a string interns nothing') do
+  skip unless GC.stat.key?(:fstring_literal_count)
+  # A literal is interned as the code carrying it is loaded, and freezing is
+  # not another way in: `freeze` answers with the string that was frozen, so
+  # that string cannot be exchanged for a shared one and nothing is put in the
+  # tables on its behalf. CRuby's `freeze` interns nothing either.
+  own = ("frozen on its" + " own").freeze
+  assert_true own.frozen?
+
+  shared = -("frozen on its" + " own")
+  assert_false shared.equal?(own)
+  assert_true shared.equal?(-("frozen on its" + " own"))
+end
+
+# The frozen key a Hash stores comes from the same cache, which is why these
+# live beside the `String#-@` tests: `-@` is what the shared string is read
+# back with.
+assert('a Hash keys an entry with a string of the frozen string cache') do
+  skip unless GC.stat.key?(:fstring_count)
+  h = {}
+  h["a key of a hash"] = 1
+  key = h.keys[0]
+  assert_true key.frozen?
+  assert_true key.equal?(-"a key of a hash")
+
+  # Two tables keyed by the same word hold one string between them.
+  g = { "a key of a hash" => 2 }
+  assert_true g.keys[0].equal?(key)
+
+  # A subclass key is frozen as one of its own, as `String#-@` answers one.
+  sub = Class.new(String)
+  s = { sub.new("a subclass key") => 1 }
+  assert_true s.keys[0].frozen?
+  assert_equal sub, s.keys[0].class
+end
+
+assert('a Hash keeps its string key out of the caller\'s reach') do
+  mutable = "a key still being written"
+  h = { mutable => 1 }
+  assert_false h.keys[0].equal?(mutable)
+  mutable << " and now written further"
+  assert_equal 1, h["a key still being written"]
+  assert_nil h[mutable]
+end

@@ -23,11 +23,18 @@ struct RClass {
 
 #define mrb_class_ptr(v)    ((struct RClass*)(mrb_ptr(v)))
 
+/* The class an object standing in the program's own read-only data belongs
+   to. Such an object is built where the compiler writes it, before there is a
+   state to hold a class, so the class pointer it carries is NULL and the
+   state answers for it instead. */
+MRB_API struct RClass *mrb_rom_obj_class(mrb_state *mrb, mrb_value v);
+
 MRB_INLINE struct RClass*
 mrb_class(mrb_state *mrb, mrb_value v)
 {
   if (!mrb_immediate_p(v)) {
-    return mrb_obj_ptr(v)->c;
+    struct RClass *c = mrb_obj_ptr(v)->c;
+    return c ? c : mrb_rom_obj_class(mrb, v);
   }
 
   switch (mrb_type(v)) {

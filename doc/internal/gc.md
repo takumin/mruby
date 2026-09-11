@@ -299,6 +299,106 @@ From Ruby: `GC.generational_mode = true/false`.
 
 The object's type is set to `MRB_TT_FREE` after freeing.
 
+## Weak Slots: the Frozen String Cache
+
+`String#-@` answers with a frozen string shared between the callers
+that ask about the same bytes, and the table it answers out of
+(`struct mrb_fstr_cache` in `include/mruby/internal.h`, implemented in
+`src/string.c`) is the collector's one **weak** client: a slot naming
+a string is not a reason to keep that string alive.
+
+Three paths fill it, all of them through `src/string.c`:
+
+| Path                              | Entry point                             | What it does                                                                  |
+| --------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------- |
+| `String#-@`                       | `mrb_str_fstring()`                     | answers with the string the cache holds for those bytes, or puts one there    |
+| a `String` key stored in a `Hash` | `mrb_str_fstring()`, from `h_key_for()` | stores the shared frozen string as the key rather than a private copy         |
+| a frozen string literal           | `mrb_str_fstring()`, from `__fstring`   | `"lit".freeze` is compiled as a call to `__fstring`, which asks for the bytes |
+
+Each of the three is free to answer with a string other than the one it
+was handed, since what they promise is a frozen string with those bytes
+and nothing about which one. Freezing a string is not among them, as it
+is not in CRuby: `freeze` answers with the string that was frozen, so
+that string cannot be exchanged for the cache's, and putting it in the
+cache would hand it to every later ask about those bytes. A frozen
+literal reaches the cache through the first path rather than through
+`freeze`: the compiler folds `"lit".freeze` into `__fstring("lit")`
+(`gen_call()` in `mrbgems/mruby-compiler/src/codegen.c`), which it may
+do because the string the literal makes is one nothing else can be
+holding, so a literal frozen inside a loop hands back one string rather
+than one per pass.
+
+Three rules make that safe, and all three live in the collector:
+
+1. **Nothing marks a slot.** `gc_mark_children()` never walks the
+   table, so a string reachable only from the cache is unreached and
+   is collected like any other unreachable string.
+2. **A slot is emptied before its string is swept.**
+   `sweep_fstr_cache()` runs at the end of `final_marking_phase()`,
+   which is the one point where marking has settled and sweeping has
+   not started. Every slot naming an unmarked string is emptied there,
+   so no lookup between that point and the sweep can answer with a
+   string the sweep is about to free.
+3. **A string freed on any other path takes itself out.**
+   `mrb_gc_free_str()` empties the slot of a string carrying
+   `MRB_STR_FSTR`, before the bytes the slot would be found by are
+   freed. Rule 2 leaves that flag clear on everything it empties, so
+   this is a backstop rather than a second pass.
+
+A lookup that finds a string puts it in the **arena**
+(`mrb_gc_protect()`), exactly as a lookup that found nothing would
+have put the string it allocated there. Without that, a string held
+only by the C caller and by a slot would be unreached at the next
+final marking, and rule 2 would drop it while the caller still held
+it.
+
+The table costs one pointer per slot and holds no string of its own,
+so its whole cost is `MRB_FSTRING_CACHE_MAX * sizeof(void*)` bytes,
+reached only by a program that fills it. It is allocated on the first
+`String#-@`, doubles when a row fills, and stops at the bound; an
+insertion into a full row past the bound drops one of the row's
+entries, which costs deduplication and nothing else. `GC.stat` reports
+`:fstring_count` and `:fstring_capa`.
+
+### The interned literals
+
+Beside the cache stands a table of the string literals of every irep
+that has been loaded (`struct mrb_fstr_literals` in `src/string.c`).
+`mrb_str_fstring()` reads it before the cache, so a program that asks
+about the bytes of a literal is answered with the literal, which is
+what CRuby answers with: its compiler interns every literal it
+compiles.
+
+That table is **strong**, and is the one place the two differ.
+`root_scan_phase()` marks every slot, nothing is ever dropped, and what
+stands there stands until the state is closed. It has to be: a weak
+slot would let go of a literal as soon as the program stopped holding
+one, and the source would stop answering for bytes it plainly still
+spells. `MRB_NO_FSTRING_LITERALS` builds the whole of it out for a
+target that would rather answer with whichever string asked first, and
+`GC.stat[:fstring_literal_count]` says how many literals stand there; a
+default build interns about a hundred before a line of the program
+runs.
+
+The strings themselves are the compiler's where it can be: `mrbc`
+writes one for every distinct literal of the code it dumps as C
+(`cdump_lits_write()` in `mrbgems/mruby-compiler/src/cdump.c`), as a
+`struct RString` of the program's own read-only data, and the generated
+init hands them over with `mrb_fstr_intern_static()`. Such a string is
+made of what a literal already costs: the bytes are the pool's, which
+the pool entry now points at rather than repeating, and the header
+stands beside them in the same read-only data. It is the collector's
+red, so nothing marks it and nothing sweeps it, and it carries no class
+pointer, since the state that holds the String class is younger than it
+is -- `mrb_class()` answers for that through `mrb_rom_obj_class()`. A
+state pays a pointer for each, and not a byte more.
+
+Code that arrives as a binary has no such strings written for it, so
+`mrb_fstr_intern_irep()` makes them as the irep is read (`read_irep()`,
+and `mrb_load_proc()` for code the compiler dumped without them). Those
+are ordinary strings of the heap, made once and held by the table; the
+bytes are still the irep's where the irep stands in read-only data.
+
 ## Triggering GC
 
 ### Debt Model
@@ -358,16 +458,18 @@ From Ruby: `GC.start`.
 
 ### Compile-Time
 
-| Macro                          | Default | Description                             |
-| ------------------------------ | ------- | --------------------------------------- |
-| `MRB_HEAP_PAGE_SIZE`           | 1024    | Objects per heap page                   |
-| `MRB_GRAY_STACK_SIZE`          | 1024    | Gray stack capacity                     |
-| `MRB_GC_ARENA_SIZE`            | 100     | Arena size (fixed mode) or initial size |
-| `MRB_GC_FIXED_ARENA`           | off     | Use fixed-size arena                    |
-| `MRB_GC_TURN_OFF_GENERATIONAL` | off     | Disable generational mode               |
-| `MRB_GC_STRESS`                | off     | Full GC on every allocation (debug)     |
-| `MRB_GC_STATS`                 | off     | Enable GC statistics counters           |
-| `MRB_USE_MALLOC_TRIM`          | off     | Call `malloc_trim()` after full GC      |
+| Macro                          | Default | Description                                  |
+| ------------------------------ | ------- | -------------------------------------------- |
+| `MRB_HEAP_PAGE_SIZE`           | 1024    | Objects per heap page                        |
+| `MRB_GRAY_STACK_SIZE`          | 1024    | Gray stack capacity                          |
+| `MRB_GC_ARENA_SIZE`            | 100     | Arena size (fixed mode) or initial size      |
+| `MRB_GC_FIXED_ARENA`           | off     | Use fixed-size arena                         |
+| `MRB_GC_TURN_OFF_GENERATIONAL` | off     | Disable generational mode                    |
+| `MRB_GC_STRESS`                | off     | Full GC on every allocation (debug)          |
+| `MRB_GC_STATS`                 | off     | Enable GC statistics counters                |
+| `MRB_USE_MALLOC_TRIM`          | off     | Call `malloc_trim()` after full GC           |
+| `MRB_FSTRING_CACHE_MAX`        | 256     | Slots of the frozen string cache (0=off)     |
+| `MRB_NO_FSTRING_LITERALS`      | off     | Leave the literals of loaded code uninterned |
 
 ### Runtime
 
@@ -399,8 +501,15 @@ GC.stat
 #   :step_limit => 0,           # current step limit setting
 #   :malloc_increase => 8192,   # malloc bytes since last cycle
 #   :malloc_threshold => 16777216, # current malloc threshold setting
+#   :fstring_count => 12,       # strings the frozen string cache holds
+#   :fstring_capa => 64,        # slots it holds them in
+#   :fstring_literal_count => 105, # literals interned as code was loaded
 # }
 ```
+
+The last three keys are absent from a build made with
+`MRB_FSTRING_CACHE_MAX=0`, which carries no cache, and the last of them
+from one made with `MRB_NO_FSTRING_LITERALS`.
 
 With `MRB_GC_STATS` enabled, additional keys are available:
 
@@ -504,5 +613,6 @@ decrease it.
 | File                 | Contents                          |
 | -------------------- | --------------------------------- |
 | `src/gc.c`           | GC implementation                 |
+| `src/string.c`       | Frozen string cache (weak slots)  |
 | `include/mruby/gc.h` | `mrb_gc` structure, public GC API |
 | `include/mruby.h`    | Arena save/restore macros         |
