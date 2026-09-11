@@ -19,6 +19,11 @@
   as equal in `#==` and `#eql?`, so a container that holds itself equals
   another built the same way, as in CRuby; the other elements still decide
   ([#7425](https://github.com/mruby/mruby/pull/7425))
+- **_NOTE_**: a key whose own `hash` or `eql?` stores into the hash it is being
+  looked up in no longer raises `RuntimeError: "hash modified"`. `Hash#[]`,
+  `#[]=`, `#delete` and the lookups that reach them answer as CRuby answers;
+  which entry such a search lands on is left unspecified, as it is there
+  ([#441](https://github.com/takumin/mruby/pull/441))
 - Under word boxing, an Integer too wide to sit in the value itself is
   compared and sorted as the Integer it is: `<=>` read such a pair through
   `Float` and answered `0` for two that differ, and `Array#sort` wrote their
