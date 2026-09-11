@@ -1175,23 +1175,59 @@ enum ht_probe_result {
   HT_PROBE_MODIFIED
 };
 
+/*
+ * The probe for a key that answers for itself: asking for its hash code runs
+ * its own `hash`, and every comparison runs its own `eql?`, and either can
+ * store into the hash being searched. What they report is that the position
+ * this walk is standing on is no longer a position in this table, and the
+ * operation starts again by index.
+ */
 static enum ht_probe_result
-ht_probe_by_key(mrb_state *mrb, struct RHash *h, mrb_value key,
-                index_buckets_iter *it)
+ht_probe_by_sending_key(mrb_state *mrb, struct RHash *h, mrb_value key,
+                        index_buckets_iter *it)
 {
-  mrb_bool code_modified = FALSE;
-  uint32_t hash_code = obj_hash_code_checked(mrb, key, h, &code_modified);
-  if (code_modified) return HT_PROBE_MODIFIED;
+  mrb_bool modified = FALSE;
+  uint32_t hash_code = obj_hash_code_checked(mrb, key, h, &modified);
+  if (modified) return HT_PROBE_MODIFIED;
 
   *it = ib_it_init_with_code(h, hash_code);
   for (;;) {
     ib_it_next(it);
     if (ib_it_empty_p(it)) return HT_PROBE_EMPTY;
     if (ib_it_deleted_p(it)) continue;
-    mrb_bool modified = FALSE;
-    mrb_bool eql = obj_eql_checked(mrb, key, ib_it_entry(it)->key, h, &modified);
+    mrb_value stored = ib_it_entry(it)->key;
+    mrb_bool eql = obj_eql_checked(mrb, key, stored, h, &modified);
     if (modified) return HT_PROBE_MODIFIED;
-    if (eql) return HT_PROBE_FOUND;
+    if (!eql) continue;
+    /*
+     * The entry is read from the table again before the probe answers for it.
+     * A delete and an insert that cancel each other out leave the size, the
+     * table, the entry array and its capacity all where they were, and vacate
+     * this slot just the same; what says so is the slot itself.
+     */
+    if (!mrb_obj_eq(mrb, ib_it_entry(it)->key, stored)) return HT_PROBE_MODIFIED;
+    return HT_PROBE_FOUND;
+  }
+}
+
+/*
+ * A String, Symbol, Integer or Float is hashed and compared by the table
+ * itself, so no Ruby runs between asking for a code and standing on a bucket:
+ * that probe holds its position the way every walk over the table does, and
+ * the one above is for every other key.
+ */
+static enum ht_probe_result
+ht_probe_by_key(mrb_state *mrb, struct RHash *h, mrb_value key,
+                index_buckets_iter *it)
+{
+  if (!eql_kind_p(key)) return ht_probe_by_sending_key(mrb, h, key, it);
+
+  *it = ib_it_init_with_code(h, mrb_obj_hash_code(mrb, key));
+  for (;;) {
+    ib_it_next(it);
+    if (ib_it_empty_p(it)) return HT_PROBE_EMPTY;
+    if (ib_it_deleted_p(it)) continue;
+    if (obj_eql(mrb, key, ib_it_entry(it)->key, h)) return HT_PROBE_FOUND;
   }
 }
 

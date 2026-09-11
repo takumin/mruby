@@ -1142,6 +1142,60 @@ assert('Hash#[]= with a hash that changes the shape of the hash') do
   end
 end
 
+assert('Hash operations with an eql? that deletes and inserts') do
+  # A delete and an insert together put the size back, and with room to spare
+  # they move no pointer and no capacity either. What they do move is the entry
+  # the search is standing on: it is vacated, and another slot is filled. An
+  # operation that finished on that position would hand back the value of an
+  # entry the collector no longer keeps, or delete it a second time and leave
+  # the size below the number of entries the table still holds.
+  swapper = Class.new do
+    def initialize(h) @h, @fired = h, false end
+    def hash; 42 end
+    def eql?(other)
+      unless @fired
+        @fired = true
+        @h.delete(other)
+        @h[:added] = :added_value
+      end
+      true
+    end
+  end
+  # Past AR_MAX_SIZE, so the indexed shape, and well short of the width where
+  # another entry would rebuild the table.
+  indexed = lambda do
+    h = {}
+    20.times { |i| h[i] = i }
+    h
+  end
+  # What the table can find and what it iterates have to be the same entries.
+  consistent = lambda do |h|
+    assert_equal(h.keys.size, h.size)
+    h.keys.each { |k| assert_true(h.key?(k)) }
+    assert_true(h.key?(:added))
+    assert_true(h.keys.include?(:added))
+    assert_equal(:added_value, h[:added])
+  end
+
+  h = indexed.call
+  h.delete(swapper.new(h))
+  consistent.call(h)
+
+  h = indexed.call
+  got = h[swapper.new(h)]
+  consistent.call(h)
+  assert_true(h.values.include?(got))
+
+  h = indexed.call
+  h[swapper.new(h)] = :stored
+  consistent.call(h)
+  assert_true(h.values.include?(:stored))
+
+  h = indexed.call
+  h.key?(swapper.new(h))
+  consistent.call(h)
+end
+
 assert('Hash#assoc, Hash#rassoc') do
   h = {foo: 0, bar: 1, baz: 2}
   assert_equal([:bar, 1], h.assoc(:bar))
