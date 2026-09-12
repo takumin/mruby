@@ -21,4 +21,7 @@ MRuby::GemBox.new do |conf|
 
   # Use Process module
   conf.gem :core => "mruby-process"
+
+  # Use VFS module and require/require_relative/load
+  conf.gem :core => "mruby-vfs"
 end
