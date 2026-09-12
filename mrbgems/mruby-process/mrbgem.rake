@@ -35,5 +35,44 @@ MRuby::Gem::Specification.new('mruby-process') do |spec|
   # HAVE_SYS_RESOURCE_H.  A target without it falls back to times(2).
   spec.build_settings do |spec|
     spec.cc.defines << 'HAVE_SYS_RESOURCE_H' if spec.cc.check_header('sys/resource.h')
+
+    # Whether this host has the two calls behind `Process.getrlimit` and
+    # `Process.setrlimit`, one HAVE_* a call as CRuby's configure has them,
+    # for the POSIX port's feature header to read.  They live in the same
+    # <sys/resource.h> that getrusage(2) does and are XSI extensions the same
+    # way, so a host is not what settles it; the compiler is asked whether
+    # that header declares each, and the linker whether the C library defines
+    # it.  Asked one at a time, as CRuby asks, so that a host with the reader
+    # and not the writer keeps the reader.  Which resources a limit can be
+    # set on is a separate question, and one the preprocessor can answer on
+    # its own: the port reads RLIMIT_* with `#ifdef`, as CRuby's process.c
+    # does.
+    %w[getrlimit setrlimit].each do |func|
+      spec.cc.defines << "HAVE_#{func.upcase}" if spec.cc.check_func(func, header: 'sys/resource.h')
+    end
+
+    # Whether a limit needs no more than the `rlim_t` this host's getrlimit(2)
+    # answers in.  POSIX lets a platform report RLIM_SAVED_CUR in place of a
+    # limit that type is too narrow for, which is the 32-bit compilation
+    # environment of a host whose kernel counts limits in 64 bits.  Such a
+    # host usually declares getrlimit64(2) beside it, which the port asks
+    # instead where this probe says the narrower call would have to give up;
+    # whether it does is asked below rather than taken for granted.  The width
+    # is asked of the compiler, not being something a `#if` can read.
+    wide = spec.cc.try_compile(<<~PROBE)
+      #include <sys/resource.h>
+      int mrb_probe[sizeof(rlim_t) >= 8 ? 1 : -1];
+    PROBE
+    spec.cc.defines << 'HAVE_WIDE_RLIM_T' if wide
+
+    unless wide
+      # glibc declares the wider calls only where this is defined, and answers
+      # them in the `rlim64_t` its RLIM64_* values are written in.  Pushed
+      # before the probes so that they see the declarations the port will.
+      spec.cc.defines << '_LARGEFILE64_SOURCE'
+      %w[getrlimit64 setrlimit64].each do |func|
+        spec.cc.defines << "HAVE_#{func.upcase}" if spec.cc.check_func(func, header: 'sys/resource.h')
+      end
+    end
   end
 end
