@@ -49,6 +49,12 @@ from, the second the `Struct` `Process::Tms` is one of.
 | Process::Status#to_s              | o             |                                          |
 | Process::Status#inspect           | o             |                                          |
 | Process::Status#==                | o             | the raw status decides, not the pid      |
+| Process::Sys.getuid               | o             | `.geteuid`, `.getgid`, `.getegid` too    |
+| Process::Sys.setuid               | o             | `.seteuid`, `.setgid`, `.setegid` too    |
+| Process::Sys.setruid              | o             | `.setrgid` too; not everywhere, below    |
+| Process::Sys.setreuid             | o             | `.setregid` too                          |
+| Process::Sys.setresuid            | o             | `.setresgid` too; not everywhere, below  |
+| Process::Sys.issetugid            | o             | not everywhere, see below                |
 | Process.fork                      |               | inherently non-portable; separate change |
 | Process.spawn                     |               | separate change                          |
 | Process.exec                      |               | separate change                          |
@@ -68,9 +74,36 @@ and mruby-io mark theirs: `respond_to?` answers false for it and a call raises
 `NotImplementedError`. A port that declares a capability it does not implement
 fails to link.
 
-| macro                      | methods                                           | posix | win |
-| -------------------------- | ------------------------------------------------- | ----- | --- |
-| `MRB_HAL_PROCESS_HAS_WAIT` | `Process.wait`, `.waitpid`, `.wait2`, `.waitpid2` | o     |     |
+Every `Process::Sys` method is defined either way: an undeclared one is marked,
+not left undefined, as CRuby marks the calls its host lacks. A port declaring a
+call that takes an ID also says which numbers name one. Two macros more say
+whether a name stands for an ID, one per account table.
+
+The POSIX port asks rather than names: `mrbgem.rake` asks the compiler and the
+linker about each call (`check_func`), and the port's feature header reads the
+answers. It names one platform, NetBSD, where `setruid(2)` and `setrgid(2)` are
+deprecated.
+
+| macro                             | methods                                           | posix                              | win |
+| --------------------------------- | ------------------------------------------------- | ---------------------------------- | --- |
+| `MRB_HAL_PROCESS_HAS_WAIT`        | `Process.wait`, `.waitpid`, `.wait2`, `.waitpid2` | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_GETUID`      | `Process::Sys.getuid`                             | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_GETEUID`     | `Process::Sys.geteuid`                            | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_GETGID`      | `Process::Sys.getgid`                             | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_GETEGID`     | `Process::Sys.getegid`                            | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_SETUID`      | `Process::Sys.setuid`                             | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_SETEUID`     | `Process::Sys.seteuid`                            | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_SETRUID`     | `Process::Sys.setruid`                            | o on Darwin, FreeBSD and DragonFly |     |
+| `MRB_HAL_PROCESS_HAS_SETGID`      | `Process::Sys.setgid`                             | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_SETEGID`     | `Process::Sys.setegid`                            | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_SETRGID`     | `Process::Sys.setrgid`                            | o on Darwin, FreeBSD and DragonFly |     |
+| `MRB_HAL_PROCESS_HAS_SETREUID`    | `Process::Sys.setreuid`                           | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_SETREGID`    | `Process::Sys.setregid`                           | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_SETRESUID`   | `Process::Sys.setresuid`                          | o, not on macOS or NetBSD          |     |
+| `MRB_HAL_PROCESS_HAS_SETRESGID`   | `Process::Sys.setresgid`                          | o, not on macOS or NetBSD          |     |
+| `MRB_HAL_PROCESS_HAS_ISSETUGID`   | `Process::Sys.issetugid`                          | o, not on glibc, on musl           |     |
+| `MRB_HAL_PROCESS_HAS_UID_BY_NAME` | a name in any of the setters that take a user ID  | o                                  |     |
+| `MRB_HAL_PROCESS_HAS_GID_BY_NAME` | a name in any of the setters that take a group ID | o                                  |     |
 
 `Process::WNOHANG` and `Process::WUNTRACED` are the shape of the call and are
 defined whether or not the port waits. What a port has but cannot do for the
@@ -163,6 +196,11 @@ constrains; this list is a map.
 - Wait flags and clock ids are mruby's own numbers, and a value naming none of
   them is refused in the common layer before a port sees it
   (`include/process_hal.h`).
+- A user or group ID crosses the HAL as `int64_t`, and which numbers name one
+  is the port's to say through `mrb_hal_process_id_fits()`; the common layer
+  refuses the rest with `RangeError` (`src/sys.c`).
+- An ID the build's Integer cannot hold becomes a bigint, or `RangeError` where
+  there are none (`getid` in `src/sys.c`).
 - A clock reading crosses the HAL as `int64_t` seconds and nanoseconds, never
   as a Float and never as `mrb_int` (`mrb_process_clock_time` in
   `include/process_hal.h`).
@@ -189,6 +227,12 @@ constrains; this list is a map.
 - Whether `<sys/resource.h>` exists is asked of the compiler by `mrbgem.rake`
   (`check_header`), not guessed inside the port; a target without it compiles
   the `times(2)` fallback.
+- Which credential calls and which name lookups the host has are asked the same
+  way (`check_func`). A call the host lacks leaves its method unimplemented; a
+  missing lookup takes IDs by number alone.
+- A name the account table has no record of raises `ArgumentError`. A lookup
+  that failed before it could answer raises its `Errno::*`. Which of the two an
+  unknown name is is the C library's to decide, as in CRuby (`src/sys.c`).
 
 ## Deviations from CRuby
 
@@ -213,6 +257,9 @@ constrains; this list is a map.
 - On Windows `Process::Tms#cutime` and `#cstime` always read `0.0`: Win32
   reports no reaped child's CPU time, and CRuby's Windows build answers the
   same way.
+- On Windows no `Process::Sys` method is implemented: a Windows process has an
+  access token rather than a `uid_t`, and CRuby's Windows build answers 0 from
+  the getters instead; `ports/win/include/process_hal_features.h` says why.
 
 ## Adding a port
 
