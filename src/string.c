@@ -2289,6 +2289,11 @@ mrb_gc_sweep_frozen_strings(mrb_state *mrb)
       }
       i++;
     }
+    /* The table only ever doubles, so the slots a state gave a great many
+       strings would be kept for as long as it runs.  Empty is the one size it
+       can be taken down to here, where freeing is all that may be done and
+       allocating a smaller table may not; the next literal makes it afresh. */
+    if (t->size == 0) mrb_free_frozen_strings(mrb);
   }
 
 #ifndef MRB_NO_FRZSTR_CACHE
@@ -2344,11 +2349,16 @@ mrb_frozen_strings_forget_irep(mrb_state *mrb, const struct mrb_irep *irep)
     }
   }
   mrb_free(mrb, bits);
+  /* The last irep that answered a literal has given its bits back, so there
+     is nothing left to record; the next one that answers one makes the table
+     again. */
+  if (mrb->frozen_sites->size == 0) mrb_free_frozen_sites(mrb);
 }
 
-/* Gives back the table itself.  mrb_close() calls this ahead of taking the
+/* Gives back the table itself, which mrb_close() does ahead of taking the
    heap down, so that the ireps the heap frees find no table to look their
-   text up in against strings already freed. */
+   text up in against strings already freed.  The sweep does it too, for a
+   table left holding nothing. */
 void
 mrb_free_frozen_strings(mrb_state *mrb)
 {
@@ -2356,7 +2366,9 @@ mrb_free_frozen_strings(mrb_state *mrb)
   mrb->frozen_strings = NULL;
 }
 
-/* Gives back the bits of the ireps still standing once the heap is down. */
+/* Gives back the bits of the ireps still standing, which is what mrb_close()
+   is left with once the heap is down, and nothing at all where the last irep
+   to answer a literal has already given its bits back. */
 void
 mrb_free_frozen_sites(mrb_state *mrb)
 {
