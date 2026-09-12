@@ -690,6 +690,21 @@ module MRuby
   class Command::Linker < Command
     attr_accessor :flags, :library_paths, :flags_before_libraries, :libraries, :flags_after_libraries
     attr_accessor :link_options, :option_library, :option_library_path
+    # The option that names the linker the command is to hand the link to, as
+    # the compiler drivers spell it, or nil for a command that cannot be told
+    # which linker to use.
+    attr_accessor :option_use_linker
+    # The linkers this build would rather link with than the one the command
+    # reaches for on its own, in the order it prefers them. The first of them
+    # that links a program here is the one every link of the build carries;
+    # an empty list asks for no search, and leaves the links to the default
+    # linker.
+    #
+    # This is where a build says it wants `mold`, which links what the
+    # default linker links in a fraction of the time. Naming a linker is a
+    # wish and not a demand: a machine that has none of them, or a driver too
+    # old to take the option, is linked as it always was.
+    attr_accessor :preferred_linkers
 
     def initialize(build)
       super
@@ -700,6 +715,8 @@ module MRuby
       @library_paths = []
       @option_library = %q[-l"%s"]
       @option_library_path = %q[-L"%s"]
+      @option_use_linker = nil
+      @preferred_linkers = []
       @link_options = %Q[%{flags} -o "%{outfile}" %{objs} %{flags_before_libraries} %{libs} %{flags_after_libraries}]
     end
 
@@ -728,11 +745,39 @@ module MRuby
         :libs => library_flags(_libraries) }
     end
 
+    # The name of the linker the links of this build hand the work to, or nil
+    # where they are left with the one the command reaches for on its own.
+    #
+    # The search runs at the first link and its answer is kept, rather than
+    # running while the config is read: a link probe run then would be run
+    # with half the flags, since a config writes `conf.linker.flags` and
+    # `conf.cc.flags` after it names its toolchain, and a `--target` or an
+    # `-m32` that arrives afterwards is what decides whether a linker handles
+    # this build at all.
+    def selected_linker
+      return @selected_linker if defined?(@selected_linker)
+      @selected_linker = search_linker
+    end
+
+    # The flag that hands the link to `selected_linker`, or nil where the
+    # default linker keeps it.
+    def use_linker_flag
+      name = selected_linker
+      name && option_use_linker % name
+    end
+
     def run(outfile, objfiles, *attrs)
       mkdir_p File.dirname(outfile)
 
+      params = link_params(*attrs)
+      # The chosen linker is named on the link line and not in `all_flags`,
+      # which is also what a package carries away in its flags file: the
+      # linker is what this machine has installed, and the machine that
+      # builds against the package links with whatever it has itself.
+      flag = use_linker_flag
+      params[:flags] = "#{flag} #{params[:flags]}" if flag
       _pp "LD", outfile.relative_path
-      _run link_options, link_params(*attrs).merge(
+      _run link_options, params.merge(
         :outfile => filename(outfile), :objs => filename(objfiles).map{|f| %Q["#{f}"]}.join(' '))
     end
 
@@ -747,6 +792,41 @@ module MRuby
     def run_probe(outfile, objfile, params, **opts)
       options = link_options % params.merge(:outfile => filename(outfile), :objs => %Q["#{filename(objfile)}"])
       !!system("#{build.filename(command)} #{options}", **opts)
+    end
+
+    private
+
+    # The first of `preferred_linkers` this build links a program with, or
+    # nil where none of them does.
+    #
+    # Each is asked by linking a program with it, rather than by looking for
+    # the binary or reading a version out of the driver. Three things have to
+    # hold at once for a linker to be usable, and one link answers all three:
+    # the driver knows the name (`gcc` learned `mold` in its 12th version,
+    # and older drivers reject it), the linker is installed, and it handles
+    # the target this build compiles for, which is a question a cross build
+    # asks and a host build does not.
+    def search_linker
+      return nil if option_use_linker.nil? || preferred_linkers.empty?
+      # A link line that already names a linker made the choice this search
+      # is for, whether the config wrote it or `LDFLAGS` carried it in, and
+      # nothing is appended over it.
+      named = option_use_linker % ''
+      return nil if flags.flatten.compact.any?{|f| f.to_s.include?(named)}
+      return nil unless build.cc.can_link?
+      preferred_linkers.find{|name| links_with?(option_use_linker % name)}
+    end
+
+    # Whether this build links a program with +flag+ among the link flags.
+    #
+    # The probe is a link of the whole build: its compiler compiles the
+    # source, and this linker links it with the libraries and flags every
+    # binary of the build is linked with, so a linker that chokes on one of
+    # them answers no here rather than at the first real link.
+    def links_with?(flag)
+      probe = Command::Linker.new(build)
+      probe.flags = [flag]
+      build.cc.try_link(build.cc.func_link_source('strlen', 'string.h'), probe)
     end
   end
 

@@ -282,9 +282,50 @@ conf.linker do |linker|
   linker.library_paths = ...
   linker.option_library = ...
   linker.option_library_path = ...
+  linker.option_use_linker = ...
+  linker.preferred_linkers = ...
   linker.link_options = ...
 end
 ```
+
+#### Choosing a faster linker
+
+`mold` links a binary several times faster than the `ld` a compiler driver
+reaches for on its own, and a build for this machine under the `gcc` and
+`clang` toolchains asks for it: `preferred_linkers` names `mold` and then
+`lld`, and the first of the two that links a program here is the one every
+binary of the build is linked with, through the `option_use_linker` flag
+(`-fuse-ld=`).
+
+Which of them a machine has is settled by linking a program with each in turn,
+and not by looking for the binary. Three things have to hold at once for a
+linker to be usable: the driver knows the name, `gcc` having learned `mold` in
+its 12th version, the linker is installed, and it takes what this build links
+with. A machine that answers no to all of them links as it always did, with
+nothing to configure and nothing reported.
+
+The link the search runs is the build's own, with the flags and the libraries
+every binary of it is linked with. It is therefore run at the first link and
+not while the configuration is read: the `-m32` a configuration writes after it
+names its toolchain is part of the question.
+
+A cross build looks for nothing and names the linkers it wants itself, since
+linking for another target is often more than resolving symbols and a program
+that links says nothing about an image a linker script had to place. To name
+them, or to leave the choice to the driver:
+
+```ruby
+conf.linker.preferred_linkers = %w(mold)   # mold, or the driver's linker
+conf.linker.preferred_linkers = []         # the driver's linker
+```
+
+A link line that already names a linker made the choice the search is for and
+is left alone, whether the configuration wrote it or `LDFLAGS` carried it in.
+
+The chosen linker names what this machine has installed, so it stays out of
+the flags a package carries away in `libmruby.flags.mak`, which is what
+`mruby-config --ldflags` prints: a program built against the package is linked
+by whatever the machine building it has.
 
 ### Archiver
 
