@@ -139,6 +139,18 @@ When the gray stack is exhausted, the final marking phase re-marks
 the arena and global variables to catch objects created during
 marking, then transitions to sweep.
 
+The final marking phase is also where a weak table is given its
+chance to let go. Marking has settled and the sweep has not started,
+so an unmarked object is one that is really unreachable and that the
+sweep is about to free. The table of frozen string literals holds
+the strings live code was answered with, which both marking phases
+mark with the roots (`mrb_gc_mark_frozen_strings()`), and names the
+rest without holding them. `mrb_gc_sweep_frozen_strings()` runs there
+and takes those out when unreached; `mrb_gc_unreached_p()` is what it
+asks of each of them. Anything added there has to ask the same question at
+the same point: asking it earlier reads marking that is still moving,
+and asking it later reads memory the sweep has freed.
+
 ### Sweep (GC_STATE_SWEEP)
 
 Iterates through heap pages. For each object:
@@ -399,6 +411,7 @@ GC.stat
 #   :step_limit => 0,           # current step limit setting
 #   :malloc_increase => 8192,   # malloc bytes since last cycle
 #   :malloc_threshold => 16777216, # current malloc threshold setting
+#   :frozen_string_count => 105,   # strings the frozen string table holds
 # }
 ```
 

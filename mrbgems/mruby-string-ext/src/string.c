@@ -1663,17 +1663,26 @@ str_uplus(mrb_state *mrb, mrb_value str)
  * call-seq:
  *   -string -> frozen_string
  *
- * Returns `self` if `self` is already frozen.
+ * Returns the one frozen string carrying the bytes of `self`, which is `self`
+ * where `self` is frozen and no other string carries them already.
  *
- * Otherwise returns a frozen copy of `self`, of the same class.
+ * An instance of a subclass is answered with a frozen copy of `self`, of the
+ * same class.
  */
 static mrb_value
 str_uminus(mrb_state *mrb, mrb_value str)
 {
-  if (mrb_frozen_p(mrb_obj_ptr(str))) {
-    return str;
+  /* Only a plain String stands for its bytes and nothing else, so only one is
+     answered out of the strings those bytes are shared through.  An instance
+     of a subclass answers for its class as well, and is frozen as a copy of
+     its own as it was before there was anything to share. */
+  if (mrb_obj_class(mrb, str) != mrb->string_class) {
+    if (mrb_frozen_p(mrb_obj_ptr(str))) {
+      return str;
+    }
+    return mrb_obj_freeze(mrb, str_copy_with_class(mrb, str));
   }
-  return mrb_obj_freeze(mrb, str_copy_with_class(mrb, str));
+  return mrb_str_frozen_shared(mrb, str);
 }
 
 /* Internal helper for String#ascii_only? - checks if string contains only ASCII characters */
@@ -2611,6 +2620,15 @@ mrb_mruby_string_ext_gem_init(mrb_state* mrb)
 
   MRB_MT_INIT_ROM(mrb, s, string_ext_rom_entries);
   mrb_define_method_id(mrb, mrb->integer_class, MRB_SYM(chr), int_chr, MRB_ARGS_NONE()|MRB_ARGS_OPT(1));
+
+  /* `-"lit"` is answered with the shared frozen literal, which may be done
+     only while `String#-@` is this `str_uminus()`.  Core initialization
+     armed the guard slots before this gem ran, and found no `-@` to arm this
+     one with, so the method it stands for is recorded here instead.  What the
+     literal answers with is what `str_uminus()` answers: a frozen string of
+     the same bytes, which the method is already documented to hand back
+     pre-existing where it can. */
+  mrb_idx_op_rearm(mrb, MRB_IDX_OP_STR_UMINUS);
 }
 
 void
