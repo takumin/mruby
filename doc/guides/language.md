@@ -12,7 +12,7 @@ For a list of specific behavioral differences, see
 - No `require` or `load` — all code is linked at build time
 - No `defined?` keyword — use `respond_to?`, `const_defined?`, etc.
 - No refinements (`refine`, `using`)
-- No `Encoding` class — UTF-8 opt-in via `MRB_UTF8_STRING`
+- No `Encoding` class — UTF-8 opt-in via the `mruby-encoding` gem
 - Fibers cannot yield across C function boundaries
 - Integer size varies by platform and boxing mode
 - Operators cannot be overridden by user code
@@ -402,7 +402,10 @@ Module refinements (`refine`, `using`) are not supported.
 ### No Encoding Class
 
 There is no `Encoding` class. String encoding is either pure bytes
-or UTF-8 (opt-in via `MRB_UTF8_STRING` compile flag).
+or UTF-8, and UTF-8 is what the `mruby-encoding` gem adds to a build:
+the gem brings a small `Encoding` module holding the two encoding
+names, and the define it hands the build is what has core and the
+other gems index strings by character.
 
 ### `nil?` in Conditionals
 
@@ -423,7 +426,6 @@ Key compile-time macros that affect language behavior:
 | --------------------- | ---------------------------------- |
 | `MRB_NO_FLOAT`        | Remove all float support           |
 | `MRB_USE_FLOAT32`     | Use 32-bit float instead of double |
-| `MRB_UTF8_STRING`     | UTF-8 strings and Unicode case     |
 | `MRB_USE_ASCII_CTYPE` | Keep UTF-8, convert case by ASCII  |
 | `MRB_INT32`           | Force 32-bit integer               |
 | `MRB_INT64`           | Force 64-bit integer               |
@@ -431,4 +433,5 @@ Key compile-time macros that affect language behavior:
 | `MRB_ARY_LENGTH_MAX`  | Max array length (default 2^17)    |
 
 See [mrbconf.md](mrbconf.md) for the complete list of configuration
-macros.
+macros. UTF-8 itself is not among them: it comes from the
+`mruby-encoding` gem, whose README describes what carrying it changes.

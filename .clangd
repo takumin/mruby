@@ -147,7 +147,6 @@ If:
 CompileFlags:
   Add:
     - -DHAVE_MRUBY_ENCODING_GEM
-    - -DMRB_UTF8_STRING
 
 ---
 If:

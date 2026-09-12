@@ -126,7 +126,7 @@ struct RStringEmbed {
 #define MRB_STR_CODERANGE_VALID   2
 #define MRB_STR_CODERANGE_BROKEN  3
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* The answer read back is the field as it stands: the four are numbered 0..3
    and the field is two bits wide, so every value it can hold names one of
    them. That is what a field buys over a bit per answer, where a combination
@@ -155,13 +155,13 @@ struct RStringEmbed {
    is filled with therefore already says the default, and the path every string
    is made on stores nothing.
 
-   A build without MRB_UTF8_STRING carries no UTF-8, so it names none: writing
-   the name there is a compile error rather than a quiet no-op. Such a build
-   still tells a byte-read string from a default one, since String#b and
+   A build without the mruby-encoding gem carries no UTF-8, so it names none:
+   writing the name there is a compile error rather than a quiet no-op. Such a
+   build still tells a byte-read string from a default one, since String#b and
    Integer#chr mark one there too. */
 #define MRB_STR_ENCODING_DEFAULT 0
 #define MRB_STR_ENCODING_BINARY  1
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 # define MRB_STR_ENCODING_UTF8   MRB_STR_ENCODING_DEFAULT
 #endif
 

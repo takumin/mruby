@@ -21,7 +21,7 @@ MRB_BEGIN_DECL
    carried on the same condition: a build that asked to leave the case table
    behind is counting its bytes, and the type table is nothing it wants
    instead. The two names say which of the tables a site reads. */
-#if defined(MRB_UTF8_STRING) && !defined(MRB_USE_ASCII_CTYPE)
+#if defined(HAVE_MRUBY_ENCODING_GEM) && !defined(MRB_USE_ASCII_CTYPE)
 # define RE_UNICODE_CASE
 # define RE_UNICODE_CTYPE
 #endif

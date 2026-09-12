@@ -35,7 +35,7 @@ int_chr_binary(mrb_state *mrb, mrb_value num)
   return str;
 }
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 static mrb_value
 int_chr_utf8(mrb_state *mrb, mrb_value num)
 {
@@ -141,7 +141,7 @@ static void
 str_concat(mrb_state *mrb, mrb_value self, mrb_value str, mrb_bool binary)
 {
   if (mrb_integer_p(str) || mrb_float_p(str)) {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
     if (binary) {
       str = int_chr_binary(mrb, str);
     }
@@ -754,7 +754,7 @@ str_chr(mrb_state *mrb, mrb_value self)
  *
  *  Returns a string containing the character represented by the `int`'s value
  *  according to `encoding`. +"ASCII-8BIT"+ (+"BINARY"+) and +"UTF-8"+ (only
- *  with `MRB_UTF8_STRING`) can be specified as `encoding` (default is
+ *  with the mruby-encoding gem) can be specified as `encoding` (default is
  *  +"ASCII-8BIT"+).
  *
  *     65.chr                  #=> "A"
@@ -774,7 +774,7 @@ int_chr(mrb_state *mrb, mrb_value num)
       MRB_STR_CASECMP_P(enc, ENC_BINARY)) {
     return int_chr_binary(mrb, num);
   }
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   else if (MRB_STR_CASECMP_P(enc, ENC_UTF8)) {
     return int_chr_utf8(mrb, num);
   }
@@ -800,14 +800,14 @@ enum succ_step {
 
 /* Where the character before `p` starts, and how many bytes the character at
    `p` covers, in the reading the string has. A string read as bytes has a
-   character per byte, and so has every string of a build without
-   MRB_UTF8_STRING; a UTF-8 string steps by character, and a run of bytes in
-   it that spells no character has length 0 here, which is what the walks
-   below step over without touching. */
+   character per byte, and so has every string of a build without the
+   mruby-encoding gem; a UTF-8 string steps by character, and a run of
+   bytes in it that spells no character has length 0 here, which is what
+   the walks below step over without touching. */
 static char*
 succ_prev_char(char *sbeg, char *p, char *e, mrb_bool chars)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   if (chars) return (char*)mrb_utf8_char_head(sbeg, p - 1, e);
 #else
   (void)sbeg; (void)e; (void)chars;
@@ -818,7 +818,7 @@ succ_prev_char(char *sbeg, char *p, char *e, mrb_bool chars)
 static mrb_int
 succ_char_len(char *p, char *e, mrb_bool chars)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   if (chars) {
     mrb_int len = mrb_utf8len(p, e);
     return (len == 1 && (unsigned char)*p >= 0x80) ? 0 : len;
@@ -829,7 +829,7 @@ succ_char_len(char *p, char *e, mrb_bool chars)
   return 1;
 }
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* Whether `cp` is the code point that spells a character of `len` bytes after
    the one at `p`: it is written there when it is. A surrogate spells no
    character, and neither does the byte length growing, since a wider
@@ -857,7 +857,7 @@ succ_next_cp(mrb_int cp)
 }
 #endif
 
-#if defined(MRB_UTF8_STRING) && !defined(MRB_USE_ASCII_CTYPE)
+#if defined(HAVE_MRUBY_ENCODING_GEM) && !defined(MRB_USE_ASCII_CTYPE)
 /* Which letters and digits there are above ASCII, and where each run of them
    starts, out of the Unicode character database. A build that reads its
    strings as bytes has nothing above ASCII to ask about, and one narrowed by
@@ -912,7 +912,7 @@ succ_alnum(char *p, mrb_int len, char *carry, mrb_int *carry_len)
     *p = (char)(c + 1);
     return SUCC_FOUND;
   }
-#if defined(MRB_UTF8_STRING) && !defined(MRB_USE_ASCII_CTYPE)
+#if defined(HAVE_MRUBY_ENCODING_GEM) && !defined(MRB_USE_ASCII_CTYPE)
   {
     mrb_int l, start, first, next, cp = (mrb_int)mrb_utf8_decode(p, p + len, &l);
     uint32_t kind = succ_alnum_run(cp, &start);
@@ -951,7 +951,7 @@ succ_alnum(char *p, mrb_int len, char *carry, mrb_int *carry_len)
 static enum succ_step
 succ_char(char *p, mrb_int len, mrb_bool chars)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   if (chars) {
     mrb_int l;
     mrb_int cp = (mrb_int)mrb_utf8_decode(p, p + len, &l);
@@ -992,7 +992,7 @@ str_succ_bang(mrb_state *mrb, mrb_value self)
 
   mrb_str_modify(mrb, s);
   if (slen == 0) return self;
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   chars = !RSTR_BINARY_P(s);
 #endif
   sbeg = RSTR_PTR(s);
@@ -1055,7 +1055,7 @@ str_succ(mrb_state *mrb, mrb_value self)
   return str;
 }
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* Decodes the UTF-8 character starting at p, storing its byte length through
    lenp when that is not NULL. mrb_utf8_decode() hands back a rejected
    sequence as its lead byte over one byte; String treats that as an error. */
@@ -1324,7 +1324,7 @@ str_scrub_chunks(mrb_state *mrb, mrb_value self)
 static mrb_bool
 str_cut_keeps_cr(struct RString *s, const char *cut, mrb_int cutlen)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   if (RSTR_CODERANGE(s) == MRB_STR_CODERANGE_UNKNOWN) return FALSE;
   if (RSTR_CODERANGE(s) == MRB_STR_CODERANGE_7BIT) return TRUE;
   for (mrb_int i = 0; i < cutlen; i++) {
@@ -1343,7 +1343,7 @@ str_cut_keeps_cr(struct RString *s, const char *cut, mrb_int cutlen)
 static void
 str_cut_coderange(struct RString *s, mrb_bool keep_cr)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   if (!keep_cr || RSTR_CODERANGE(s) == MRB_STR_CODERANGE_BROKEN) {
     RSTR_CODERANGE_SET(s, MRB_STR_CODERANGE_UNKNOWN);
   }
@@ -1530,7 +1530,7 @@ str_casecmp(mrb_state *mrb, mrb_value self)
 }
 #undef lesser
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
 /* Whether a string holds anything the fold table could speak about. A string
    of nothing but ASCII does not, and one read as bytes spells no characters
    at all, so neither needs the walk: those are the two a single-byte string is
@@ -1583,7 +1583,7 @@ str_fold_ascii(mrb_state *mrb, mrb_value str)
 static mrb_value
 str_casecmp_p(mrb_state *mrb, mrb_value self)
 {
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   mrb_value other = mrb_get_arg1(mrb);
   if (!mrb_string_p(other)) return mrb_nil_value();
 
@@ -1972,7 +1972,7 @@ str_chars_ary(mrb_state *mrb, mrb_value self)
      avoids the same way. */
   int ai = mrb_gc_arena_save(mrb);
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   if (!RSTR_SINGLE_BYTE_P(s)) {
     while (p < e) {
       mrb_int char_len = mrb_utf8len(p, e);

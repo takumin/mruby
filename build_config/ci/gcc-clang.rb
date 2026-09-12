@@ -71,12 +71,13 @@ MRuby::Build.new('byte-string') do |conf|
   conf.toolchain
 
   # The one build here whose strings index by byte. mruby-encoding is what
-  # defines MRB_UTF8_STRING, so dropping it is what makes "あ".length 3, and
-  # the tests written as the byte-indexed mirror of the UTF-8 ones (String#scrub
-  # degrading to a no-op, the byte-counting halves of mruby-regexp and
-  # mruby-string-ext) run nowhere else: every other build in CI, here and in
-  # ci/msvc, keeps the gem. Taking it out of full-core rather than reaching for
-  # a smaller gembox keeps the rest of the box on the byte-indexed side too.
+  # defines HAVE_MRUBY_ENCODING_GEM, so dropping it is what makes "あ".length
+  # 3, and the tests written as the byte-indexed mirror of the UTF-8 ones
+  # (String#scrub degrading to a no-op, the byte-counting halves of
+  # mruby-regexp and mruby-string-ext) run nowhere else: every other build in
+  # CI, here and in ci/msvc, keeps the gem. Taking it out of full-core rather
+  # than reaching for a smaller gembox keeps the rest of the box on the
+  # byte-indexed side too.
   # Tests only, since the binaries full-core adds are the same ones the bintest
   # above already covers.
   conf.gembox 'full-core'
