@@ -143,3 +143,43 @@ assert('a binary string put in the table first does not stand for a literal') do
     p eval("# frozen_string_literal: true\n\"\\xC3\\xA9\"").equal?(b)
   RUBY
 end
+
+assert('the table of strings is made again after it is left holding nothing') do
+  # What `-s` puts in the table is held by nothing, so a program that asks
+  # about text it built and lets it go leaves the table empty, and the table
+  # is given back where the sweep finds it that way.  What is asked of it
+  # after that is asked of a table made afresh.  A state that holds a frozen
+  # literal in live code never reaches this, which is why it is a process of
+  # its own rather than a test in mrbtest.
+  assert_mruby_out "0\ntrue\ntrue\n0\n", <<~'RUBY'
+    50.times { |i| x = -("gone_#{i}") }
+    GC.start
+    p GC.stat[:frozen_string_count]
+    a = -("made" + " again")
+    p a.equal?(-("made" + " again"))
+    GC.start
+    p a.equal?(-("made" + " again"))
+    a = nil
+    GC.start
+    p GC.stat[:frozen_string_count]
+  RUBY
+end
+
+assert('the table of sites is made again after the code that filled it is freed') do
+  # Each irep that answered a literal keeps a bit per pool entry until it is
+  # freed, and the last one to give its bits back leaves that table empty too.
+  # The code given to `eval` below is dropped as it goes, so what the next
+  # `eval` asks is asked of a table made afresh.
+  assert_mruby_out "0\ntrue\ntrue\n", <<~'RUBY'
+    30.times do |i|
+      eval("def m#{i}; 'lit_#{i}'.freeze; end")
+      send("m#{i}")
+      Object.send(:remove_method, "m#{i}")
+    end
+    GC.start; GC.start
+    p GC.stat[:frozen_string_count]
+    eval("def after_it; 'after the tables went'.freeze; end")
+    p after_it.equal?(after_it)
+    p after_it.equal?('after the tables went'.freeze)
+  RUBY
+end
