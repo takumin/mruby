@@ -13,11 +13,25 @@
 #ifndef MRUBY_PROCESS_HAL_FEATURES_H
 #define MRUBY_PROCESS_HAL_FEATURES_H
 
-/* No wait.  Win32 waits on a handle, and a handle is got by opening a
-   process ID, which succeeds for any process this one may open and says
-   nothing about parentage: waiting on one would report a stranger's exit
-   code as a child's.  A port learns of its children when it creates them,
-   so `Process.wait` and its three other spellings are answerable once
-   spawn exists and not before. */
+/* WaitForMultipleObjects(): `Process.wait`, `Process.waitpid`,
+   `Process.wait2` and `Process.waitpid2`.  Win32 waits on a handle, and the
+   only handles this port has are the ones it opened by spawning, so a wait
+   here answers for a child this interpreter created and for nothing else: a
+   handle got by opening a process ID stands for any process the caller may
+   open and says nothing about parentage. */
+#define MRB_HAL_PROCESS_HAS_WAIT
+
+/* CreateProcessW(): `Process.spawn`.  It is there on every Windows this port
+   runs on. */
+#define MRB_HAL_PROCESS_HAS_SPAWN
+
+/* CREATE_NEW_PROCESS_GROUP is what Windows has in place of setpgid(2), and
+   `new_pgroup` is the option CRuby gives it there.  A process group to
+   join, an identity and resource limits are not things a Windows process
+   can be created with, so those options do not exist on this port, as they
+   do not in CRuby's Windows build.  Nor is a umask: the C runtime's is
+   state of this process that no child inherits, so the option CRuby's
+   Windows build accepts and cannot pass on is refused here. */
+#define MRB_HAL_PROCESS_HAS_NEW_PGROUP
 
 #endif /* MRUBY_PROCESS_HAL_FEATURES_H */

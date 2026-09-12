@@ -102,19 +102,16 @@ assert('Process.times and reaped children') do
   # confirms it is not yet counted while unreaped, and that reaping it
   # through waitpid makes cutime + cstime increase strictly.
   skip "this build has no Float" unless ProcessTestUtil.float?
-  skip ProcessTestUtil.child_reason if ProcessTestUtil.child_reason
+  skip ProcessTestUtil.posix_reason if ProcessTestUtil.posix_reason
 
   baseline = Process.times
-  io = ProcessTestUtil.spawn('i=0; while [ "$i" -lt 200000 ]; do i=$((i+1)); done; exit 0')
-  skip "IO.popen is not available" unless io
+  pid = Process.spawn('i=0; while [ "$i" -lt 200000 ]; do i=$((i+1)); done; exit 0')
 
-  io.read
   before = Process.times
   assert_equal baseline.cutime, before.cutime
   assert_equal baseline.cstime, before.cstime
 
-  Process.waitpid(io.pid)
-  io.close
+  Process.waitpid(pid)
   after = Process.times
 
   assert_kind_of Float, after.cutime

@@ -1,0 +1,370 @@
+module Process
+  # Whether this build can create processes at all.  A platform without
+  # process creation leaves Process.spawn undefined rather than defining one
+  # that always fails, so a program can ask before it commits to a plan that
+  # needs a child.
+  if respond_to?(:__spawn)
+    # The two tables the shell decision is made from.  They are how the
+    # argument shape is read rather than anything a program is meant to
+    # see, and CRuby's Process has no such constants, so they are kept as
+    # state of the module rather than as constants of it.
+    #
+    # The characters only a shell acts on.  A command line holding one of
+    # them is the shell's to take apart; a command line holding none of them
+    # is taken apart here instead.
+    @spawn_meta = "*?{}[]<>()~&|\\$;'\"`\n#"
+
+    # The POSIX shell's reserved words and special built-ins.  Nothing on the
+    # PATH is called any of these, so a command line naming one is the
+    # shell's however plain the rest of it looks.
+    @spawn_sh_cmds = [
+      "!", ".", ":", "break", "case", "continue", "do", "done", "elif",
+      "else", "esac", "eval", "exec", "exit", "export", "fi", "for", "if",
+      "in", "readonly", "return", "set", "shift", "then", "times", "trap",
+      "unset", "until", "while"
+    ]
+
+    class << self
+      #
+      # call-seq:
+      #   Process.spawn([env, ] command... [, options]) -> pid
+      #
+      # Runs +command+ in a child process and returns its process ID without
+      # waiting for it.  The caller owes that child a wait, through
+      # Process.waitpid.
+      #
+      # A single String is a command line, and it reaches the system shell
+      # only when there is something in it for a shell to do; otherwise it
+      # is split on blanks and the command is run directly.  Two or more
+      # arguments are always the command and its arguments, and a first
+      # argument that is a two-element Array names the image apart from what
+      # the command sees itself called as:
+      #
+      #   Process.spawn("echo hello > out.txt")     # through the shell
+      #   Process.spawn("echo hello")               # no shell involved
+      #   Process.spawn("echo", "hello")            # no shell involved
+      #   Process.spawn(["sh", "myshell"], "-c", "echo $0")   # $0 is myshell
+      #
+      #   pid = Process.spawn("sleep", "1")
+      #   Process.waitpid(pid)
+      #   $?.success?                               # -> true
+      #
+      # A command that cannot be run raises the Errno the attempt failed
+      # with, rather than leaving a child that exited 127 to be guessed at.
+      #
+      # A leading Hash is added to the child's environment, and a nil value
+      # removes a variable rather than setting it:
+      #
+      #   Process.spawn({"LANG" => "C", "TZ" => nil}, "date")
+      #
+      # A trailing Hash is options.  <code>:in</code>, <code>:out</code>,
+      # <code>:err</code> and plain descriptor numbers redirect the child's
+      # descriptors; the table is applied in order, so a later entry sees
+      # what an earlier one did:
+      #
+      #   Process.spawn("cmd", out: io)                  # child's 1 -> io
+      #   Process.spawn("cmd", out: io, err: [:child, :out])   # ... and 2>&1
+      #   Process.spawn("cmd", out: "log.txt")           # a file, opened here
+      #   Process.spawn("cmd", 3 => :close)
+      #
+      # As in CRuby, <code>err: :out</code> is *not* <code>2>&1</code>: a
+      # bare <code>:out</code> names the parent's descriptor 1, and merging
+      # inside the child is written <code>err: [:child, :out]</code>.
+      #
+      # The remaining options are CRuby's: <code>:chdir</code> runs the
+      # child in another directory, <code>:unsetenv_others</code> starts its
+      # environment empty, <code>:close_others</code> closes descriptors
+      # above 2 that the table does not name, <code>:pgroup</code> puts it
+      # in a process group (+true+ for one of its own), <code>:umask</code>,
+      # <code>:uid</code> and <code>:gid</code> set what they name, and
+      # <code>:rlimit_<i>resource</i></code> sets a resource limit to an
+      # Integer or a <code>[soft, hard]</code> pair.  On Windows
+      # <code>:new_pgroup</code> stands in for <code>:pgroup</code>.  An
+      # option the platform has no call behind is refused, as it is in CRuby.
+      #
+      def spawn(*args)
+        env, argv, options, opts = _spawn_normalize(args)
+        table, opened = _spawn_options(opts, options)
+        begin
+          __spawn(argv, env, table, options)
+        ensure
+          opened.each { |io| io.close }
+        end
+      end
+
+      # Nothing below is API.  Named to `private` one by one at the end of
+      # this block: mruby honours `private` with arguments, and a bare
+      # `private` inside `class << self` opens no default-visibility scope.
+
+      # What the positional arguments say: the environment deltas, the argv,
+      # the two things about the command that are not in either, which is
+      # whether it is the shell's and which image it is, and the options
+      # Hash still to be read.
+      def _spawn_normalize(args)
+        args = args.dup
+        env = args[0].is_a?(Hash) ? _spawn_env(args.shift) : []
+        if args.empty?
+          raise ArgumentError, "wrong number of arguments (given 0, expected 1+)"
+        end
+        opts = (args.size >= 2 && args[-1].is_a?(Hash)) ? args.pop : {}
+        options = {}
+
+        if args[0].is_a?(Array)
+          # [cmdname, argv0]: the image to run, and what it sees itself
+          # called as.  Never the shell's, however few arguments follow.
+          pair = args[0]
+          raise ArgumentError, "wrong first argument" unless pair.size == 2
+          options[:prog] = _spawn_str(pair[0])
+          options[:shell] = false
+          args[0] = pair[1]
+          argv = args.map { |a| _spawn_str(a) }
+        elsif args.size == 1
+          shell, argv = _spawn_command_line(_spawn_str(args[0]))
+          options[:shell] = shell
+        else
+          options[:shell] = false
+          argv = args.map { |a| _spawn_str(a) }
+        end
+        [env, argv, options, opts]
+      end
+
+      # A single String is a command line, and CRuby does not hand every one
+      # of them to a shell: it looks for what only a shell can do and, where
+      # there is none, splits the line on blanks and runs the command
+      # itself.  Which is what makes Process.spawn("no-such-command") an
+      # exec that fails and an Errno::ENOENT to report, where a shell would
+      # have run, complained and exited 127 with nothing to tell that from a
+      # command exiting 127 of its own accord.
+      def _spawn_command_line(cmd)
+        words = _spawn_split(cmd)
+        # Blanks name no command.  CRuby execs the empty string for them and
+        # that answers ENOENT, which is what the port answers for it here.
+        return [false, [""]] if words.empty?
+        return [true, [cmd]] if _spawn_shell?(cmd, words[0])
+        [false, words]
+      end
+
+      # The command line split as a shell would have split one holding
+      # nothing of the shell's.  Spaces and tabs only: every other blank is a
+      # character of the word it sits in, and a newline never reaches here
+      # because a newline is one of the characters that call for a shell.
+      def _spawn_split(cmd)
+        words = []
+        i = 0
+        len = cmd.length
+        while i < len
+          i += 1 while i < len && _spawn_blank?(cmd[i])
+          break if i >= len
+          start = i
+          i += 1 until i >= len || _spawn_blank?(cmd[i])
+          words << cmd[start, i - start]
+        end
+        words
+      end
+
+      def _spawn_blank?(c)
+        c == " " || c == "\t"
+      end
+
+      # Whether the command line is the shell's: it holds a character only a
+      # shell acts on, its first word assigns a variable, or that word is a
+      # reserved word or a special built-in.
+      def _spawn_shell?(cmd, first)
+        i = 0
+        len = @spawn_meta.length
+        while i < len
+          return true if cmd.index(@spawn_meta[i])
+          i += 1
+        end
+        return true if first.index("=")
+        @spawn_sh_cmds.include?(first)
+      end
+
+      # mruby asks for the built-in type rather than converting to it, so a
+      # command that is not a String is refused here rather than sent
+      # through to_str.
+      def _spawn_str(v)
+        unless v.is_a?(String)
+          raise TypeError, "no implicit conversion of #{v.class} into String"
+        end
+        v
+      end
+
+      def _spawn_int(name, v)
+        unless v.is_a?(Integer)
+          raise TypeError, "no implicit conversion of #{v.class} into Integer"
+        end
+        v
+      end
+
+      # CRuby takes exactly true or false for these, and says so for anything
+      # else rather than reading it as one of the two.
+      def _spawn_bool(name, v)
+        return v if v == true || v == false
+        raise ArgumentError, "expected true or false as #{name}: #{v.inspect}"
+      end
+
+      # What :pgroup asks for, as the port takes it: nil for nothing, 0 for a
+      # group of the child's own, or the group to join.
+      def _spawn_pgroup(v)
+        return nil if v.nil? || v == false
+        return 0 if v == true
+        v = _spawn_int(:pgroup, v)
+        raise ArgumentError, "negative process group ID : #{v}" if v < 0
+        v
+      end
+
+      # One resource limit, as [resource, soft, hard].  The value is an
+      # Integer for both, or an Array of one or two of them.
+      def _spawn_rlimit(resource, v)
+        if v.is_a?(Array)
+          case v.size
+          when 1 then cur = max = _spawn_int(resource, v[0])
+          when 2
+            cur = _spawn_int(resource, v[0])
+            max = _spawn_int(resource, v[1])
+          else
+            raise ArgumentError, "wrong exec rlimit option"
+          end
+        else
+          cur = max = _spawn_int(resource, v)
+        end
+        [resource, cur, max]
+      end
+
+      # [name, value, name, value, ...]; a nil value means "unset".  Deltas,
+      # not a whole environment, so nothing here has to read the parent's,
+      # which is what keeps this gem independent of mruby-env.
+      def _spawn_env(hash)
+        env = []
+        hash.each do |k, v|
+          env << _spawn_str(k) << (v.nil? ? nil : _spawn_str(v))
+        end
+        env
+      end
+
+      # The options Hash, read into the redirection table and the +options+
+      # the primitive takes.  A key that is a Symbol names an option or one
+      # of the three standard descriptors; anything else names descriptors
+      # to redirect.  What is not one of CRuby's options is refused as CRuby
+      # refuses it, and what this port has no call behind is refused below,
+      # by the primitive, in the same words.
+      def _spawn_options(opts, options)
+        table = []
+        opened = []
+        named = {}
+        begin
+          opts.each do |key, value|
+            if key.is_a?(Symbol)
+              case key
+              when :in, :out, :err
+                _spawn_redirect(key, value, table, opened, named)
+              when :chdir
+                options[:chdir] = _spawn_str(value)
+              when :close_others, :unsetenv_others, :new_pgroup
+                options[key] = _spawn_bool(key, value)
+              when :pgroup
+                options[:pgroup] = _spawn_pgroup(value)
+              when :umask, :uid, :gid
+                options[key] = _spawn_int(key, value)
+              when :exception
+                raise ArgumentError, "exception option is not allowed"
+              else
+                name = key.to_s
+                if name.length > 7 && name[0, 7] == "rlimit_"
+                  (options[:rlimits] ||= []) << _spawn_rlimit(name[7, name.length - 7].to_sym, value)
+                else
+                  raise ArgumentError, "wrong exec option symbol: #{name}"
+                end
+              end
+            elsif key.is_a?(Integer) || key.is_a?(Array) || key.respond_to?(:fileno)
+              _spawn_redirect(key, value, table, opened, named)
+            else
+              raise ArgumentError, "wrong exec option"
+            end
+          end
+        rescue StandardError => e
+          # Named rather than re-raised bare: mruby's `raise` with no
+          # argument does not re-raise what is being rescued.
+          opened.each { |io| io.close }
+          raise e
+        end
+        [table, opened]
+      end
+
+      # One redirection, written into the table for every descriptor the key
+      # names.  What the value names is worked out once, so `[1, 2] => "log"`
+      # opens the file once and the two share that one open file, as
+      # `>log 2>&1` does; opening it once per descriptor would give each its
+      # own offset into the same file, and each would write over what the
+      # other had written.  Which way it is opened follows the first
+      # descriptor named, as it does in Ruby.  A descriptor two keys name is
+      # refused as CRuby refuses it: the table is applied in order, and the
+      # second would silently undo the first.
+      def _spawn_redirect(key, value, table, opened, named)
+        fds = (key.is_a?(Array) ? key : [key]).map { |k| _spawn_fd(k) }
+        return if fds.empty?
+        fds.each do |fd|
+          raise ArgumentError, "fd #{fd} specified twice" if named[fd]
+          named[fd] = true
+        end
+        kind, source = _spawn_source(fds[0], value, opened)
+        fds.each { |fd| table << fd << kind << source }
+      end
+
+      def _spawn_fd(v)
+        case v
+        when :in then 0
+        when :out then 1
+        when :err then 2
+        when Integer then v
+        else
+          return v.fileno if v.respond_to?(:fileno)
+          raise ArgumentError, "wrong exec redirect: #{v.inspect}"
+        end
+      end
+
+      # What one redirection value stands for, as the [kind, source] pair the
+      # table is written from.  +first_fd+ is the descriptor that decides how
+      # a file is opened when the value names one.
+      def _spawn_source(first_fd, value, opened)
+        case value
+        when :close
+          [:close, -1]
+        when String
+          io = _spawn_open(value, first_fd == 0 ? "r" : "w", nil)
+          opened << io
+          [:parent, io.fileno]
+        when Array
+          if value[0] == :child
+            [:child, _spawn_fd(value[1])]
+          else
+            io = _spawn_open(value[0], value[1] || "r", value[2])
+            opened << io
+            [:parent, io.fileno]
+          end
+        else
+          [:parent, _spawn_fd(value)]
+        end
+      end
+
+      # Opening a file for the child happens here, in the parent, so that the
+      # HAL never grows a notion of a filename and every other redirection
+      # form works in a build without mruby-io.
+      def _spawn_open(path, mode, perm)
+        file = begin
+                 File
+               rescue NameError
+                 raise NotImplementedError, "file redirection requires mruby-io"
+               end
+        perm ? file.open(path, mode, perm) : file.open(path, mode)
+      end
+
+      private :_spawn_normalize, :_spawn_command_line, :_spawn_split,
+              :_spawn_blank?, :_spawn_shell?, :_spawn_str, :_spawn_int,
+              :_spawn_bool, :_spawn_pgroup, :_spawn_rlimit, :_spawn_env,
+              :_spawn_options, :_spawn_redirect, :_spawn_fd, :_spawn_source,
+              :_spawn_open
+    end
+  end
+end

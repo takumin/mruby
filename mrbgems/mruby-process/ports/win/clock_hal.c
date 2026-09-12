@@ -411,10 +411,9 @@ mrb_hal_process_times(mrb_state *mrb, mrb_process_times *t)
   clock_time_from_ticks(&t->utime, user_ticks);
   clock_time_from_ticks(&t->stime, kernel_ticks);
 
-  /* Win32 has no call that answers a reaped child's CPU time, and this port
-     creates no children yet in any case (Process.spawn is a separate
-     change), so there is nothing to add up.  0 says exactly that: nothing
-     has been added, not that nothing was asked. */
+  /* Win32 has no call that answers a reaped child's CPU time, so there is
+     nothing to add up.  0 says exactly that: nothing has been added, not
+     that nothing was asked. */
   t->cutime.sec = 0;
   t->cutime.nsec = 0;
   t->cstime.sec = 0;

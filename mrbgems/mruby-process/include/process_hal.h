@@ -14,12 +14,20 @@
 ** other direction, no platform type or macro (`pid_t`, `WIFEXITED`,
 ** `SIGTERM`, `WNOHANG`, `CLOCK_MONOTONIC`, `clock_t`, ...) crosses into the
 ** common layer: process and signal numbers travel as `mrb_int`, wait options
-** as the MRB_PROCESS_WAIT_* bits below, a decoded wait status as
-** `mrb_process_status`, a clock as one of the `mrb_process_clock_id` values,
-** a time it reported as `mrb_process_clock_time`, whose two fields are
-** `int64_t` rather than `mrb_int` for the reason given where it is defined,
-** and the four CPU time totals behind `Process.times` as `mrb_process_times`,
-** four more `mrb_process_clock_time` readings rather than platform ticks.
+** as the MRB_PROCESS_WAIT_* bits below, a wait result as an
+** `mrb_process_event` carrying an already decoded `mrb_process_status`, a
+** clock as one of the `mrb_process_clock_id` values, a time it reported as
+** `mrb_process_clock_time`, whose two fields are `int64_t` rather than
+** `mrb_int` for the reason given where it is defined, and the four CPU time
+** totals behind `Process.times` as `mrb_process_times`, four more
+** `mrb_process_clock_time` readings rather than platform ticks.
+**
+** What a child *is* stays behind the HAL as well.  A pid labels a child; it
+** is not the child, because the OS may hand the same number to another
+** process once the first one has been reaped.  So spawn hands back an opaque
+** `mrb_hal_process_child`, every wait takes that object rather than a
+** number, and the port keeps whatever it really needs inside it: a pid on
+** POSIX, a HANDLE on Windows.
 **
 ** What a signal is *called* is not asked here at all.  mruby-signal owns
 ** that table, and both `Process.kill` and `Process::Status#to_s` reach it
@@ -30,6 +38,7 @@
 #define MRUBY_PROCESS_HAL_H
 
 #include <mruby.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /*
@@ -42,8 +51,16 @@
  * and a `hal-process-<conf>` gem may stand in for the bundled ports
  * altogether.  What each macro says, and what it guards, is written where it
  * is defined.
+ *
+ * MRB_NO_PROCESS_SPAWN is a build's veto over process creation: a
+ * configuration that defines it gets a gem with no `Process.spawn` whatever
+ * the port could do.
  */
 #include "process_hal_features.h"
+
+#ifdef MRB_NO_PROCESS_SPAWN
+# undef MRB_HAL_PROCESS_HAS_SPAWN
+#endif
 
 MRB_BEGIN_DECL
 
@@ -63,7 +80,11 @@ typedef enum mrb_process_status_flags {
 
 /* A wait status in platform-neutral form.  Fields not selected by `flags`
    hold 0.  `raw_status` is the platform value the status was decoded from,
-   kept so that `Process::Status#to_i` can hand it back unchanged. */
+   kept so that `Process::Status#to_i` can hand it back unchanged; it is
+   opaque and platform-defined, and nothing above the port reads it.
+
+   The status is a snapshot rather than a question to be re-asked, because a
+   `Process::Status` outlives the child it came from. */
 typedef struct mrb_process_status {
   mrb_int pid;
   mrb_int raw_status;
@@ -88,10 +109,38 @@ typedef struct mrb_process_status {
    do with the others. */
 #define MRB_PROCESS_WAIT_FLAGS (MRB_PROCESS_WAIT_NOHANG | MRB_PROCESS_WAIT_UNTRACED)
 
-/* Wait for any child, whichever finishes first.  Other non-positive pids keep
-   their platform meaning (on POSIX, a process group selector); a port that
-   cannot express them fails with ENOSYS. */
-#define MRB_PROCESS_WAIT_ANY ((mrb_int)-1)
+/*
+ * Wait events
+ *
+ * A wait draws an event from a set of children.  An event is not a lifecycle
+ * transition: a child that merely stopped is still alive and still owes a
+ * reap, so the common layer decides from `kind` whether the child is done
+ * with, and only it does.
+ */
+typedef enum mrb_process_event_kind {
+  MRB_PROCESS_EVENT_NONE      = 0,  /* NOHANG, nothing available */
+  MRB_PROCESS_EVENT_EXITED    = 1,
+  MRB_PROCESS_EVENT_SIGNALED  = 2,
+  MRB_PROCESS_EVENT_STOPPED   = 3,
+  MRB_PROCESS_EVENT_CONTINUED = 4,  /* reserved; no current flag requests it */
+} mrb_process_event_kind;
+
+/* The port's context.  It holds whatever the platform needs to know about
+   the children this interpreter has: nothing at all on POSIX, where the
+   kernel already knows, and the live handles on Windows, where nothing but
+   this does. */
+typedef struct mrb_hal_process_context mrb_hal_process_context;
+
+/* One child, as the port sees it. */
+typedef struct mrb_hal_process_child mrb_hal_process_child;
+
+typedef struct mrb_process_event {
+  mrb_process_event_kind kind;
+  mrb_hal_process_child *child;   /* which child produced the event, or NULL
+                                     when the wait reaped one this context
+                                     never spawned */
+  mrb_process_status status;      /* valid unless kind is MRB_PROCESS_EVENT_NONE */
+} mrb_process_event;
 
 /*
  * Clocks
@@ -167,7 +216,121 @@ typedef struct mrb_process_times {
 } mrb_process_times;
 
 /*
- * HAL Interface Functions
+ * Spawn parameters
+ *
+ * Grouped in a struct so that an addition does not change every port's
+ * signature.  What a port acts on is what its process_hal_features.h
+ * declares: a field behind a capability the port has not declared is never
+ * set, since the common layer refuses the option before the port sees it.
+ */
+
+typedef enum mrb_process_redirect_kind {
+  MRB_PROCESS_REDIR_PARENT = 0,  /* duplicate a descriptor owned by the parent */
+  MRB_PROCESS_REDIR_CHILD  = 1,  /* duplicate a child descriptor as set so far by this table */
+  MRB_PROCESS_REDIR_CLOSE  = 2,  /* close in the child */
+} mrb_process_redirect_kind;
+
+typedef struct mrb_process_redirect {
+  mrb_int child_fd;
+  mrb_process_redirect_kind kind;
+  mrb_int source_fd;             /* -1 for CLOSE */
+} mrb_process_redirect;
+
+typedef struct mrb_process_env_entry {
+  const char *name;
+  const char *value;             /* NULL means unset */
+} mrb_process_env_entry;
+
+typedef enum mrb_process_spawn_kind {
+  MRB_PROCESS_SPAWN_ARGV  = 0,   /* execute argv directly */
+  MRB_PROCESS_SPAWN_SHELL = 1,   /* execute argv[0] through the system shell */
+} mrb_process_spawn_kind;
+
+#define MRB_PROCESS_SPAWN_CLOSE_OTHERS    (1u << 0)
+#define MRB_PROCESS_SPAWN_UNSETENV_OTHERS (1u << 1)
+#define MRB_PROCESS_SPAWN_NEW_PGROUP      (1u << 2)  /* MRB_HAL_PROCESS_HAS_NEW_PGROUP */
+
+/*
+ * A resource limit the child starts under.
+ *
+ * The resources are mruby's own list, as the clocks are: `RLIMIT_NOFILE` is
+ * 7 on Linux and 8 on the BSDs, so a program naming a resource by the
+ * platform's number would name a different one on each port.  The common
+ * layer asks mrb_hal_process_rlimit_p() before it names one, and a port maps
+ * the ones it has.  A limit is an `mrb_int`, which is what a Ruby program
+ * can write; the platform's "no limit" value is wider than any Integer a
+ * build may have and is not expressible here.
+ */
+typedef enum mrb_process_rlimit_id {
+  MRB_PROCESS_RLIMIT_AS = 0,
+  MRB_PROCESS_RLIMIT_CORE,
+  MRB_PROCESS_RLIMIT_CPU,
+  MRB_PROCESS_RLIMIT_DATA,
+  MRB_PROCESS_RLIMIT_FSIZE,
+  MRB_PROCESS_RLIMIT_MEMLOCK,
+  MRB_PROCESS_RLIMIT_MSGQUEUE,
+  MRB_PROCESS_RLIMIT_NICE,
+  MRB_PROCESS_RLIMIT_NOFILE,
+  MRB_PROCESS_RLIMIT_NPROC,
+  MRB_PROCESS_RLIMIT_NPTS,
+  MRB_PROCESS_RLIMIT_RSS,
+  MRB_PROCESS_RLIMIT_RTPRIO,
+  MRB_PROCESS_RLIMIT_RTTIME,
+  MRB_PROCESS_RLIMIT_SBSIZE,
+  MRB_PROCESS_RLIMIT_SIGPENDING,
+  MRB_PROCESS_RLIMIT_STACK,
+  MRB_PROCESS_RLIMIT_COUNT                  /* how many there are; not a resource */
+} mrb_process_rlimit_id;
+
+typedef struct mrb_process_rlimit {
+  mrb_process_rlimit_id resource;
+  mrb_int cur;                              /* the soft limit */
+  mrb_int max;                              /* the hard limit */
+} mrb_process_rlimit;
+
+/* "Leave it as it is", for each of the numbers below that a caller may not
+   give.  None of them is negative when given. */
+#define MRB_PROCESS_SPAWN_UNSET (-1)
+
+typedef struct mrb_process_spawn_params {
+  mrb_process_spawn_kind kind;
+  const char *prog;                         /* the image to run, or NULL for argv[0] */
+  const char *const *argv;                  /* NULL-terminated; SHELL uses argv[0] only */
+  const mrb_process_env_entry *env;         /* deltas against the parent environment */
+  size_t nenv;
+  const mrb_process_redirect *redirects;
+  size_t nredirects;
+  const char *chdir;                        /* NULL means inherit */
+  unsigned int flags;
+  mrb_int pgroup;                           /* MRB_HAL_PROCESS_HAS_PGROUP: the group to
+                                               join, 0 for a new one, UNSET to inherit */
+  mrb_int umask;                            /* MRB_HAL_PROCESS_HAS_UMASK */
+  mrb_int uid;                              /* MRB_HAL_PROCESS_HAS_UID */
+  mrb_int gid;                              /* MRB_HAL_PROCESS_HAS_UID */
+  const mrb_process_rlimit *rlimits;        /* MRB_HAL_PROCESS_HAS_RLIMIT; applied in order */
+  size_t nrlimits;
+} mrb_process_spawn_params;
+
+/*
+ * HAL Interface - the interpreter's process context
+ */
+
+/*
+ * Create the context every child of this interpreter is spawned into.
+ *
+ * @return 0 on success with *out set, -1 on error (sets errno)
+ */
+int mrb_hal_process_context_init(mrb_state *mrb, mrb_hal_process_context **out);
+
+/*
+ * Release the context.  The common layer has already released every child by
+ * the time this is called; a port that finds any left over frees them rather
+ * than leaking, and waits for none of them.
+ */
+void mrb_hal_process_context_free(mrb_state *mrb, mrb_hal_process_context *ctx);
+
+/*
+ * HAL Interface - process identity
  */
 
 /* Process ID of the calling process.  Returns -1 with errno set on failure. */
@@ -176,27 +339,6 @@ mrb_int mrb_hal_process_pid(mrb_state *mrb);
 /* Process ID of the parent.  Returns -1 with errno set where the platform
    cannot name a parent (errno ENOSYS when it has no such notion at all). */
 mrb_int mrb_hal_process_ppid(mrb_state *mrb);
-
-#ifdef MRB_HAL_PROCESS_HAS_WAIT
-/*
- * Wait for a child process to change state.
- *
- * Declared in the port's process_hal_features.h.  A port without it has no
- * children to wait for, and the gem defines no wait rather than one that
- * fails; the status decoder below is asked for all the same, since a status
- * can arrive from elsewhere, mruby-io's `IO.popen` being one source.
- *
- * @param pid         child to wait for, or MRB_PROCESS_WAIT_ANY
- * @param flags       zero or more MRB_PROCESS_WAIT_* bits
- * @param result_pid  out: the child that changed state, or 0 when
- *                    MRB_PROCESS_WAIT_NOHANG found none ready
- * @param raw_status  out: the platform status, to be read back through
- *                    mrb_hal_process_status_decode()
- * @return 0 on success, -1 on error (sets errno)
- */
-int mrb_hal_process_waitpid(mrb_state *mrb, mrb_int pid, unsigned int flags,
-                            mrb_int *result_pid, mrb_int *raw_status);
-#endif
 
 /*
  * Send a signal to a process.
@@ -210,14 +352,141 @@ int mrb_hal_process_waitpid(mrb_state *mrb, mrb_int pid, unsigned int flags,
 int mrb_hal_process_kill(mrb_state *mrb, mrb_int pid, mrb_int signo);
 
 /*
- * Read a platform wait status into its neutral form.
- *
- * Every field of `status` is written, including `pid` and `raw_status`, which
- * are copied from the arguments.  Decoding cannot fail: a status the platform
- * does not recognize decodes to flags of 0.
+ * HAL Interface - children
  */
-void mrb_hal_process_status_decode(mrb_state *mrb, mrb_int pid, mrb_int raw_status,
-                                   mrb_process_status *status);
+
+#ifdef MRB_HAL_PROCESS_HAS_SPAWN
+/*
+ * Create a child process.
+ *
+ * The port applies `params->redirects` in order, so `{out: w, err: [:child,
+ * :out]}` means `2>&1` after 1 has been redirected, and a CHILD entry naming
+ * a descriptor the table has not touched names the inherited one.  A source
+ * that collides with a target is saved out of the way first, and a
+ * descriptor the table does not name is left alone: close-on-exec, not a
+ * close-everything loop, is what keeps the child's descriptor table clean,
+ * unless MRB_PROCESS_SPAWN_CLOSE_OTHERS says otherwise.
+ *
+ * A redirection the platform cannot express fails with ENOTSUP, so
+ * capability differences stay inside the port.  A failure to execute the
+ * command is reported here, through the return value and errno, rather than
+ * left for the caller to guess from an exit status.
+ *
+ * On a platform with signals, the command starts with none blocked and with
+ * SIGPIPE at its default disposition, whatever this process has done with
+ * either; any other signal this process ignores stays ignored, as it does
+ * across an exec.  A process that ignores SIGPIPE, as one that talks to
+ * sockets commonly does, would otherwise hand that to every command it
+ * runs, and a signal blocked in the calling thread would stay blocked in
+ * the command.  A platform without signals has nothing to do here.
+ *
+ * The image a bare name stands for is looked up the way CRuby looks one
+ * up: on the PATH the child is given, and only a file that is not a
+ * directory and that this process may execute counts, so a name that
+ * stands for nothing runnable anywhere on it is ENOENT, and a name holding
+ * a directory separator is used as written.
+ *
+ * What else the child starts with is what its process_hal_features.h has
+ * declared the port acts on: a process group, a umask, a user and group
+ * identity, resource limits.  The order is CRuby's: the group and the
+ * limits first, the umask next, then the redirections, the directory, and
+ * the identity last.
+ *
+ * @return 0 on success with *out holding a child registered in `ctx`,
+ *         -1 on error (sets errno)
+ */
+int mrb_hal_process_spawn(mrb_state *mrb, mrb_hal_process_context *ctx,
+                          const mrb_process_spawn_params *params,
+                          mrb_hal_process_child **out);
+
+#ifdef MRB_HAL_PROCESS_HAS_RLIMIT
+/* Whether this platform has the resource `id` names.  Asked before a spawn
+   is given a limit on it, so that a resource the platform has no number for
+   is refused as an option that does not exist rather than failing inside
+   the child. */
+mrb_bool mrb_hal_process_rlimit_p(mrb_process_rlimit_id id);
+#endif /* MRB_HAL_PROCESS_HAS_RLIMIT */
+#endif /* MRB_HAL_PROCESS_HAS_SPAWN */
+
+/*
+ * Which children a wait draws from.
+ *
+ * CHILD names a child this context spawned and still holds; the other three
+ * are the platform's own selectors, and what they draw from is every child of
+ * the *process*, which in an embedded interpreter is not only the ones spawned
+ * through here.  A host application or a C extension that forked a child of
+ * its own has put it in the same set, which is why a port that answers these
+ * reports the child it drew from only when it is one of its own.
+ */
+typedef enum mrb_process_wait_scope {
+  MRB_PROCESS_WAIT_SCOPE_CHILD,  /* the one named by `child` */
+  MRB_PROCESS_WAIT_SCOPE_PID,    /* the process `pid` names, spawned here or not */
+  MRB_PROCESS_WAIT_SCOPE_ANY,    /* any child of this process */
+  MRB_PROCESS_WAIT_SCOPE_GROUP,  /* any child in `group`; 0 is the caller's own */
+} mrb_process_wait_scope;
+
+typedef struct mrb_process_wait_target {
+  mrb_process_wait_scope scope;
+  mrb_hal_process_child *child;  /* read when scope is MRB_PROCESS_WAIT_SCOPE_CHILD */
+  mrb_int pid;                   /* read when scope is MRB_PROCESS_WAIT_SCOPE_PID */
+  mrb_int group;                 /* read when scope is MRB_PROCESS_WAIT_SCOPE_GROUP */
+} mrb_process_wait_target;
+
+#ifdef MRB_HAL_PROCESS_HAS_WAIT
+/*
+ * Wait for a child to produce an event.
+ *
+ * Declared in the port's process_hal_features.h.  A port without it waits for
+ * none of the children it holds, and the gem defines no wait rather than one
+ * that fails; the status decoder below is asked for all the same, since a
+ * status can arrive from elsewhere, mruby-io's `IO.popen` being one source.
+ *
+ * @param target the set of children to draw from
+ * @param flags  zero or more MRB_PROCESS_WAIT_* bits
+ * @param event  out: what happened; kind is MRB_PROCESS_EVENT_NONE when
+ *               MRB_PROCESS_WAIT_NOHANG found nothing ready
+ * @return 0 on success, -1 on error (sets errno)
+ *
+ * The scopes are one primitive because they are one system call with a
+ * different argument, and because emulating any of them from the others
+ * cannot be done honestly: polling live children with a non-blocking wait in
+ * a loop is not a blocking wait, and it burns the CPU while pretending
+ * otherwise.  A port that cannot express a scope fails with ENOSYS rather
+ * than answering a narrower question, except that a PID scope a port cannot
+ * reach fails with ECHILD: what it cannot wait for is not its child.
+ *
+ * A terminal event releases the platform resource inside the port but does
+ * not free the child object: the pointer in the event stays valid, and
+ * readable, until the common layer calls mrb_hal_process_child_release().
+ */
+int mrb_hal_process_wait(mrb_state *mrb, mrb_hal_process_context *ctx,
+                         const mrb_process_wait_target *target,
+                         unsigned int flags, mrb_process_event *event);
+#endif
+
+/*
+ * Let go of a child.
+ *
+ * Called once per child, when the common layer stops owning it, because it
+ * was reaped or because the interpreter is closing with it still running.  The port frees the child object and whatever the
+ * platform was holding for it, and waits for nothing.
+ */
+void mrb_hal_process_child_release(mrb_state *mrb, mrb_hal_process_context *ctx,
+                                   mrb_hal_process_child *child);
+
+/* The pid this child is labelled with.  Valid for mrb_hal_process_kill() and
+   for Process::Status#pid while the child has not been released. */
+mrb_int mrb_hal_process_child_pid(const mrb_hal_process_child *child);
+
+/* A slot the common layer keeps its own record of the child in, so that a
+   wait-any event can be resolved back to it without a table lookup.  The
+   port stores and returns the pointer and never reads it. */
+void mrb_hal_process_child_set_udata(mrb_hal_process_child *child, void *udata);
+void *mrb_hal_process_child_udata(const mrb_hal_process_child *child);
+
+/*
+ * HAL Interface - clocks and CPU time
+ */
 
 /*
  * Read a clock.
@@ -283,16 +552,6 @@ int mrb_hal_process_clock_getres(mrb_state *mrb, mrb_int clock_id,
  * @return 0 on success, -1 on error (sets errno)
  */
 int mrb_hal_process_times(mrb_state *mrb, mrb_process_times *t);
-
-/*
- * HAL Initialization/Finalization
- */
-
-/* Initialize HAL (called once at gem initialization) */
-void mrb_hal_process_init(mrb_state *mrb);
-
-/* Cleanup HAL (called once at gem finalization) */
-void mrb_hal_process_final(mrb_state *mrb);
 
 MRB_END_DECL
 
