@@ -96,6 +96,38 @@ module ProcessTestUtil
     nil
   end
 
+  # The seventeen resources a limit can be set on, by the names an argument
+  # spells them.  The whole list is known to every port; which of them a port
+  # has is what the constants say, and `rlimit_resources` is what the tests
+  # walk to compare the two.
+  def self.rlimit_resources
+    %w[AS CORE CPU DATA FSIZE MEMLOCK MSGQUEUE NICE NOFILE NPROC NPTS RSS
+       RTPRIO RTTIME SBSIZE SIGPENDING STACK]
+  end
+
+  # The three answers a limit can be instead of a number.  Every build defines
+  # them, whether or not its port limits anything.
+  def self.rlimit_answers
+    [Process::RLIM_INFINITY, Process::RLIM_SAVED_CUR, Process::RLIM_SAVED_MAX]
+  end
+
+  # Whether +limit+ is an answer Process.getrlimit may give: a count of
+  # whatever the resource is measured in, or one of the three above.
+  def self.rlimit?(limit)
+    limit >= 0 || rlimit_answers.include?(limit)
+  end
+
+  # Whether this port declares each of the two limit calls, which is what a
+  # test that needs one skips on.  They are declared one at a time, so they
+  # are asked for one at a time.
+  def self.getrlimit?
+    Process.respond_to?(:getrlimit)
+  end
+
+  def self.setrlimit?
+    Process.respond_to?(:setrlimit)
+  end
+
   # Whether this build has a Float for the float units and Process.times to
   # answer in.
   def self.float?

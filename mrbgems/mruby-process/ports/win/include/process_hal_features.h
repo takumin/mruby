@@ -20,4 +20,13 @@
    so `Process.wait` and its three other spellings are answerable once
    spawn exists and not before. */
 
+/* No resource limits.  Win32 has no rlimit: what it limits, it limits per
+   job object rather than per process, and a job is a different thing with
+   different rules for who may set one.  The C runtime's `_setmaxstdio` is
+   the one neighbour, and it moves a limit on the CRT's own stdio table
+   rather than on the process, so answering `Process.getrlimit(:NOFILE)`
+   from it would report something else under the name.  `Process.getrlimit`
+   and `Process.setrlimit` are therefore unimplemented here rather than
+   emulated. */
+
 #endif /* MRUBY_PROCESS_HAL_FEATURES_H */

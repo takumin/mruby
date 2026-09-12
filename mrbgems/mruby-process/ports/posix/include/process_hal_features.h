@@ -17,4 +17,17 @@
    `Process.waitpid2`. */
 #define MRB_HAL_PROCESS_HAS_WAIT
 
+/* getrlimit(2) and setrlimit(2): `Process.getrlimit` and `Process.setrlimit`.
+   Both are XSI extensions rather than base POSIX, as the <sys/resource.h>
+   they are declared in is, so mrbgem.rake asks the compiler and the linker
+   for each and answers here as HAVE_*, one a call as CRuby's configure has
+   them.  Asked one at a time, again as CRuby asks, so that a host with the
+   reader and not the writer keeps the reader. */
+#ifdef HAVE_GETRLIMIT
+# define MRB_HAL_PROCESS_HAS_GETRLIMIT
+#endif
+#ifdef HAVE_SETRLIMIT
+# define MRB_HAL_PROCESS_HAS_SETRLIMIT
+#endif
+
 #endif /* MRUBY_PROCESS_HAL_FEATURES_H */
