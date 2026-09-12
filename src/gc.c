@@ -1412,6 +1412,12 @@ root_scan_phase(mrb_state *mrb, mrb_gc *gc)
   mrb_gc_mark(mrb, (struct RBasic*)mrb->top_self);
   /* mark exception */
   mrb_gc_mark(mrb, (struct RBasic*)mrb->exc);
+  /* mark state-scoped special variables */
+  if (mrb->statevars) {
+    for (int i = 0; i < MRB_STATEVAR_MAX; i++) {
+      mrb_gc_mark_value(mrb, mrb->statevars[i]);
+    }
+  }
 
   mark_context(mrb, mrb->c);
   if (mrb->root_c != mrb->c) {
@@ -1522,6 +1528,14 @@ final_marking_phase(mrb_state *mrb, mrb_gc *gc)
 #endif
 
   mrb_gc_mark(mrb, (struct RBasic*)mrb->exc);
+  /* re-mark the state-scoped special variables: they are unbarriered roots
+     like mrb->exc, and this atomic re-scan is what stands in for the
+     write barrier mrb_vm_statevar_set() does not take */
+  if (mrb->statevars) {
+    for (int i = 0; i < MRB_STATEVAR_MAX; i++) {
+      mrb_gc_mark_value(mrb, mrb->statevars[i]);
+    }
+  }
 
   /* mark pre-allocated exception */
   clear_error_object(mrb, mrb->nomem_err);
