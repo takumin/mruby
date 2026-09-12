@@ -24,7 +24,29 @@ struct mrc_diagnostic_list;
 typedef struct mrc_filename_table {
   const char *filename;
   uint32_t start;
+  /* Where this file's own `# frozen_string_literal` comment is, MRC_POS_NONE
+     where it has none, and what it asked for; see src/compile.c. */
+  uint32_t frozen_comment;
+  mrc_bool frozen_string_literal;
 } mrc_filename_table;
+
+/* Further along the source than any offset in it: `start` is 32 bits wide,
+   so a source that reached this could not be indexed by one. */
+#define MRC_POS_NONE UINT32_MAX
+
+/* The file a byte offset of the joined source falls in. */
+static inline uint16_t
+mrc_filename_index(const mrc_filename_table *table, uint16_t length, uint32_t pos)
+{
+  uint16_t lo = 0, hi = length;
+
+  while (1 < hi - lo) {
+    uint16_t mid = (uint16_t)(lo + (hi - lo) / 2);
+    if (table[mid].start <= pos) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
 
 typedef struct mrc_ccontext {
   mrb_state *mrb;
