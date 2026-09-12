@@ -956,6 +956,99 @@ assert('Hash#rehash') do
   assert_equal([[1, 2], [17, 34]], h.to_a)
   assert_equal(2, h.size)
   [1, 17].each{assert_equal(_1 * 2, h[_1])}
+
+  # A hash the deletes emptied keeps nothing of the table it had, and takes
+  # entries again afterwards.
+  h = {}
+  (1..17).each{h[_1] = _1}
+  (1..17).each{h.delete(_1)}
+  assert_same(h, h.rehash)
+  assert_predicate(h, :empty?)
+  assert_equal([], h.to_a)
+  h[:after] = 1
+  assert_equal([[:after, 1]], h.to_a)
+
+  # Keys that all became one key leave one entry, in the place of the first
+  # and with the value of the last, from a table that was the wide form.
+  keys = (0...20).map{HashKey[_1]}
+  h = {}
+  keys.each_with_index{|k, i| h[k] = i}
+  keys.each{_1.value = 0}
+  assert_same(h, h.rehash)
+  assert_equal(1, h.size)
+  assert_equal(1, h.to_a.size)
+  assert_same(keys[0], h.to_a[0][0])
+  assert_equal(19, h.to_a[0][1])
+  keys.each{assert_equal(19, h[_1])}
+
+  # The default, the default proc and the frozen check belong to the hash and
+  # not to the table, which is what a rehash replaces.
+  pr = ->(hash, key){:from_proc}
+  h = Hash.new(&pr)
+  (1..20).each{h[_1] = _1}
+  assert_same(pr, h.rehash.default_proc)
+  assert_equal(:from_proc, h[:missing])
+  assert_equal(20, h.size)
+  assert_raise(FrozenError){{}.freeze.rehash}
+  assert_raise(FrozenError){{1 => 2}.freeze.rehash}
+end
+
+assert('Hash#rehash interrupted by an exception') do
+  # Reindexing asks the keys for their hash codes and compares the ones that
+  # collide, so it can raise anywhere along the way, and a key mutated into
+  # the state that calls for a rehash is exactly a key whose `hash` can fail.
+  # Rebuilt in place, the hash was left carrying an index for the entries the
+  # raise had reached and none for the rest: those keys could not be found
+  # while `size` and an iteration went on showing them, and the next store
+  # wrote over entries the index was never given. Whatever is raised, the
+  # hash that comes out is the one that went in.
+  #
+  # The AR form compares the keys without asking for a hash code, so only
+  # `eql?` speaks for it; the HT form is reached with 17 entries or more. A
+  # key that fails where the new table is still empty is asked for its hash
+  # code all the same, when the sixteen entries before it turn it into an
+  # index, so both ends of the walk are covered.
+  [[:hash, 24, 0], [:hash, 24, 23], [:eql?, 7, 6], [:eql?, 24, 23]].each do |failing, n, at|
+    keys = (0...n).map{HashKey[_1]}
+    h = {}
+    keys.each_with_index{|k, i| h[k] = i}
+    pairs = h.to_a
+    keys[at].error = failing
+    assert_raise(RuntimeError){h.rehash}
+    keys[at].error = nil
+
+    assert_equal(pairs, h.to_a)
+    assert_equal(n, h.size)
+    keys.each_with_index{|k, i| assert_equal(i, h[k])}
+
+    # A store still reaches the entry its key already has, and a new key
+    # takes a slot of its own instead of one an entry is living in.
+    h[keys[0]] = :again
+    h[:fresh] = :new
+    assert_equal(n+1, h.size)
+    assert_equal(n+1, h.to_a.size)
+    assert_equal(:new, h[:fresh])
+    keys.each_with_index{|k, i| assert_equal(i == 0 ? :again : i, h[k])}
+  end
+end
+
+assert('Hash#rehash with a key that writes to the hash') do
+  # A key that stores into the hash from its own `hash` is told "hash
+  # modified", and what the store wrote is all that is left of the attempt:
+  # the entries are the ones the rehash started from, reachable by their
+  # keys, not a half reindexed table. Twenty entries and one store keep the
+  # index below the width it grows at, which is a reentry of its own.
+  h = {}
+  keys = (0...20).map{HashKey[_1]}
+  keys.each_with_index{|k, i| h[k] = i}
+  keys[17].callback = ->(name, *){h[:written] = true if name == :hash}
+  assert_raise(RuntimeError){h.rehash}
+  keys[17].callback = nil
+
+  assert_equal(21, h.size)
+  assert_equal(21, h.to_a.size)
+  assert_true(h[:written])
+  keys.each_with_index{|k, i| assert_equal(i, h[k])}
 end
 
 assert('Hash iteration with entries deleted ahead of the cursor') do
