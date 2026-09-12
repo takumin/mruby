@@ -82,6 +82,14 @@ MRuby::Build.new('byte-string') do |conf|
   conf.gembox 'full-core'
   conf.gems.delete 'mruby-encoding'
 
+  # The one build here without the frozen string literal cache. Without it a
+  # frozen literal is found in the table by its text on every execution, which
+  # is the arm of OP_STRING and OP_LOADL that nothing else in CI compiles. It
+  # rides along here for the reason the getrusage override below does: no
+  # extra pass, and what a string indexes by has nothing to do with what a
+  # literal is looked up by.
+  conf.cc.defines << 'MRB_NO_FRZSTR_CACHE'
+
   conf.enable_test
 end
 
