@@ -112,6 +112,8 @@ struct mrb_backtrace_location {
 /* gc */
 size_t mrb_gc_mark_mt(mrb_state*, struct RClass*);
 int mrb_equal_in_c(mrb_state*, mrb_value, mrb_value);
+int mrb_eql_in_c(mrb_state*, mrb_value, mrb_value);
+int mrb_cmp_in_c(mrb_state*, mrb_value, mrb_value, mrb_int*);
 void mrb_gc_each_live_object(mrb_state*, int (*)(mrb_state*, struct RBasic*, void*), void*);
 void mrb_gc_free_mt(mrb_state*, struct RClass*);
 
@@ -121,6 +123,7 @@ size_t mrb_gc_mark_hash(mrb_state*, struct RHash*);
 void mrb_gc_free_hash(mrb_state*, struct RHash*);
 mrb_value mrb_hash_first_key(mrb_state*, mrb_value);
 uint32_t mrb_obj_hash_code(mrb_state *mrb, mrb_value key);
+mrb_bool mrb_obj_hash_code_in_c(mrb_state *mrb, mrb_value key, uint32_t *codep);
 
 /* irep */
 struct mrb_insn_data mrb_decode_insn(const mrb_code *pc);
@@ -671,6 +674,7 @@ void mrb_vm_cv_set(mrb_state*, mrb_sym, mrb_value);
 mrb_value mrb_vm_const_get(mrb_state*, mrb_sym);
 mrb_bool mrb_vm_const_defined_p(mrb_state *mrb, mrb_callinfo *ci, mrb_sym sym);
 mrb_value mrb_vm_const_get_noraise(mrb_state *mrb, mrb_callinfo *ci, mrb_sym sym);
+mrb_value mrb_vm_const_get_noraise_base(mrb_state *mrb, mrb_callinfo *ci, mrb_sym sym, struct RClass **basep);
 mrb_value mrb_const_get_noraise(mrb_state *mrb, struct RClass *mod, mrb_sym sym);
 mrb_bool mrb_vm_cv_defined_p(mrb_state *mrb, const struct RProc *proc, mrb_sym sym);
 struct RClass *mrb_vm_cref_class(mrb_state *mrb, mrb_callinfo *ci);
@@ -799,6 +803,7 @@ void mrb_vm_ci_inherit_visibility(mrb_state *mrb, const struct RProc *p);
 mrb_int mrb_ci_bidx(mrb_callinfo *ci);
 mrb_int mrb_ci_nregs(mrb_callinfo *ci);
 mrb_value mrb_exec_irep(mrb_state *mrb, mrb_value self, const struct RProc *p);
+void mrb_cont_stack_free(mrb_state *mrb, struct mrb_cont_stack *s);
 mrb_value mrb_obj_instance_eval(mrb_state*, mrb_value);
 mrb_value mrb_object_exec(mrb_state *mrb, mrb_value self, struct RClass *target_class);
 mrb_value mrb_mod_module_eval(mrb_state*, mrb_value);

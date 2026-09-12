@@ -358,6 +358,46 @@ float_hash_code(mrb_float f)
 }
 #endif
 
+/* Whether mrb_obj_hash_code() below answers a key of this kind itself. The
+   kinds are listed rather than the code computed, so the function that
+   computes it is left exactly as it was: it inlines into ib_it_init() and so
+   into ht_get(), and growing it costs every lookup 56 instructions. A kind
+   added to the switch below belongs here too. */
+static mrb_bool
+hash_code_kind_p(mrb_value key)
+{
+  switch (mrb_type(key)) {
+  case MRB_TT_STRING:
+  case MRB_TT_TRUE:
+  case MRB_TT_FALSE:
+  case MRB_TT_SYMBOL:
+  case MRB_TT_INTEGER:
+#ifndef MRB_NO_FLOAT
+  case MRB_TT_FLOAT:
+#endif
+    return TRUE;
+  default:
+    return FALSE;
+  }
+}
+
+/* The code mrb_obj_hash_code() gives, and whether it could be had without
+   running Ruby code. A `hash` written in Ruby is reported rather than sent, so
+   that a caller which cannot afford to re-enter the VM hands that send over
+   itself. One written in C is sent as usual: it runs on no nested
+   mrb_vm_exec() and there is nothing to hand over. */
+mrb_bool
+mrb_obj_hash_code_in_c(mrb_state *mrb, mrb_value key, uint32_t *codep)
+{
+  if (!hash_code_kind_p(key)) {
+    struct RClass *c = mrb_class(mrb, key);
+    mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(hash));
+    if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m)) return FALSE;
+  }
+  *codep = mrb_obj_hash_code(mrb, key);
+  return TRUE;
+}
+
 uint32_t
 mrb_obj_hash_code(mrb_state *mrb, mrb_value key)
 {
@@ -1633,6 +1673,28 @@ static mrb_value
 mrb_hash_aget(mrb_state *mrb, mrb_value self)
 {
   mrb_value key = mrb_get_arg1(mrb);
+  mrb_value val;
+
+  if (h_get(mrb, mrb_hash_ptr(self), key, &val)) {
+    return val;
+  }
+
+  /* The default proc's result is this method's result, so the proc takes this
+     frame instead of running on a nested `mrb_vm_exec()`. That is what lets a
+     `Fiber.yield` written in the proc cross `Hash#[]`, and it drops the cost
+     of the re-entry. `mrb_hash_get()` keeps the old path: it is MRB_API and
+     its callers are C code holding the value it returns. */
+  if (MRB_RHASH_DEFAULT_P(self) && MRB_RHASH_PROCDEFAULT_P(self) &&
+      mrb_func_basic_p(mrb, self, MRB_SYM(default), mrb_hash_default)) {
+    mrb_value blk = RHASH_PROCDEFAULT(self);
+    struct RClass *tc;
+    mrb_value bself = mrb_proc_get_self(mrb, mrb_proc_ptr(blk), &tc);
+    mrb_value args[2];
+
+    args[0] = self;
+    args[1] = key;
+    return mrb_yield_cont(mrb, blk, bself, 2, args);
+  }
 
   return mrb_hash_get(mrb, self, key);
 }
@@ -1669,7 +1731,15 @@ mrb_hash_default(mrb_state *mrb, mrb_value hash)
   if (MRB_RHASH_DEFAULT_P(hash)) {
     if (MRB_RHASH_PROCDEFAULT_P(hash)) {
       if (!given) return mrb_nil_value();
-      return mrb_funcall_argv2(mrb, RHASH_PROCDEFAULT(hash), MRB_SYM(call), hash, key);
+      /* the proc's result is this method's result; see mrb_hash_aget() */
+      mrb_value blk = RHASH_PROCDEFAULT(hash);
+      struct RClass *tc;
+      mrb_value bself = mrb_proc_get_self(mrb, mrb_proc_ptr(blk), &tc);
+      mrb_value args[2];
+
+      args[0] = hash;
+      args[1] = key;
+      return mrb_yield_cont(mrb, blk, bself, 2, args);
     }
     else {
       return RHASH_IFNONE(hash);

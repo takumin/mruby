@@ -422,6 +422,35 @@ mrb_ary_s_create(mrb_state *mrb, mrb_value klass)
 
 static void ary_replace(mrb_state*, struct RArray*, struct RArray*);
 
+static mrb_value ary_init_resume(mrb_state *mrb, mrb_value val, mrb_int i);
+
+/* Fills the array from the block, resumable from any index. The receiver and
+   the size are read from the frame rather than held in C locals: the fill
+   returns to the VM on every element, and only the frame survives that. */
+static mrb_value
+ary_init_fill(mrb_state *mrb, mrb_int i)
+{
+  mrb_int size = mrb_integer(mrb->c->ci->stack[1]);
+
+  for (; i < size; i++) {
+    mrb_callinfo *ci = mrb->c->ci;
+    mrb_value iv = mrb_int_value(mrb, i), v;
+
+    if (mrb_block_cont_p(mrb, &v, ary_init_resume, i, ci->stack[mrb_ci_bidx(ci)], 1, &iv)) {
+      return v;
+    }
+    mrb_ary_set(mrb, mrb->c->ci->stack[0], i, v);
+  }
+  return mrb->c->ci->stack[0];
+}
+
+static mrb_value
+ary_init_resume(mrb_state *mrb, mrb_value val, mrb_int i)
+{
+  mrb_ary_set(mrb, mrb->c->ci->stack[0], i, val);
+  return ary_init_fill(mrb, i + 1);
+}
+
 /*
  *  call-seq:
  *     Array.new(size=0, default=nil) -> new_array
@@ -486,19 +515,23 @@ mrb_ary_init(mrb_state *mrb, mrb_value ary)
     ary_expand_capa(mrb, a, size);
   }
 
-  int ai = mrb_gc_arena_save(mrb);
-  for (mrb_int i=0; i<size; i++) {
-    mrb_value val;
-    if (mrb_nil_p(blk)) {
-      val = obj;
+  if (mrb_nil_p(blk)) {
+    for (mrb_int i=0; i<size; i++) {
+      mrb_ary_set(mrb, ary, i, obj);
     }
-    else {
-      val = mrb_yield(mrb, blk, mrb_fixnum_value(i));
-    }
-    mrb_ary_set(mrb, ary, i, val);
-    mrb_gc_arena_restore(mrb, ai); // for mrb_funcall
+    return ary;
   }
-  return ary;
+
+  if (size == 0) return ary;
+
+  /* The size is written back over the argument register. The fill reads it
+     there on every resume, and reading the argument itself again would ask a
+     Ruby object for its integer value a second time. The register is free to
+     take it: mrb_get_args() has already read what was in it. */
+  mrb->c->ci->stack[1] = mrb_int_value(mrb, size);
+  /* The block runs through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in it has no C frame to lose. */
+  return ary_init_fill(mrb, 0);
 }
 
 /* Internal helper to concatenate two arrays */
@@ -1591,6 +1624,80 @@ mrb_ary_last(mrb_state *mrb, mrb_value self)
  *
  * ISO 15.2.12.5.14
  */
+static mrb_value ary_index_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The block walk, resumable from any index. The receiver and the block are
+   read from the frame rather than held in C locals: the walk returns to the
+   VM on every element, and only the frame survives that. */
+static mrb_value
+ary_index_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+  mrb_value blk = ci->stack[mrb_ci_bidx(ci)];
+  mrb_bool tail = mrb_block_cont_ready_p(mrb, blk);
+
+  /* The block may have grown or shrunk the array under us, so the length and
+     the pointer are read afresh each turn, and so is the frame: a call made
+     here rather than handed over ran a VM of its own, which can have moved
+     both the frames and the registers they point into. */
+  for (; i < RARRAY_LEN(self); i++) {
+    mrb_value v = RARRAY_PTR(self)[i], r;
+
+    if (tail) return mrb_block_cont(mrb, ary_index_resume, i, blk, 1, &v);
+    if (mrb_block_cont_p(mrb, &r, ary_index_resume, i, blk, 1, &v)) return r;
+    if (mrb_test(r)) return mrb_int_value(mrb, i);
+    ci = mrb->c->ci;
+    self = ci->stack[0];
+    blk = ci->stack[mrb_ci_bidx(ci)];
+  }
+  return mrb_nil_value();
+}
+
+static mrb_value
+ary_index_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) return mrb_int_value(mrb, i);
+  return ary_index_walk(mrb, i + 1);
+}
+
+static mrb_value ary_index_eq_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The search for an equal element, resumable from any index. `==` is answered
+   in C wherever mrb_equal_in_c() can answer it, and the walk returns to the VM
+   for the one written in Ruby. */
+static mrb_value
+ary_index_eq_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+  mrb_value obj = ci->stack[1];
+
+  /* A `==` written in Ruby may grow or shrink the array under us, so the
+     length and the pointer are read afresh each turn. */
+  for (; i < RARRAY_LEN(self); i++) {
+    int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+    if (r > 0) return mrb_int_value(mrb, i);
+    if (r < 0) {
+      mrb_value v;
+
+      if (mrb_funcall_cont_p(mrb, &v, ary_index_eq_resume, i,
+                             RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj)) {
+        return v;
+      }
+      if (mrb_test(v)) return mrb_int_value(mrb, i);
+    }
+  }
+  return mrb_nil_value();
+}
+
+static mrb_value
+ary_index_eq_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) return mrb_int_value(mrb, i);
+  return ary_index_eq_walk(mrb, i + 1);
+}
+
 static mrb_value
 mrb_ary_index_m(mrb_state *mrb, mrb_value self)
 {
@@ -1600,22 +1707,11 @@ mrb_ary_index_m(mrb_state *mrb, mrb_value self)
     return mrb_funcall_argv1(mrb, self, MRB_SYM(to_enum), mrb_symbol_value(MRB_SYM(index)));
   }
 
-  if (mrb_nil_p(blk)) {
-    for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-      if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-        return mrb_int_value(mrb, i);
-      }
-    }
-  }
-  else {
-    for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-      mrb_value eq = mrb_yield(mrb, blk, RARRAY_PTR(self)[i]);
-      if (mrb_test(eq)) {
-        return mrb_int_value(mrb, i);
-      }
-    }
-  }
-  return mrb_nil_value();
+  /* Both walks run through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in the block, or in a `==` the search reaches, has no
+     C frame to lose. */
+  if (mrb_nil_p(blk)) return ary_index_eq_walk(mrb, 0);
+  return ary_index_walk(mrb, 0);
 }
 
 /*
@@ -1633,6 +1729,85 @@ mrb_ary_index_m(mrb_state *mrb, mrb_value self)
  *
  * ISO 15.2.12.5.26
  */
+static mrb_value ary_rindex_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The backward walk, resumable from any index. Like ary_index_walk(), it keeps
+   nothing in C locals: the walk returns to the VM on every element. */
+static mrb_value
+ary_rindex_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_value self = mrb->c->ci->stack[0];
+
+  for (; i >= 0; i--) {
+    mrb_callinfo *ci;
+    mrb_value v, r;
+
+    /* A block that shortened the array leaves the index past its end, and the
+       step below brings it back inside rather than reading where it points. */
+    if (i >= RARRAY_LEN(self)) {
+      i = RARRAY_LEN(self);
+      continue;
+    }
+    ci = mrb->c->ci;
+    v = RARRAY_PTR(self)[i];
+    if (mrb_block_cont_p(mrb, &r, ary_rindex_resume, i, ci->stack[mrb_ci_bidx(ci)], 1, &v)) {
+      return r;
+    }
+    if (mrb_test(r)) return mrb_int_value(mrb, i);
+  }
+  return mrb_nil_value();
+}
+
+static mrb_value
+ary_rindex_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) return mrb_int_value(mrb, i);
+  return ary_rindex_walk(mrb, i - 1);
+}
+
+static mrb_value ary_rindex_eq_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The backward search for an equal element, resumable from any index. */
+static mrb_value
+ary_rindex_eq_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+  mrb_value obj = ci->stack[1];
+
+  for (; i >= 0; i--) {
+    /* A `==` written in Ruby may have shortened the array, which leaves the
+       index past its end. The C loop answers that by bringing the index back
+       to the new length and letting the step below take it inside; reading at
+       the index first would read past the end. */
+    if (i >= RARRAY_LEN(self)) {
+      i = RARRAY_LEN(self);
+      continue;
+    }
+    {
+      int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+      if (r > 0) return mrb_int_value(mrb, i);
+      if (r < 0) {
+        mrb_value v;
+
+        if (mrb_funcall_cont_p(mrb, &v, ary_rindex_eq_resume, i,
+                               RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj)) {
+          return v;
+        }
+        if (mrb_test(v)) return mrb_int_value(mrb, i);
+      }
+    }
+  }
+  return mrb_nil_value();
+}
+
+static mrb_value
+ary_rindex_eq_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) return mrb_int_value(mrb, i);
+  return ary_rindex_eq_walk(mrb, i - 1);
+}
+
 static mrb_value
 mrb_ary_rindex_m(mrb_state *mrb, mrb_value self)
 {
@@ -1642,22 +1817,11 @@ mrb_ary_rindex_m(mrb_state *mrb, mrb_value self)
     return mrb_funcall_argv1(mrb, self, MRB_SYM(to_enum), mrb_symbol_value(MRB_SYM(rindex)));
   }
 
-  for (mrb_int i = RARRAY_LEN(self) - 1; i >= 0; i--) {
-    if (mrb_nil_p(blk)) {
-      if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-      return mrb_int_value(mrb, i);
-      }
-    }
-    else {
-      mrb_value eq = mrb_yield(mrb, blk, RARRAY_PTR(self)[i]);
-      if (mrb_test(eq)) return mrb_int_value(mrb, i);
-    }
-    mrb_int len = RARRAY_LEN(self);
-    if (i > len) {
-      i = len;
-    }
-  }
-  return mrb_nil_value();
+  /* Both walks run through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in the block, or in a `==` the search reaches, has no
+     C frame to lose. */
+  if (mrb_nil_p(blk)) return ary_rindex_eq_walk(mrb, RARRAY_LEN(self) - 1);
+  return ary_rindex_walk(mrb, RARRAY_LEN(self) - 1);
 }
 
 /**
@@ -1793,28 +1957,51 @@ mrb_ary_entry(mrb_value ary, mrb_int n)
   return ARY_PTR(a)[n];
 }
 
-static mrb_value
-join_ary(mrb_state *mrb, mrb_value ary, mrb_value sep)
+/* What the walk carries. The frame's second register holds it where the walk
+   may hand a `to_s` to the VM; where it may not -- mrb_ary_join() is C API as
+   well as the method behind `join`, and a C caller goes on after it returns --
+   it is a local of the caller and JOIN_HAND says so. */
+enum {
+  JOIN_SEP, JOIN_RESULT, JOIN_STACK, JOIN_ARY, JOIN_IDX, JOIN_HAND, JOIN_NSLOTS
+};
+
+static mrb_value join_resume(mrb_state *mrb, mrb_value result, mrb_int state);
+
+/* Appends what `to_s` answered, as mrb_type_convert() answers for it: an
+   answer that is not a String is answered for with the default `to_s`. */
+static void
+join_cat(mrb_state *mrb, mrb_value str, mrb_value elem, mrb_value result)
 {
-  mrb_value result = mrb_str_new_capa(mrb, 64);
-  /* Explicit stack of (array, index) frames instead of C recursion, so a
-     deeply nested (non-cyclic) array cannot overflow the native stack.
-     Nested results are concatenated verbatim, so appending every element
-     into one shared buffer in depth-first order yields the same bytes a
-     per-level recursion would.  The stack is a GC-tracked array; an
-     exception unwind reclaims it, so there is no leak. */
-  mrb_value stack = mrb_ary_new(mrb);
-  mrb_int idx = 0;
+  mrb_str_cat_str(mrb, str, mrb_string_p(result) ? result : mrb_any_to_s(mrb, elem));
+}
+
+/* Explicit stack of (array, index) frames instead of C recursion, so a deeply
+   nested (non-cyclic) array cannot overflow the native stack. Nested results
+   are concatenated verbatim, so appending every element into one shared
+   buffer in depth-first order yields the same bytes a per-level recursion
+   would. The stack is a GC-tracked array; an exception unwind reclaims it, so
+   there is no leak. */
+static mrb_value
+join_walk(mrb_state *mrb, mrb_value st)
+{
+  mrb_value *sp = RARRAY_PTR(st);
+  mrb_value sep = sp[JOIN_SEP];
+  mrb_value result = sp[JOIN_RESULT];
+  mrb_value stack = sp[JOIN_STACK];
+  mrb_bool hand = mrb_test(sp[JOIN_HAND]);
+  mrb_value ary = sp[JOIN_ARY];
+  mrb_int idx = mrb_fixnum(sp[JOIN_IDX]);
 
   for (;;) {
     while (idx < RARRAY_LEN(ary)) {
       mrb_value val = RARRAY_PTR(ary)[idx];
+      mrb_bool as_array = FALSE;
+
       if (idx > 0 && !mrb_nil_p(sep)) {
         mrb_str_cat_str(mrb, result, sep);
       }
       idx++;
 
-      mrb_bool as_array = FALSE;
       switch (mrb_type(val)) {
       case MRB_TT_ARRAY:
         as_array = TRUE;
@@ -1836,6 +2023,23 @@ join_ary(mrb_state *mrb, mrb_value ary, mrb_value sep)
             as_array = TRUE;
             break;
           }
+          /* The element's `to_s` runs through the VM rather than on a nested
+             mrb_vm_exec(), so a Fiber.yield written in it has no C frame to
+             lose. An element with no `to_s` at all is left to
+             mrb_obj_as_string(), which answers for that with the TypeError
+             the conversion protocol raises rather than a NoMethodError. */
+          if (hand && mrb_respond_to(mrb, val, MRB_SYM(to_s))) {
+            mrb_value v;
+
+            sp[JOIN_IDX] = mrb_fixnum_value(idx);
+            if (mrb_funcall_cont_p(mrb, &v, join_resume, 0, val, MRB_SYM(to_s), 0, NULL)) {
+              return v;
+            }
+            /* The call was made here rather than handed over, so the walk
+               goes on in its own loop. */
+            join_cat(mrb, result, val, v);
+            continue;
+          }
         }
         val = mrb_obj_as_string(mrb, val);
         break;
@@ -1856,6 +2060,7 @@ join_ary(mrb_state *mrb, mrb_value ary, mrb_value sep)
         mrb_ary_push(mrb, stack, mrb_fixnum_value(idx));
         ary = val;
         idx = 0;
+        mrb_ary_set(mrb, st, JOIN_ARY, ary);
       }
       else {
         mrb_str_cat_str(mrb, result, val);
@@ -1866,9 +2071,47 @@ join_ary(mrb_state *mrb, mrb_value ary, mrb_value sep)
     /* ascend: restore the parent frame */
     idx = mrb_fixnum(mrb_ary_pop(mrb, stack));
     ary = mrb_ary_pop(mrb, stack);
+    mrb_ary_set(mrb, st, JOIN_ARY, ary);
   }
 
   return result;
+}
+
+static mrb_value
+join_resume(mrb_state *mrb, mrb_value result, mrb_int state)
+{
+  mrb_value st = mrb->c->ci->stack[1];
+  mrb_value *sp = RARRAY_PTR(st);
+  mrb_value ary = sp[JOIN_ARY];
+  mrb_int idx = mrb_fixnum(sp[JOIN_IDX]);
+
+  /* The element asked was the one before the index, which the walk had moved
+     on before it asked. */
+  join_cat(mrb, sp[JOIN_RESULT],
+           (idx > 0 && idx <= RARRAY_LEN(ary)) ? RARRAY_PTR(ary)[idx-1] : mrb_nil_value(),
+           result);
+  return join_walk(mrb, st);
+}
+
+/* Makes what the walk carries. `hand` says whether a `to_s` may be handed to
+   the VM, which only a caller that ends with the walk can allow. */
+static mrb_value
+join_start(mrb_state *mrb, mrb_value ary, mrb_value sep, mrb_bool hand)
+{
+  mrb_value slots[JOIN_NSLOTS];
+  mrb_value st;
+
+  slots[JOIN_SEP] = sep;
+  slots[JOIN_RESULT] = mrb_str_new_capa(mrb, 64);
+  slots[JOIN_STACK] = mrb_ary_new(mrb);
+  slots[JOIN_ARY] = ary;
+  slots[JOIN_IDX] = mrb_fixnum_value(0);
+  slots[JOIN_HAND] = mrb_bool_value(hand);
+  st = mrb_ary_new_from_values(mrb, JOIN_NSLOTS, slots);
+  /* The register the separator came in on carries it, so that the resume can
+     find it; mrb_get_args() has read what was there. */
+  if (hand) mrb->c->ci->stack[1] = st;
+  return join_walk(mrb, st);
 }
 
 /**
@@ -1891,7 +2134,9 @@ mrb_ary_join(mrb_state *mrb, mrb_value ary, mrb_value sep)
   if (!mrb_nil_p(sep)) {
     sep = mrb_obj_as_string(mrb, sep);
   }
-  return join_ary(mrb, ary, sep);
+  /* A C caller goes on after this returns, so nothing here may be handed to
+     the VM. `Array#join` allows it; this is the API behind it. */
+  return join_start(mrb, ary, sep, FALSE);
 }
 
 /*
@@ -1911,7 +2156,8 @@ mrb_ary_join_m(mrb_state *mrb, mrb_value ary)
   mrb_value sep = mrb_nil_value();
 
   mrb_get_args(mrb, "|S!", &sep);
-  return mrb_ary_join(mrb, ary, sep);
+  /* The walk ends this method, so a `to_s` it reaches can go to the VM. */
+  return join_start(mrb, ary, sep, TRUE);
 }
 
 /*
@@ -1921,24 +2167,74 @@ mrb_ary_join_m(mrb_state *mrb, mrb_value ary)
  *
  * Return the contents of this array as a string.
  */
+static mrb_value ary_to_s_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* Appends what `inspect` answered, which mrb_inspect() answers for the same
+   way: anything but a String is answered for with the element's own to_s. */
+static void
+ary_to_s_cat(mrb_state *mrb, mrb_value str, mrb_value elem, mrb_value result)
+{
+  if (!mrb_string_p(result)) {
+    result = mrb_obj_as_string(mrb, elem);
+  }
+  mrb_str_cat_str(mrb, str, result);
+}
+
+/* The walk, resumable from any index. The string being built is kept in the
+   register the block came in on: the walk returns to the VM for an element
+   whose `inspect` is written in Ruby, and only the frame survives that. An
+   element whose `inspect` is a C function is answered without leaving the
+   loop, which is what keeps a long array from taking a C frame per element. */
+static mrb_value
+ary_to_s_walk(mrb_state *mrb, mrb_int i)
+{
+  mrb_value self = mrb->c->ci->stack[0];
+  int ai = mrb_gc_arena_save(mrb);
+
+  /* An `inspect` written in Ruby may grow or shrink the array under us, so
+     the length is read afresh each turn. The frame is read afresh too: a call
+     that was not handed over ran a VM of its own, which can have moved both
+     the frames and the registers they point into. */
+  for (; i < RARRAY_LEN(self); i++) {
+    mrb_value elem = RARRAY_PTR(self)[i];
+    mrb_value v;
+
+    if (i > 0) mrb_str_cat_lit(mrb, mrb->c->ci->stack[1], ", ");
+    /* The element's `inspect` runs through the VM rather than on a nested
+       mrb_vm_exec(), so a Fiber.yield written in it has no C frame to lose. */
+    if (mrb_funcall_cont_p(mrb, &v, ary_to_s_resume, i, elem, MRB_SYM(inspect), 0, NULL)) {
+      return v;
+    }
+    ary_to_s_cat(mrb, mrb->c->ci->stack[1], elem, v);
+    mrb_gc_arena_restore(mrb, ai);
+  }
+  mrb_str_cat_lit(mrb, mrb->c->ci->stack[1], "]");
+  return mrb->c->ci->stack[1];
+}
+
+static mrb_value
+ary_to_s_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+
+  ary_to_s_cat(mrb, ci->stack[1],
+               i < RARRAY_LEN(self) ? RARRAY_PTR(self)[i] : mrb_nil_value(), result);
+  return ary_to_s_walk(mrb, i + 1);
+}
+
 static mrb_value
 mrb_ary_to_s(mrb_state *mrb, mrb_value self)
 {
   mrb->c->ci->mid = MRB_SYM(inspect);
   mrb_value ret = mrb_str_new_lit(mrb, "[");
-  int ai = mrb_gc_arena_save(mrb);
   if (MRB_RECURSIVE_UNARY_P(mrb, MRB_SYM(inspect), self)) {
     mrb_str_cat_lit(mrb, ret, "...]");
     return ret;
   }
-  for (mrb_int i=0; i<RARRAY_LEN(self); i++) {
-    if (i>0) mrb_str_cat_lit(mrb, ret, ", ");
-    mrb_str_cat_str(mrb, ret, mrb_inspect(mrb, RARRAY_PTR(self)[i]));
-    mrb_gc_arena_restore(mrb, ai);
-  }
-  mrb_str_cat_lit(mrb, ret, "]");
-
-  return ret;
+  /* The register the block came in on carries the string from here on. */
+  mrb->c->ci->stack[1] = ret;
+  return ary_to_s_walk(mrb, 0);
 }
 
 /* check array equality: 1=equal,0=not_equal,-1=need_elements_check */
@@ -2104,22 +2400,81 @@ mrb_ary_svalue_eq(mrb_state *mrb, mrb_value ary)
  * that e == obj. If any such elements are found, ignores the block and
  * returns the last. Otherwise, returns the block's return value.
  */
+/* What the walk carries past a `==` written in Ruby, and cannot keep in C
+   locals. The frame holds the receiver, the argument and the block, and the
+   argument is the one of those with a register the walk can take: what came
+   in on it is read from here instead, at a fixed place rather than wherever
+   the block register happens to be. The array is made only where a `==`
+   sends, so a search that stays in C does not allocate it. */
+enum { ADEL_OBJ, ADEL_BLK, ADEL_RET, ADEL_J, ADEL_NSLOTS };
+
+static mrb_value ary_delete_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The walk, resumable from any index. `known` is the answer for the element
+   at `i` when the walk comes back with one, and -1 when it is to ask. */
 static mrb_value
-mrb_ary_delete(mrb_state *mrb, mrb_value self)
+ary_delete_walk(mrb_state *mrb, mrb_int i, mrb_int j, mrb_value ret, mrb_value st, int known)
 {
-  mrb_value obj, blk;
-
-  mrb_get_args(mrb, "o&", &obj, &blk);
-
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+  /* The argument register holds the array once there is one, and what came in
+     on it is in there too. */
+  mrb_value obj = mrb_nil_p(st) ? ci->stack[1] : RARRAY_PTR(st)[ADEL_OBJ];
   struct RArray *ary = RARRAY(self);
-  mrb_value ret = obj;
   int ai = mrb_gc_arena_save(mrb);
-  mrb_int i = 0;
-  mrb_int j = 0;
-  for (; i < ARY_LEN(ary); i++) {
-    mrb_value elem = ARY_PTR(ary)[i];
 
-    if (mrb_equal(mrb, elem, obj)) {
+  for (; i < ARY_LEN(ary); i++, known = -1) {
+    mrb_value elem = ARY_PTR(ary)[i];
+    int r = known;
+
+    if (r < 0) {
+      r = mrb_equal_in_c(mrb, elem, obj);
+      if (r < 0) {
+        /* The `==` here is written in Ruby. Hand the call to the VM and ask
+           to be resumed with its answer, rather than running it on a nested
+           VM: that keeps this walk off the C stack, so a Fiber can suspend
+           inside the comparison. */
+        if (mrb_nil_p(st)) {
+          mrb_value slots[ADEL_NSLOTS];
+          slots[ADEL_OBJ] = obj;
+          slots[ADEL_BLK] = ci->stack[mrb_ci_bidx(ci)];
+          slots[ADEL_RET] = ret;
+          slots[ADEL_J] = mrb_fixnum_value(j);
+          st = mrb_ary_new_from_values(mrb, ADEL_NSLOTS, slots);
+          ci->stack[1] = st;
+        }
+        else {
+          /* The answer changes only where an element goes, which is rarer
+             than a comparison, so it is written back only when it has. */
+          if (!mrb_obj_eq(mrb, RARRAY_PTR(st)[ADEL_RET], ret)) {
+            mrb_ary_set(mrb, st, ADEL_RET, ret);
+          }
+          RARRAY_PTR(st)[ADEL_J] = mrb_fixnum_value(j);
+        }
+        {
+          mrb_value v;
+
+          if (mrb_funcall_cont_p(mrb, &v, ary_delete_resume, i, elem,
+                                 MRB_OPSYM(eq), 1, &obj)) {
+            return v;
+          }
+          /* The call was made here rather than handed over, so the walk goes
+             on with the answer instead of coming back through the resume,
+             which would cost a C frame for every element. It ran Ruby all the
+             same, so the frame and the array are read afresh. */
+          ci = mrb->c->ci;
+          ary = RARRAY(self);
+          if (i >= ARY_LEN(ary)) break;
+          elem = ARY_PTR(ary)[i];
+          r = mrb_test(v) ? 1 : 0;
+        }
+      }
+    }
+
+    if (r > 0) {
+      /* The element is on its way out of the array, and the answer is the
+         last one that goes. Compacting can write over where it sits, so it
+         is held in the arena rather than left to the array. */
       mrb_gc_arena_restore(mrb, ai);
       mrb_gc_protect(mrb, elem);
       ret = elem;
@@ -2140,12 +2495,37 @@ mrb_ary_delete(mrb_state *mrb, mrb_value self)
   }
 
   if (i == j) {
+    mrb_value blk = mrb_nil_p(st) ? ci->stack[mrb_ci_bidx(ci)] : RARRAY_PTR(st)[ADEL_BLK];
     if (mrb_nil_p(blk)) return mrb_nil_value();
-    return mrb_yield(mrb, blk, obj);
+    /* The block's result is this method's result, so it takes this frame
+       rather than a nested `mrb_vm_exec()`. */
+    struct RClass *tc;
+    mrb_value bself = mrb_proc_get_self(mrb, mrb_proc_ptr(blk), &tc);
+    return mrb_yield_cont(mrb, blk, bself, 1, &obj);
   }
 
   ARY_SET_LEN(ary, j);
   return ret;
+}
+
+static mrb_value
+ary_delete_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  mrb_value st = mrb->c->ci->stack[1];
+
+  return ary_delete_walk(mrb, i, mrb_fixnum(RARRAY_PTR(st)[ADEL_J]),
+                         RARRAY_PTR(st)[ADEL_RET], st, mrb_test(result) ? 1 : 0);
+}
+
+static mrb_value
+mrb_ary_delete(mrb_state *mrb, mrb_value self)
+{
+  mrb_value obj, blk;
+
+  mrb_get_args(mrb, "o&", &obj, &blk);
+  /* The walk runs through the VM rather than on a nested mrb_vm_exec(), so a
+     Fiber.yield written in a `==` it reaches has no C frame to lose. */
+  return ary_delete_walk(mrb, 0, 0, obj, mrb_nil_value(), -1);
 }
 
 
@@ -2334,165 +2714,362 @@ cmpint(mrb_state *mrb, mrb_value c, mrb_value a, mrb_value b)
   return 0;
 }
 
+/* --- the sort a block orders -------------------------------------------
+   The block runs through the VM, so the sort cannot keep its place in C
+   locals: every comparison returns to the VM and comes back through
+   sort_resume(). What it keeps goes into an array instead. The frame has no
+   register to spare (`sort!` takes no argument, so it holds the receiver and
+   the block alone), so the block moves into that array too and the array
+   takes the register the block came in on.
+
+   The order the comparisons come in is the one the C sort makes: an
+   insertion sort for a short array, and for a longer one a heap built with
+   sift-downs and emptied by Floyd's bottom-up deletion. Each of them sifts
+   by swapping rather than by carrying a value in a hole, which leaves the
+   element being sifted in the array where the resumed sort can find it
+   again. The two arrangements make the same comparisons and answer alike. */
+enum {
+  SORT_ARY,                     /* the array being sorted */
+  SORT_BLK,                     /* the block that orders it */
+  SORT_LEN,                     /* the length it had when the sort started */
+  SORT_HSIZE,                   /* how much of it is still a heap */
+  SORT_I,                       /* the outer loop's place */
+  SORT_INDEX,                   /* the sift's place, and the insertion's */
+  SORT_CHILD,
+  SORT_PHASE,
+  SORT_X,                       /* where the pair the block was handed came
+                                   from, for the error naming that pair */
+  SORT_Y,
+  SORT_NSLOTS
+};
+
+/* Each comparison returns to the VM, so each has a name to come back to. */
+enum {
+  SORT_PC_SIFT,                 /* at the top of a sift-down */
+  SORT_PC_CHILD,                /* the answer says which child is the greater */
+  SORT_PC_PARENT,               /* the answer says whether the child outranks
+                                   the element being sifted */
+  SORT_PC_DOWN,                 /* at the top of Floyd's descent */
+  SORT_PC_DOWN_CHILD,           /* the answer says which child to descend to */
+  SORT_PC_UP,                   /* at the top of Floyd's climb */
+  SORT_PC_UP_ANS,               /* the answer says whether to climb further */
+  SORT_PC_STEP,                 /* the sift is done: move the outer loop on */
+  SORT_PC_INS,                  /* the answer says whether the pair the
+                                   insertion is at is out of order */
+  SORT_PC_INS_STEP
+};
+
+enum { SORT_PHASE_BUILD, SORT_PHASE_EXTRACT, SORT_PHASE_INSERT };
+
+static mrb_value sort_resume(mrb_state *mrb, mrb_value result, mrb_int pc);
+
+/* Hands one comparison to the VM: to the block where there is one, and to the
+   pair's own `<=>` where there is not. Answers whether it was handed over; if
+   it was not, the answer is in `*vp` and the sort goes on with it. */
 static mrb_bool
-sort_cmp(mrb_state *mrb, mrb_value ary, mrb_value a_val, mrb_value b_val, mrb_value blk)
+sort_hand_over(mrb_state *mrb, mrb_value *vp, mrb_value blk, mrb_int pc, mrb_value *args)
 {
-  mrb_value *p = RARRAY_PTR(ary);
-  mrb_int n = RARRAY_LEN(ary);
-
-  mrb_int cmp;
-  int ai = mrb_gc_arena_save(mrb);
-
   if (mrb_nil_p(blk)) {
-    enum mrb_vtype type_a = mrb_type(a_val);
-    enum mrb_vtype type_b = mrb_type(b_val);
+    return mrb_funcall_cont_p(mrb, vp, sort_resume, pc, args[0], MRB_OPSYM(cmp), 1, &args[1]);
+  }
+  return mrb_block_cont_p(mrb, vp, sort_resume, pc, blk, 2, args);
+}
 
-    if (type_a == type_b) {
-      switch (type_a) {
-      case MRB_TT_INTEGER:
-        {
-          /* Read with mrb_integer(): an Integer too wide to sit in the value
-             is an object here, and reading that one as an inline value reads
-             its address. */
-          mrb_int a_i = mrb_integer(a_val), b_i = mrb_integer(b_val);
-          cmp = (a_i > b_i) ? 1 : (a_i < b_i) ? -1 : 0;
-        }
-        break;
-#ifndef MRB_NO_FLOAT
-      case MRB_TT_FLOAT:
-        {
-          /* A NaN is greater than, less than and equal to nothing at all, so
-             the pair is reported as one that cannot be compared. Falling out
-             of the two tests below would call it a tie and leave the NaN
-             wherever the sort happened to put it. */
-          mrb_float a_flo = mrb_float(a_val), b_flo = mrb_float(b_val);
-          cmp = (a_flo > b_flo) ? 1 : (a_flo < b_flo) ? -1 : (a_flo == b_flo) ? 0 : -2;
-        }
-        break;
-#endif
-      case MRB_TT_STRING:
-        cmp = mrb_str_cmp(mrb, a_val, b_val);
-        break;
-      default:
-        cmp = mrb_cmp(mrb, a_val, b_val);
-        break;
-      }
-    }
-    else {
-      cmp = mrb_cmp(mrb, a_val, b_val);
-    }
-    /* -2 is how the comparisons above report a pair they cannot order. It is
-       a value a block may answer with, so the test for it stays on this side
-       of the branch, where the answers are the ones written here. */
-    if (cmp == -2) {
-      mrb_gc_arena_restore(mrb, ai);
+/* One comparison's answer, read as the sort reads it: true when the first of
+   the pair is to come after the second. Without a block that is what mrb_cmp()
+   makes of a `<=>`; with one it is cmpint(), which takes more than an Integer
+   and names the pair in what it raises. */
+static inline mrb_bool
+sort_read(mrb_state *mrb, mrb_value result, mrb_bool no_blk, mrb_value x, mrb_value y)
+{
+  /* An Integer is what both ways of ordering a pair answer with almost every
+     time, and it is read here rather than through the two functions below,
+     which a comparison would otherwise call one of on every element. */
+  if (mrb_fixnum_p(result)) return mrb_fixnum(result) > 0;
+  if (no_blk) {
+    if (!mrb_integer_p(result)) {
       mrb_raise(mrb, E_ARGUMENT_ERROR, "comparison failed");
     }
+    return mrb_integer(result) > 0;
   }
-  else {
-    mrb_value args[2] = {a_val, b_val};
-    mrb_value c = mrb_yield_argv(mrb, blk, 2, args);
-    /* The pair goes to `cmpint()` out of `args`, which the yield leaves as it
-       found it, rather than out of the parameters: one arm of the map calls
-       Ruby, and holding the two in registers across the yield so that arm can
-       reach them costs every comparison the sort makes, Integer answers
-       included. */
-    cmp = cmpint(mrb, c, args[0], args[1]);
-  }
-  mrb_gc_arena_restore(mrb, ai);
-  if (RARRAY_PTR(ary) != p || RARRAY_LEN(ary) != n) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "array modified during sort");
-  }
-  return cmp > 0;
+  return cmpint(mrb, result, x, y) > 0;
 }
 
-/* Hole-style sift-down: save root, move larger children up, write once at end.
-   Reduces assignments from 3 per level (swap) to 1 per level (move). */
-static void
-heapify(mrb_state *mrb, mrb_value ary, mrb_value *a, mrb_int index, mrb_int size, mrb_value blk)
+/* Runs the sort until it needs the block again, or until it is done. `cmp`
+   answers the comparison it was waiting on: true when the first of the pair
+   is to come after the second.
+
+   The array holding the sort's place is read into locals here and written
+   back only where the block is asked, which is the only way out. */
+static mrb_value
+sort_step(mrb_state *mrb, mrb_int pc, mrb_bool cmp)
 {
-  int ai = mrb_gc_arena_save(mrb);
-  mrb_value val = a[index];  /* save root to hole */
-  mrb_gc_protect(mrb, val);
+  mrb_value st = mrb->c->ci->stack[1];
+  mrb_value *sp = RARRAY_PTR(st);
+  mrb_value ary = sp[SORT_ARY];
+  mrb_int len = mrb_fixnum(sp[SORT_LEN]);
+  mrb_int hsize = mrb_fixnum(sp[SORT_HSIZE]);
+  mrb_int i = mrb_fixnum(sp[SORT_I]);
+  mrb_int index = mrb_fixnum(sp[SORT_INDEX]);
+  mrb_int child = mrb_fixnum(sp[SORT_CHILD]);
+  mrb_int phase = mrb_fixnum(sp[SORT_PHASE]);
+  mrb_value *a;
+  mrb_value args[2];
+  mrb_value ans;
+  /* Read once: the sort asks these of every comparison it makes. A block
+     written in Ruby, on a frame whose return is this loop's to give away, is
+     a comparison the VM can always be handed; the ask is then the last thing this function does,
+     which is what keeps a handover from costing anything on the way out. The
+     `<=>` of an object is not that: whether it can be handed over is a
+     property of the pair, so those go through the form that answers here. */
+  mrb_bool no_blk = mrb_nil_p(sp[SORT_BLK]);
+  mrb_bool tail_ok = !no_blk && !MRB_CI_RETURN_CLAIMED_P(mrb->c->ci) &&
+                     mrb_proc_p(sp[SORT_BLK]) &&
+                     !MRB_PROC_CFUNC_P(mrb_proc_ptr(sp[SORT_BLK])) &&
+                     mrb_proc_ptr(sp[SORT_BLK])->body.irep != NULL;
 
-  while (1) {
-    mrb_int child = 2 * index + 1;
-    if (child >= size) break;
+#define SORT_REREAD do {                                        \
+    if (RARRAY_LEN(ary) != len) {                               \
+      mrb_raise(mrb, E_RUNTIME_ERROR, "array modified during sort"); \
+    }                                                           \
+    a = RARRAY_PTR(ary);                                        \
+  } while (0)
 
-    /* pick the larger child */
-    if (child + 1 < size && sort_cmp(mrb, ary, a[child + 1], a[child], blk)) {
-      child++;
+#define SORT_SWAP(x, y) do {                    \
+    mrb_value tmp_ = a[x];                      \
+    a[x] = a[y];                                \
+    a[y] = tmp_;                                \
+  } while (0)
+
+  /* A comparison the sort can make in C is made here rather than handed over,
+     and the machine goes straight on with the answer. Only the one that needs
+     Ruby leaves this loop. */
+/* Written as a block rather than the usual do-while: the `continue` below is
+   the sort's loop, and a do-while would catch it. */
+#define SORT_TRY(next, x, y)                                    \
+    if (no_blk) {                                               \
+      mrb_int c_;                                               \
+      int r_ = mrb_cmp_in_c(mrb, a[x], a[y], &c_);             \
+      if (r_ > 0) { cmp = c_ > 0; pc = (next); continue; }      \
+      if (r_ == 0) {                                            \
+        mrb_raise(mrb, E_ARGUMENT_ERROR, "comparison failed");  \
+      }                                                         \
     }
-    /* if hole value >= larger child, done */
-    if (!sort_cmp(mrb, ary, a[child], val, blk)) break;
 
-    a[index] = a[child];     /* move child up */
-    index = child;
+  /* The insertion sort keeps two of the slots, and writes back those. */
+#define SORT_ASK_INS(next, x, y) {              \
+    SORT_TRY(next, x, y)                        \
+    sp[SORT_I] = mrb_fixnum_value(i);           \
+    sp[SORT_INDEX] = mrb_fixnum_value(index);   \
+    sp[SORT_X] = mrb_fixnum_value(x);           \
+    sp[SORT_Y] = mrb_fixnum_value(y);           \
+    args[0] = a[x];                             \
+    args[1] = a[y];                             \
+    if (tail_ok) return mrb_block_cont(mrb, sort_resume, next, sp[SORT_BLK], 2, args); \
+    if (sort_hand_over(mrb, &ans, sp[SORT_BLK], next, args)) return ans; \
+    /* Not handed over: the answer is here, and the sort goes on with it
+       rather than through the resume, which would cost a C frame for every
+       comparison. Its place is read back from the array rather than kept in
+       registers across the call, which is what would make the call above cost
+       something on the way out as well. */     \
+    cmp = sort_read(mrb, ans, no_blk, args[0], args[1]); \
+    i = mrb_fixnum(sp[SORT_I]);                 \
+    index = mrb_fixnum(sp[SORT_INDEX]);         \
+    pc = (next);                                \
+    SORT_REREAD;                                \
+    continue;                                   \
   }
-  a[index] = val;             /* place saved value */
-  mrb_gc_arena_restore(mrb, ai);
+
+#define SORT_ASK(next, x, y) {              \
+    SORT_TRY(next, x, y)                        \
+    sp[SORT_HSIZE] = mrb_fixnum_value(hsize);   \
+    sp[SORT_I] = mrb_fixnum_value(i);           \
+    sp[SORT_INDEX] = mrb_fixnum_value(index);   \
+    sp[SORT_CHILD] = mrb_fixnum_value(child);   \
+    sp[SORT_PHASE] = mrb_fixnum_value(phase);   \
+    sp[SORT_X] = mrb_fixnum_value(x);           \
+    sp[SORT_Y] = mrb_fixnum_value(y);           \
+    args[0] = a[x];                             \
+    args[1] = a[y];                             \
+    if (tail_ok) return mrb_block_cont(mrb, sort_resume, next, sp[SORT_BLK], 2, args); \
+    if (sort_hand_over(mrb, &ans, sp[SORT_BLK], next, args)) return ans; \
+    /* as above: the place is read back rather than held across the call */ \
+    cmp = sort_read(mrb, ans, no_blk, args[0], args[1]); \
+    hsize = mrb_fixnum(sp[SORT_HSIZE]);         \
+    i = mrb_fixnum(sp[SORT_I]);                 \
+    index = mrb_fixnum(sp[SORT_INDEX]);         \
+    child = mrb_fixnum(sp[SORT_CHILD]);         \
+    phase = mrb_fixnum(sp[SORT_PHASE]);         \
+    pc = (next);                                \
+    SORT_REREAD;                                \
+    continue;                                   \
+  }
+
+  /* Whatever orders the array is free to change it, and the sort reads it
+     afresh wherever it can have changed: on the way back in, and after a
+     comparison made here rather than handed over. A change of length is
+     refused rather than sorted around, as the C loop refused it. */
+  SORT_REREAD;
+
+  for (;;) {
+    switch (pc) {
+    case SORT_PC_INS:
+      /* the pair at index-1 and index is out of order: move it down one and
+         look at the pair below */
+      if (cmp) {
+        SORT_SWAP(index-1, index);
+        index--;
+        if (index > 0) SORT_ASK_INS(SORT_PC_INS, index-1, index);
+      }
+      /* fall through: this element is where it belongs, so the next one
+         comes up */
+    case SORT_PC_INS_STEP:
+      i++;
+      if (i >= len) return ary;
+      index = i;
+      SORT_ASK_INS(SORT_PC_INS, i-1, i);
+
+    case SORT_PC_SIFT:
+      child = 2 * index + 1;
+      if (child >= hsize) {
+        pc = SORT_PC_STEP;
+        continue;
+      }
+      if (child + 1 < hsize) SORT_ASK(SORT_PC_CHILD, child+1, child);
+      SORT_ASK(SORT_PC_PARENT, child, index);
+
+    case SORT_PC_CHILD:
+      if (cmp) child++;
+      SORT_ASK(SORT_PC_PARENT, child, index);
+
+    case SORT_PC_PARENT:
+      if (!cmp) {
+        pc = SORT_PC_STEP;
+        continue;
+      }
+      SORT_SWAP(index, child);
+      index = child;
+      pc = SORT_PC_SIFT;
+      continue;
+
+    case SORT_PC_DOWN:
+      /* Floyd's descent: the element taken off the root travels down with
+         the hole, so it is compared against nothing on the way. */
+      child = 2 * index + 1;
+      if (child + 1 < hsize) SORT_ASK(SORT_PC_DOWN_CHILD, child+1, child);
+      if (child < hsize) {
+        SORT_SWAP(index, child);
+        index = child;
+      }
+      pc = SORT_PC_UP;
+      continue;
+
+    case SORT_PC_DOWN_CHILD:
+      if (cmp) child++;
+      SORT_SWAP(index, child);
+      index = child;
+      pc = SORT_PC_DOWN;
+      continue;
+
+    case SORT_PC_UP:
+      if (index == 0) {
+        pc = SORT_PC_STEP;
+        continue;
+      }
+      SORT_ASK(SORT_PC_UP_ANS, index, (index-1)/2);
+
+    case SORT_PC_UP_ANS:
+      if (!cmp) {
+        pc = SORT_PC_STEP;
+        continue;
+      }
+      child = (index-1)/2;
+      SORT_SWAP(index, child);
+      index = child;
+      pc = SORT_PC_UP;
+      continue;
+
+    case SORT_PC_STEP:
+      if (phase == SORT_PHASE_BUILD) {
+        i--;
+        if (i >= 0) {
+          index = i;
+          pc = SORT_PC_SIFT;
+          continue;
+        }
+        /* the heap stands: start taking the root off it */
+        phase = SORT_PHASE_EXTRACT;
+        i = len - 1;
+      }
+      else {
+        i--;
+      }
+      if (i < 1) return ary;    /* one element left, and it is in place */
+      SORT_SWAP(0, i);
+      hsize = i;
+      index = 0;
+      pc = SORT_PC_DOWN;
+      continue;
+
+    default:
+      mrb_assert(0);
+      return ary;
+    }
+  }
+#undef SORT_ASK
+#undef SORT_ASK_INS
+#undef SORT_TRY
+#undef SORT_REREAD
+#undef SORT_SWAP
 }
 
-/* Floyd's bottom-up heap deletion: sift the hole down to a leaf without
-   comparing against the removed root, then sift up from the leaf position.
-   This reduces comparisons from ~2 log n to ~log n per extraction,
-   because most elements end up near the bottom of the heap anyway. */
-static void
-heap_delete_root(mrb_state *mrb, mrb_value ary, mrb_value *a, mrb_int size, mrb_value blk)
+static mrb_value
+sort_resume(mrb_state *mrb, mrb_value result, mrb_int pc)
 {
-  int ai = mrb_gc_arena_save(mrb);
-  /* a[0] already holds the value to be re-inserted (set by caller) */
-  mrb_value last = a[0];
-  mrb_gc_protect(mrb, last);
+  mrb_value *sp = RARRAY_PTR(mrb->c->ci->stack[1]);
+  mrb_value ary = sp[SORT_ARY];
+  mrb_value x = mrb_nil_value(), y = mrb_nil_value();
+  mrb_int ix = mrb_fixnum(sp[SORT_X]);
+  mrb_int iy = mrb_fixnum(sp[SORT_Y]);
 
-  /* Phase 1: sift the hole down to a leaf (only child-child comparisons) */
-  mrb_int hole = 0;
-  mrb_int child = 1;
-  while (child + 1 < size) {
-    /* pick the larger child - 1 comparison per level */
-    if (sort_cmp(mrb, ary, a[child + 1], a[child], blk)) {
-      child++;
-    }
-    a[hole] = a[child];
-    hole = child;
-    child = 2 * hole + 1;
-  }
-  /* handle single child at bottom */
-  if (child < size) {
-    a[hole] = a[child];
-    hole = child;
-  }
-
-  /* Phase 2: sift up from hole to find correct position for last */
-  while (hole > 0) {
-    mrb_int parent = (hole - 1) / 2;
-    if (!sort_cmp(mrb, ary, last, a[parent], blk)) break;
-    a[hole] = a[parent];
-    hole = parent;
-  }
-  a[hole] = last;
-  mrb_gc_arena_restore(mrb, ai);
+  /* cmpint() names the pair in the error it raises for an answer it cannot
+     read, and asks the answer itself where that answer is an object rather
+     than an Integer. The pair comes from the array as it stands now, whatever
+     ordered it having had its turn at the array. */
+  if (ix < RARRAY_LEN(ary)) x = RARRAY_PTR(ary)[ix];
+  if (iy < RARRAY_LEN(ary)) y = RARRAY_PTR(ary)[iy];
+  return sort_step(mrb, pc, sort_read(mrb, result, mrb_nil_p(sp[SORT_BLK]), x, y));
 }
 
-static void
-insertion_sort(mrb_state *mrb, mrb_value ary, mrb_value *a, mrb_int size, mrb_value blk)
+/* Sorts `ary`, running whatever orders it -- the block, or a `<=>` written in
+   Ruby -- through the VM rather than on a nested mrb_vm_exec(), so a
+   Fiber.yield written there has no C frame to lose. Answers with `ary` once
+   the sort is done. */
+static mrb_value
+sort_general(mrb_state *mrb, mrb_value ary, mrb_value blk, mrb_int len)
 {
-  int ai = mrb_gc_arena_save(mrb);
-  for (mrb_int i = 1; i < size; i++) {
-    mrb_value key = a[i];
-    mrb_int j = i - 1;
+  mrb_value slots[SORT_NSLOTS];
+  mrb_bool small = len <= SMALL_ARRAY_SORT_THRESHOLD;
+  mrb_int i;
 
-    /* Protect key from GC - it's temporarily out of the array during sort */
-    mrb_gc_protect(mrb, key);
-
-    /* Move elements that are greater than key to one position ahead */
-    while (j >= 0 && sort_cmp(mrb, ary, a[j], key, blk)) {
-      a[j + 1] = a[j];
-      j--;
-    }
-    a[j + 1] = key;
-    mrb_gc_arena_restore(mrb, ai);
+  for (i = 0; i < SORT_NSLOTS; i++) {
+    slots[i] = mrb_fixnum_value(0);
   }
+  slots[SORT_ARY] = ary;
+  slots[SORT_BLK] = blk;
+  slots[SORT_LEN] = mrb_fixnum_value(len);
+  slots[SORT_HSIZE] = mrb_fixnum_value(len);
+  /* A short array is sorted by insertion, which asks the block fewer times
+     than a heap does, and each of those asks is a call into the VM. */
+  slots[SORT_PHASE] = mrb_fixnum_value(small ? SORT_PHASE_INSERT : SORT_PHASE_BUILD);
+  if (!small) {
+    slots[SORT_I] = mrb_fixnum_value(len / 2 - 1);
+    slots[SORT_INDEX] = mrb_fixnum_value(len / 2 - 1);
+  }
+  /* The register the block came in on carries the state from here on. */
+  mrb->c->ci->stack[1] = mrb_ary_new_from_values(mrb, SORT_NSLOTS, slots);
+
+  return sort_step(mrb, small ? SORT_PC_INS_STEP : SORT_PC_SIFT, FALSE);
 }
 
 /*
@@ -2580,25 +3157,7 @@ mrb_ary_sort_bang(mrb_state *mrb, mrb_value ary)
   }
 
   /* General path */
-  if (n <= SMALL_ARRAY_SORT_THRESHOLD) {
-    /* Use insertion sort for small arrays */
-    insertion_sort(mrb, ary, a, n, blk);
-  }
-  else {
-    /* Heap sort with Floyd's bottom-up deletion */
-    /* Phase 1: build max-heap (standard sift-down, hole style) */
-    for (mrb_int i = n / 2 - 1; i >= 0; i--) {
-      heapify(mrb, ary, a, i, n, blk);
-    }
-    /* Phase 2: extract max elements using Floyd's method */
-    for (mrb_int i = n - 1; i > 0; i--) {
-      mrb_value max = a[0];
-      a[0] = a[i];   /* temporary for GC safety */
-      a[i] = max;     /* max goes to final position */
-      heap_delete_root(mrb, ary, a, i, blk);
-    }
-  }
-  return ary;
+  return sort_general(mrb, ary, blk, n);
 }
 
 /*

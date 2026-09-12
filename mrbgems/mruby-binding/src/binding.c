@@ -492,7 +492,10 @@ mrb_f_binding(mrb_state *mrb, mrb_value self)
   struct RProc *proc;
   struct REnv *env;
 
-  if (mrb->c->ci->cci != 0) {
+  /* Not MRB_CI_PINS_C_FRAME_P(): a CINFO_CONT frame has no C frame waiting
+     on it, but a C method is still what asked for this call, and a Binding
+     for a C caller is what the error below refuses. */
+  if (MRB_CI_RETURN_CLAIMED_P(mrb->c->ci)) {
     caller_error(mrb);
   }
   proc = (struct RProc*)mrb_proc_get_caller(mrb, &env);

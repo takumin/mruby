@@ -910,6 +910,20 @@ mrb_inspect(mrb_state *mrb, mrb_value obj)
 MRB_API mrb_bool
 mrb_eql(mrb_state *mrb, mrb_value obj1, mrb_value obj2)
 {
+  int r = mrb_eql_in_c(mrb, obj1, obj2);
+  if (r >= 0) return (mrb_bool)r;
+  return mrb_test(mrb_funcall_argv(mrb, obj1, MRB_SYM_Q(eql), 1, &obj2));
+}
+
+/*
+ * What `mrb_eql()` answers, for the pairs it can answer for without running
+ * Ruby code, and -1 for the rest. A caller that cannot afford to re-enter the
+ * VM asks this and hands the send over itself, the way `mrb_equal_in_c()`
+ * already lets a walk hand over a `==`.
+ */
+int
+mrb_eql_in_c(mrb_state *mrb, mrb_value obj1, mrb_value obj2)
+{
   if (mrb_obj_eq(mrb, obj1, obj2)) return TRUE;
 
   /* The kinds whose `eql?` this file can answer for are answered here rather
@@ -934,7 +948,10 @@ mrb_eql(mrb_state *mrb, mrb_value obj1, mrb_value obj2)
     break;
   }
 
-  if (mrb_func_basic_p(mrb, obj1, MRB_SYM_Q(eql), mrb_obj_equal_m)) return FALSE;
+  struct RClass *c = mrb_class(mrb, obj1);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM_Q(eql));
+  if (MRB_METHOD_UNDEF_P(m) || !MRB_METHOD_CFUNC_P(m)) return -1;
+  if (MRB_METHOD_CFUNC(m) == mrb_obj_equal_m) return FALSE;
   return mrb_test(mrb_funcall_argv(mrb, obj1, MRB_SYM_Q(eql), 1, &obj2));
 }
 

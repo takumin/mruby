@@ -1793,33 +1793,97 @@ ary_combination_next(mrb_state *mrb, mrb_value self)
    block call and a `__svalue` send, then compare it with a `<=>` send. An
    Array is walked in place instead, and `mrb_cmp()` answers for an Integer, a
    Float and a String without a send at all, as `Array#sort` already does. */
-static mrb_int
-ary_cmp_ordered(mrb_state *mrb, mrb_value a, mrb_value b)
+
+static mrb_value ary_max_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+static mrb_value ary_min_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The walk, resumable from any index. `<=>` can run Ruby, which can grow the
+   array, shrink it or drop the element held as the answer so far, so the
+   length and the element are read afresh each time round. The answer so far
+   is kept in the register the block came in on: the walk returns to the VM
+   whenever a comparison needs Ruby, and only the frame survives that. */
+static mrb_value
+ary_max_min_walk(mrb_state *mrb, mrb_int i, mrb_int want)
 {
-  mrb_int cmp = mrb_cmp(mrb, a, b);
-  if (cmp == -2) {
-    mrb_raisef(mrb, E_ARGUMENT_ERROR, "comparison of %T with %T failed", a, b);
+  mrb_value self = mrb->c->ci->stack[0];
+
+  for (; i < RARRAY_LEN(self); i++) {
+    mrb_callinfo *ci = mrb->c->ci;
+    mrb_value val = RARRAY_PTR(self)[i];
+    mrb_int cmp;
+    int r = mrb_cmp_in_c(mrb, val, ci->stack[1], &cmp);
+
+    if (r < 0) {
+      /* The `<=>` here is written in Ruby. Hand the call to the VM and ask to
+         be resumed with its answer, rather than running it on a nested VM:
+         that keeps this walk off the C stack, so a Fiber can suspend inside
+         the comparison. Where it cannot be handed over the answer comes back
+         here, and the walk goes on with it rather than through the resume,
+         which would cost a C frame for every element. */
+      mrb_value v;
+
+      if (mrb_funcall_cont_p(mrb, &v, want > 0 ? ary_max_resume : ary_min_resume,
+                             i, val, MRB_OPSYM(cmp), 1, &ci->stack[1])) {
+        return v;
+      }
+      ci = mrb->c->ci;
+      if (!mrb_integer_p(v)) {
+        mrb_raisef(mrb, E_ARGUMENT_ERROR, "comparison of %T with %T failed",
+                   val, ci->stack[1]);
+      }
+      cmp = mrb_integer(v);
+    }
+    else if (r == 0) {
+      mrb_raisef(mrb, E_ARGUMENT_ERROR, "comparison of %T with %T failed",
+                 val, ci->stack[1]);
+    }
+    if (cmp == want) ci->stack[1] = val;
   }
-  return cmp;
+  return mrb->c->ci->stack[1];
 }
 
-/* `<=>` can run Ruby, which can grow the array, shrink it or drop the element
-   held as the answer so far, so the length and the element are read afresh
-   each time round and the answer is kept in the arena. */
+/* What `<=>` answered, read as mrb_cmp() reads it: an Integer for its sign,
+   and anything else for a pair with no order. */
+static mrb_value
+ary_max_min_resume(mrb_state *mrb, mrb_value result, mrb_int i, mrb_int want)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  if (!mrb_integer_p(result)) {
+    mrb_value val = i < RARRAY_LEN(ci->stack[0]) ? RARRAY_PTR(ci->stack[0])[i]
+                                                 : mrb_nil_value();
+    mrb_raisef(mrb, E_ARGUMENT_ERROR, "comparison of %T with %T failed",
+               val, ci->stack[1]);
+  }
+  if (mrb_integer(result) == want && i < RARRAY_LEN(ci->stack[0])) {
+    ci->stack[1] = RARRAY_PTR(ci->stack[0])[i];
+  }
+  return ary_max_min_walk(mrb, i + 1, want);
+}
+
+static mrb_value
+ary_max_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  return ary_max_min_resume(mrb, result, i, 1);
+}
+
+static mrb_value
+ary_min_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  return ary_max_min_resume(mrb, result, i, -1);
+}
+
+/* The walk runs through the VM rather than on a nested mrb_vm_exec(), so a
+   Fiber.yield written in a `<=>` it reaches has no C frame to lose. The
+   answer so far goes into the frame's second register, which the block came
+   in on and nothing else reads. */
 static mrb_value
 ary_max_min(mrb_state *mrb, mrb_value self, mrb_int want)
 {
   if (RARRAY_LEN(self) == 0) return mrb_nil_value();
 
-  mrb_value result = RARRAY_PTR(self)[0];
-  int ai = mrb_gc_arena_save(mrb);
-  for (mrb_int i = 1; i < RARRAY_LEN(self); i++) {
-    mrb_value val = RARRAY_PTR(self)[i];
-    if (ary_cmp_ordered(mrb, val, result) == want) result = val;
-    mrb_gc_arena_restore(mrb, ai);
-    mrb_gc_protect(mrb, result);
-  }
-  return result;
+  mrb->c->ci->stack[1] = RARRAY_PTR(self)[0];
+  return ary_max_min_walk(mrb, 1, want);
 }
 
 static mrb_value
@@ -1851,10 +1915,17 @@ ary_min(mrb_state *mrb, mrb_value self)
  *
  *  ISO 15.3.2.2.10, 15.3.2.2.15
  */
+static mrb_value ary_include_resume(mrb_state *mrb, mrb_value result, mrb_int i);
+
+/* The walk, resumable from any index. The receiver and the argument are read
+   from the frame rather than held in C locals: the walk returns to the VM
+   whenever a comparison needs Ruby, and only the frame survives that. */
 static mrb_value
-ary_include(mrb_state *mrb, mrb_value self)
+ary_include_walk(mrb_state *mrb, mrb_int i)
 {
-  mrb_value obj = mrb_get_arg1(mrb);
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value self = ci->stack[0];
+  mrb_value obj = ci->stack[1];
 
   /* `==` may run Ruby that grows or shrinks the array under us, so the length
      and the pointer are read afresh each turn.
@@ -1863,12 +1934,40 @@ ary_include(mrb_state *mrb, mrb_value self)
      no arena restore in it, as there is none in `Array#index`: what a call
      leaves behind is its return value, and this walk returns at the first one
      that is true. The answers it walks past are false, which is immediate. */
-  for (mrb_int i = 0; i < RARRAY_LEN(self); i++) {
-    if (mrb_equal(mrb, RARRAY_PTR(self)[i], obj)) {
-      return mrb_true_value();
+  for (; i < RARRAY_LEN(self); i++) {
+    int r = mrb_equal_in_c(mrb, RARRAY_PTR(self)[i], obj);
+    if (r > 0) return mrb_true_value();
+    if (r < 0) {
+      /* The `==` here is written in Ruby. Hand the call to the VM and ask to
+         be resumed with its answer, rather than running it on a nested VM:
+         that keeps this walk off the C stack, so a Fiber can suspend inside
+         the comparison. Where it cannot be handed over the answer comes back
+         here, and the walk goes on with it rather than through the resume,
+         which would cost a C frame for every element. */
+      mrb_value v;
+
+      if (mrb_funcall_cont_p(mrb, &v, ary_include_resume, i,
+                             RARRAY_PTR(self)[i], MRB_OPSYM(eq), 1, &obj)) {
+        return v;
+      }
+      if (mrb_test(v)) return mrb_true_value();
     }
   }
   return mrb_false_value();
+}
+
+static mrb_value
+ary_include_resume(mrb_state *mrb, mrb_value result, mrb_int i)
+{
+  if (mrb_test(result)) return mrb_true_value();
+  return ary_include_walk(mrb, i + 1);
+}
+
+static mrb_value
+ary_include(mrb_state *mrb, mrb_value self)
+{
+  mrb_get_arg1(mrb);            /* checks the argument count */
+  return ary_include_walk(mrb, 0);
 }
 
 static const mrb_mt_entry array_ext_rom_entries[] = {
