@@ -27,6 +27,8 @@ from, the second the `Struct` `Process::Tms` is one of.
 | Process.clock_gettime             | o             | seven units; symbolic clock ids          |
 | Process.clock_getres              | o             | takes `:hertz` too                       |
 | Process.times                     | o             | needs a build with Float, see below      |
+| Process.getrlimit                 | o             | if the port reads limits, see below      |
+| Process.setrlimit                 | o             | if the port writes limits, see below     |
 | Process::Tms                      | o             | a Struct, as in CRuby                    |
 | Process::Tms#utime, #stime        | o             |                                          |
 | Process::Tms#cutime, #cstime      | o             | reaped children only; 0 on Windows       |
@@ -36,6 +38,26 @@ from, the second the `Struct` `Process::Tms` is one of.
 | Process::CLOCK_MONOTONIC          | o             | mruby's own value, not the platform's    |
 | Process::CLOCK_PROCESS_CPUTIME_ID | o             | mruby's own value, not the platform's    |
 | Process::CLOCK_THREAD_CPUTIME_ID  | o             | mruby's own value, not the platform's    |
+| Process::RLIMIT_AS                | o             | mruby's own value, not the platform's    |
+| Process::RLIMIT_CORE              | o             | mruby's own value, not the platform's    |
+| Process::RLIMIT_CPU               | o             | mruby's own value, not the platform's    |
+| Process::RLIMIT_DATA              | o             | mruby's own value, not the platform's    |
+| Process::RLIMIT_FSIZE             | o             | mruby's own value, not the platform's    |
+| Process::RLIMIT_MEMLOCK           | o             | mruby's own value, not the platform's    |
+| Process::RLIMIT_MSGQUEUE          | o             | mruby's own value; Linux                 |
+| Process::RLIMIT_NICE              | o             | mruby's own value; Linux                 |
+| Process::RLIMIT_NOFILE            | o             | mruby's own value, not the platform's    |
+| Process::RLIMIT_NPROC             | o             | mruby's own value, not the platform's    |
+| Process::RLIMIT_NPTS              | o             | mruby's own value; FreeBSD               |
+| Process::RLIMIT_RSS               | o             | mruby's own value, not the platform's    |
+| Process::RLIMIT_RTPRIO            | o             | mruby's own value; Linux                 |
+| Process::RLIMIT_RTTIME            | o             | mruby's own value; Linux                 |
+| Process::RLIMIT_SBSIZE            | o             | mruby's own value; FreeBSD and NetBSD    |
+| Process::RLIMIT_SIGPENDING        | o             | mruby's own value; Linux                 |
+| Process::RLIMIT_STACK             | o             | mruby's own value, not the platform's    |
+| Process::RLIM_INFINITY            | o             | -1, not the platform's number, see below |
+| Process::RLIM_SAVED_CUR           | o             | -2, and never equal to the two others    |
+| Process::RLIM_SAVED_MAX           | o             | -3, and never equal to the two others    |
 | Process::Status#pid               | o             |                                          |
 | Process::Status#to_i              | o             | no `#to_int`; mruby converts nothing     |
 | Process::Status#exited?           | o             |                                          |
@@ -68,14 +90,21 @@ and mruby-io mark theirs: `respond_to?` answers false for it and a call raises
 `NotImplementedError`. A port that declares a capability it does not implement
 fails to link.
 
-| macro                      | methods                                           | posix | win |
-| -------------------------- | ------------------------------------------------- | ----- | --- |
-| `MRB_HAL_PROCESS_HAS_WAIT` | `Process.wait`, `.waitpid`, `.wait2`, `.waitpid2` | o     |     |
+| macro                           | methods                                           | posix | win |
+| ------------------------------- | ------------------------------------------------- | ----- | --- |
+| `MRB_HAL_PROCESS_HAS_WAIT`      | `Process.wait`, `.waitpid`, `.wait2`, `.waitpid2` | o     |     |
+| `MRB_HAL_PROCESS_HAS_GETRLIMIT` | `Process.getrlimit`                               | o     |     |
+| `MRB_HAL_PROCESS_HAS_SETRLIMIT` | `Process.setrlimit`                               | o     |     |
 
-`Process::WNOHANG` and `Process::WUNTRACED` are the shape of the call and are
-defined whether or not the port waits. What a port has but cannot do for the
-arguments it was given, a signal Windows cannot deliver or a pid selector it
-does not read, fails at the call site through `errno` instead.
+`Process::WNOHANG`, `Process::WUNTRACED`, `Process::RLIM_INFINITY` and the two
+saved limits beside it are the shape of the call and are defined whether or not
+the port waits or reads a limit. The `Process::RLIMIT_*` constants are not: one
+is defined for each resource the port has, so `defined?(Process::RLIMIT_NPTS)`
+answers what this platform limits, as it does in CRuby; a Linux build has
+neither `Process::RLIMIT_NPTS` nor `Process::RLIMIT_SBSIZE`, and a FreeBSD one
+has both. What a port has but cannot do for the arguments it was given, a
+signal Windows cannot deliver or a pid selector it does not read, fails at the
+call site through `errno` instead.
 
 ## Architecture
 
@@ -125,9 +154,9 @@ The HAL answers OS-level facts and performs OS-level operations, nothing more.
 No POSIX type or macro appears above it, and it knows nothing of `$?`, `$$`,
 blocks, `Process::Status` or `Process::Tms`: everything Ruby promises lives in
 the common sources under `src/`, including which units a clock reading can be
-asked for in and the Floats a `Process::Tms` is built from. What a signal is
-_called_ is `mruby-signal`'s to answer, and both callers reach its HAL
-directly.
+asked for in, the Floats a `Process::Tms` is built from and which resources a
+limit can be set on. What a signal is _called_ is `mruby-signal`'s to answer,
+and both callers reach its HAL directly.
 
 ### Process::Status and mruby-io
 
@@ -189,6 +218,30 @@ constrains; this list is a map.
 - Whether `<sys/resource.h>` exists is asked of the compiler by `mrbgem.rake`
   (`check_header`), not guessed inside the port; a target without it compiles
   the `times(2)` fallback.
+- Whether the host has `getrlimit(2)` and `setrlimit(2)` is asked the same way
+  (`check_func`), one call at a time; which resources it has is the
+  preprocessor's to answer, as it is in CRuby's `process.c` (`mrbgem.rake`,
+  `ports/posix/process_hal.c`).
+- Resource ids are mruby's own numbers, as the clock ids are, and the names
+  are CRuby's: the constant's spelling without the `RLIMIT_` prefix
+  (`mrb_process_rlimit_id` in `include/process_hal.h`).
+- A `Process::RLIMIT_*` constant is defined for each resource the port has and
+  for no other: half of them are one operating system's alone, where all four
+  clock constants are defined everywhere (`mrb_process_rlimit_init` in
+  `src/rlimit.c`).
+- A limit crosses the HAL as a `uint64_t` and the kind of answer it is, never
+  as `rlim_t`: a port hands up no placeholder as though it were a limit
+  (`mrb_process_rlimit_kind` in `include/process_hal.h`).
+- The three answers that are not numbers are `-1`, `-2` and `-3` in Ruby,
+  mruby's own values as the resource ids are, and stay distinct on a host that
+  spells all three alike (`rlimit_answers` in `src/rlimit.c`).
+- A negative number that names none of them is refused with `RangeError` in
+  the common layer, where the size of a number can be said, before a port has
+  to narrow it into an unsigned type (`rlimit_limit_arg` in `src/rlimit.c`).
+- The POSIX port reads and writes through `getrlimit64(2)` where its own
+  `rlim_t` is too narrow and the host has the wider calls; an illumos 32-bit
+  build then answers a saved limit as the number it is (`mrbgem.rake`,
+  `ports/posix/process_hal.c`).
 
 ## Deviations from CRuby
 
@@ -213,6 +266,27 @@ constrains; this list is a map.
 - On Windows `Process::Tms#cutime` and `#cstime` always read `0.0`: Win32
   reports no reaped child's CPU time, and CRuby's Windows build answers the
   same way.
+- `Process::RLIM_INFINITY` is `-1`, where CRuby answers with the platform's own
+  number, of which there is no one spelling: Linux writes 18446744073709551615,
+  the BSDs and macOS 9223372036854775807, illumos `(rlim_t)-3`. Linux's is past
+  `mrb_int` in every build, and past every Integer of a build without
+  `mruby-bigint`, so answering with it would leave `Process.getrlimit` raising
+  `RangeError` for an ordinary machine's unlimited resources.
+- `Process::RLIM_SAVED_CUR` and `Process::RLIM_SAVED_MAX` are always distinct
+  from `Process::RLIM_INFINITY` and from each other, where CRuby defines all
+  three as one number wherever the platform spells them alike. Linux, the BSDs
+  and macOS do: a program comparing a limit against the saved ones reads there
+  as though every unlimited resource had a limit held back. On illumos each has
+  its own value, and it is the host these three are for.
+- A name on the list that this platform has no resource for, `:NPTS` on Linux
+  say, raises `Errno::EINVAL`: the errno a platform answers for a resource it
+  does not have. CRuby knows only the names its own host has and raises
+  `ArgumentError` for the rest. A name the list does not hold at all raises
+  `ArgumentError` here too.
+- A negative limit that names none of the three answers raises `RangeError`.
+  CRuby reads one as the unsigned number of the same bits, so
+  `Process.setrlimit(:CORE, -4)` sets a limit of 18446744073709551612 there
+  wherever `rlim_t` is 64 bits wide.
 
 ## Adding a port
 

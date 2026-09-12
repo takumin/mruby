@@ -20,6 +20,9 @@
 ** `int64_t` rather than `mrb_int` for the reason given where it is defined,
 ** and the four CPU time totals behind `Process.times` as `mrb_process_times`,
 ** four more `mrb_process_clock_time` readings rather than platform ticks.
+** A resource a limit is set on travels as one of the `mrb_process_rlimit_id`
+** values and the limits themselves as `mrb_process_rlimit`, a pair of
+** `uint64_t` carrying what kind of answer each is rather than `rlim_t`.
 **
 ** What a signal is *called* is not asked here at all.  mruby-signal owns
 ** that table, and both `Process.kill` and `Process::Status#to_s` reach it
@@ -167,6 +170,98 @@ typedef struct mrb_process_times {
 } mrb_process_times;
 
 /*
+ * Resource limits
+ *
+ * Which resources there are is mruby's own list rather than the platform's, as
+ * the clocks above are: `RLIMIT_NOFILE` is 7 on Linux, 8 on the BSDs and
+ * macOS and 5 on illumos, `RLIMIT_AS` is 9 on Linux and 5 on macOS, and the
+ * list itself differs too, `RLIMIT_NPTS` being FreeBSD's and `RLIMIT_MSGQUEUE`
+ * Linux's.  A program that named a resource by the platform's number would be
+ * naming a different one on each port, where it named one at all.  The names are
+ * CRuby's, which are the POSIX ones without the `RLIMIT_` prefix, and the
+ * whole list is known to every port; which of them a port actually has is
+ * what mrb_hal_process_rlimit_ids() answers, and the common layer defines a
+ * `Process::RLIMIT_*` constant for those alone, as CRuby does.  An id
+ * outside the list is refused before a port sees it; one inside it that the
+ * port does not have fails with EINVAL.
+ */
+typedef enum mrb_process_rlimit_id {
+  MRB_PROCESS_RLIMIT_AS = 0,     /* total address space */
+  MRB_PROCESS_RLIMIT_CORE,       /* core file size */
+  MRB_PROCESS_RLIMIT_CPU,        /* CPU time, in seconds */
+  MRB_PROCESS_RLIMIT_DATA,       /* data segment size */
+  MRB_PROCESS_RLIMIT_FSIZE,      /* size of a file this process may create */
+  MRB_PROCESS_RLIMIT_MEMLOCK,    /* memory that may be locked into RAM */
+  MRB_PROCESS_RLIMIT_MSGQUEUE,   /* bytes in POSIX message queues */
+  MRB_PROCESS_RLIMIT_NICE,       /* ceiling on the nice value */
+  MRB_PROCESS_RLIMIT_NOFILE,     /* open file descriptors */
+  MRB_PROCESS_RLIMIT_NPROC,      /* processes this user may have */
+  MRB_PROCESS_RLIMIT_NPTS,       /* pseudo-terminals this user may open */
+  MRB_PROCESS_RLIMIT_RSS,        /* resident set size */
+  MRB_PROCESS_RLIMIT_RTPRIO,     /* ceiling on the real-time priority */
+  MRB_PROCESS_RLIMIT_RTTIME,     /* CPU time a real-time thread may run for */
+  MRB_PROCESS_RLIMIT_SBSIZE,     /* socket buffer size */
+  MRB_PROCESS_RLIMIT_SIGPENDING, /* signals that may be queued */
+  MRB_PROCESS_RLIMIT_STACK,      /* stack size */
+  MRB_PROCESS_RLIMIT_COUNT       /* how many ids there are; not a resource */
+} mrb_process_rlimit_id;
+
+/*
+ * What a limit is, where not every answer is a number.
+ *
+ * A platform answers `RLIM_INFINITY` for a resource it does not limit, and
+ * POSIX gives it two more answers for the case its own `rlim_t` is too narrow
+ * to hold the limit the kernel keeps: `RLIM_SAVED_CUR` and `RLIM_SAVED_MAX`
+ * say that the real soft or hard limit is held elsewhere and is larger than
+ * this program can be told.  A number is therefore not enough to carry a
+ * limit, and the three are kinds rather than values, so that a port never has
+ * to hand a placeholder up as though it were a limit and the common layer
+ * never has to guess which one a large number was.
+ *
+ * CRuby answers with the platform's own numbers and tells them apart the same
+ * way, defining `Process::RLIM_SAVED_MAX` as `RLIM_INFINITY` where the two are
+ * equal (`process.c`).  Whether a host spells them alike is the host's, and
+ * not something the width of its `rlim_t` settles: Linux, the BSDs and macOS
+ * spell all three the same, while illumos gives each its own value, no limit
+ * being `((rlim_t)-3)` and the saved limits `((rlim_t)-2)` and `((rlim_t)-1)`
+ * beside it.
+ */
+typedef enum mrb_process_rlimit_kind {
+  MRB_PROCESS_RLIMIT_VALUE = 0,  /* `value` is the limit */
+  MRB_PROCESS_RLIMIT_INFINITY,   /* the resource is not limited */
+  MRB_PROCESS_RLIMIT_SAVED_CUR,  /* the real soft limit, too large to report */
+  MRB_PROCESS_RLIMIT_SAVED_MAX   /* the real hard limit, too large to report */
+} mrb_process_rlimit_kind;
+
+/*
+ * One limit: what kind of answer it is, and the number where it is one.
+ *
+ * `value` is read only for MRB_PROCESS_RLIMIT_VALUE and is 0 otherwise.  It
+ * is `uint64_t` rather than `rlim_t` for the reason a clock reading is not a
+ * `time_t`: how wide the platform counts in is the platform's business and
+ * stops at the port.  Unsigned because POSIX leaves `rlim_t` unsigned, and 64
+ * bits because that is the widest any platform this gem is built for counts
+ * limits in; a port that met a wider one would have to say so here.  How much
+ * of it this build's Integer can hold is a separate question, answered where
+ * RangeError can be said and a bigint can be built.
+ */
+typedef struct mrb_process_rlimit_value {
+  uint64_t value;
+  mrb_process_rlimit_kind kind;
+} mrb_process_rlimit_value;
+
+/*
+ * The soft and hard limit on one resource.
+ *
+ * The soft limit is what the kernel enforces and the hard limit is the
+ * ceiling the soft one may be raised to.
+ */
+typedef struct mrb_process_rlimit {
+  mrb_process_rlimit_value cur;
+  mrb_process_rlimit_value max;
+} mrb_process_rlimit;
+
+/*
  * HAL Interface Functions
  */
 
@@ -283,6 +378,52 @@ int mrb_hal_process_clock_getres(mrb_state *mrb, mrb_int clock_id,
  * @return 0 on success, -1 on error (sets errno)
  */
 int mrb_hal_process_times(mrb_state *mrb, mrb_process_times *t);
+
+#if defined(MRB_HAL_PROCESS_HAS_GETRLIMIT) || defined(MRB_HAL_PROCESS_HAS_SETRLIMIT)
+/*
+ * Which resources of the list above this port has, one bit an id: bit
+ * `1u << MRB_PROCESS_RLIMIT_CORE` for `RLIMIT_CORE` and so on.  The common
+ * layer defines a constant for each bit that is set, so a program asks
+ * `defined?(Process::RLIMIT_NPTS)` rather than calling to find out, as it
+ * does in CRuby.  A bitmask rather than a call an id at a time because the
+ * whole answer is read once, when the gem is initialized.
+ *
+ * Declared where either limit call is, since the resources a port knows are
+ * the same either way.  MRB_PROCESS_RLIMIT_COUNT is below 32, which the
+ * ports assert.
+ */
+uint32_t mrb_hal_process_rlimit_ids(mrb_state *mrb);
+#endif
+
+#ifdef MRB_HAL_PROCESS_HAS_GETRLIMIT
+/*
+ * Read the limits on one resource.
+ *
+ * @param id  one of the mrb_process_rlimit_id values
+ * @param r   out: the soft and hard limit, each as the kind of answer it is
+ * @return 0 on success, -1 on error (sets errno; EINVAL for a resource this
+ *         port does not have)
+ */
+int mrb_hal_process_getrlimit(mrb_state *mrb, mrb_int id, mrb_process_rlimit *r);
+#endif
+
+#ifdef MRB_HAL_PROCESS_HAS_SETRLIMIT
+/*
+ * Set the limits on one resource.
+ *
+ * Both limits are always written, as setrlimit(2) writes both: a caller that
+ * means to leave one alone reads it first.  Whether a limit may be raised,
+ * and what a soft limit above the hard one means, is the platform's to say
+ * and reaches Ruby as the errno it answered.
+ *
+ * @param id  one of the mrb_process_rlimit_id values
+ * @param r   the soft and hard limit, each as the kind of answer it is
+ * @return 0 on success, -1 on error (sets errno; EINVAL for a resource this
+ *         port does not have, a limit its `rlim_t` cannot carry, or a kind
+ *         its platform has no value for)
+ */
+int mrb_hal_process_setrlimit(mrb_state *mrb, mrb_int id, const mrb_process_rlimit *r);
+#endif
 
 /*
  * HAL Initialization/Finalization

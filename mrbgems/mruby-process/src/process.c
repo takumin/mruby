@@ -7,8 +7,8 @@
 ** expressed over the platform-neutral primitives in process_hal.h.
 ** Argument shapes, return conventions, `$?` and `$$` live here; what a pid
 ** or a signal or a wait status *is* stays behind the HAL.  The clocks are
-** clock.c's and Process::Status is status.c's; this file defines the module
-** and calls each in turn.
+** clock.c's, the resource limits rlimit.c's and Process::Status is
+** status.c's; this file defines the module and calls each in turn.
 */
 
 #include <mruby.h>
@@ -346,6 +346,7 @@ mrb_mruby_process_gem_init(mrb_state *mrb)
   mrb_define_module_function_id(mrb, process, MRB_SYM(wait2),    process_waitpid2, MRB_ARGS_OPT(2));
 
   mrb_process_clock_init(mrb, process);
+  mrb_process_rlimit_init(mrb, process);
   mrb_process_status_init(mrb, process);
 
   pid = mrb_hal_process_pid(mrb);

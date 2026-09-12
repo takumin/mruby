@@ -26,6 +26,11 @@ void mrb_process_status_init(mrb_state *mrb, struct RClass *process);
    Process.times and Process::Tms on `process`.  Called once from gem init. */
 void mrb_process_clock_init(mrb_state *mrb, struct RClass *process);
 
+/* Define Process::RLIM_INFINITY, a Process::RLIMIT_* constant for each
+   resource this port has, Process.getrlimit and Process.setrlimit on
+   `process`.  Called once from gem init. */
+void mrb_process_rlimit_init(mrb_state *mrb, struct RClass *process);
+
 /* Build a Process::Status for a pid and the platform status it was reaped
    with.  The status decodes itself through the HAL as it is asked questions. */
 mrb_value mrb_process_status_new(mrb_state *mrb, mrb_int pid, mrb_int raw_status);
