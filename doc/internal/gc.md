@@ -411,7 +411,7 @@ GC.stat
 #   :step_limit => 0,           # current step limit setting
 #   :malloc_increase => 8192,   # malloc bytes since last cycle
 #   :malloc_threshold => 16777216, # current malloc threshold setting
-#   :frozen_string_count => 105,   # frozen string literals the table holds
+#   :frozen_string_count => 105,   # strings the frozen string table holds
 # }
 ```
 
