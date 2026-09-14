@@ -252,7 +252,9 @@ mrb_stack_extend(mrb_state *mrb, mrb_int room)
   stack_extend(mrb, room);
 }
 
-static void
+/* Inline: the check is two compares, and every call the VM is handed by a C
+   method goes through it. */
+static inline void
 stack_extend_adjust(mrb_state *mrb, mrb_int room, const mrb_value **argp)
 {
   const struct mrb_context *c = mrb->c;
@@ -817,10 +819,17 @@ mrb_vm_svar_set(mrb_state *mrb, enum mrb_svar_index key, mrb_value v)
   }
 }
 
-#define CINFO_NONE    0 // called method from mruby VM (without C functions)
-#define CINFO_SKIP    1 // ignited mruby VM from C
-#define CINFO_DIRECT  2 // called method from C
-#define CINFO_RESUMED 3 // resumed by `Fiber.yield` (probably the main call is `mrb_fiber_resume()`)
+/* CINFO_*, MRB_CI_PINS_C_FRAME_P() and MRB_CI_RETURN_CLAIMED_P() are in
+   mruby.h */
+
+/* What keeps a scope's special variables beside the frames rather than in
+   them: a frame has nothing spare. Pinned here so that a field added to it
+   has to be argued for against the eight bytes it would cost every frame of
+   every call stack. A 32-bit build packs the same fields into less, so the
+   size is asserted for the layout the claim was measured on. */
+#ifdef MRB_64BIT
+mrb_static_assert(sizeof(mrb_callinfo) == 48);
+#endif
 
 #define BLK_PTR(b) ((mrb_proc_p(b)) ? mrb_proc_ptr(b) : NULL)
 
@@ -846,6 +855,86 @@ mrb_svars_reserve(mrb_state *mrb, struct mrb_context *c)
   if (!mrb->svar_used || c->svars) return;
   c->svars = (struct RBasic**)mrb_calloc(mrb, (size_t)(c->ciend - c->cibase),
                                          sizeof(struct RBasic*));
+}
+
+/* A C method that hands a Ruby call to the VM leaves one of these behind: the
+   function to resume it with, the integer it kept for itself, and the frame
+   that is to receive the result. Entries are held per context and indexed by
+   nothing: only the top one is ever consulted, and it is consulted only when
+   a return lands exactly on the frame that owns it. */
+struct mrb_cont_entry {
+  mrb_cont_func *func;
+  mrb_int state;
+  ptrdiff_t ci_index;
+};
+
+struct mrb_cont_stack {
+  int len;
+  int capa;
+  struct mrb_cont_entry *entries;
+};
+
+void
+mrb_cont_stack_free(mrb_state *mrb, struct mrb_cont_stack *s)
+{
+  if (!s) return;
+  mrb_free(mrb, s->entries);
+  mrb_free(mrb, s);
+}
+
+/* Makes room for one entry. Out of line because a walk registers one per
+   element, and what it pays for on all but the first is the test below. */
+static struct mrb_cont_stack*
+cont_stack_grow(mrb_state *mrb)
+{
+  struct mrb_context *c = mrb->c;
+  struct mrb_cont_stack *s = c->conts;
+
+  if (s == NULL) {
+    s = (struct mrb_cont_stack*)mrb_malloc(mrb, sizeof(struct mrb_cont_stack));
+    s->len = 0;
+    s->capa = 8;
+    s->entries = (struct mrb_cont_entry*)mrb_malloc(mrb, sizeof(struct mrb_cont_entry) * 8);
+    c->conts = s;
+  }
+  else {
+    s->capa *= 2;
+    s->entries = (struct mrb_cont_entry*)mrb_realloc(mrb, s->entries,
+                                                     sizeof(struct mrb_cont_entry) * s->capa);
+  }
+  return s;
+}
+
+static inline void
+cont_push(mrb_state *mrb, mrb_cont_func *func, mrb_int state, ptrdiff_t ci_index)
+{
+  struct mrb_cont_stack *s = mrb->c->conts;
+
+  if (s == NULL || s->len == s->capa) {
+    s = cont_stack_grow(mrb);
+  }
+  s->entries[s->len].func = func;
+  s->entries[s->len].state = state;
+  s->entries[s->len].ci_index = ci_index;
+  s->len++;
+}
+
+/* Takes the continuation the frame at `depth` is owed. Entries left by frames
+   that unwound instead of returning are dropped here rather than in cipop():
+   they sit above this one, a fresh entry for a reused index is always the
+   upper of the two, and paying for the check on every return of every method
+   to save this walk is the wrong trade. */
+/* Kept out of line: mrb_vm_exec() pays for its own size in instruction cache
+   (see the note on CHECK_VM_INTERRUPT), and this runs only for the returns a
+   continuation is waiting on. */
+static struct mrb_cont_entry
+cont_take(struct mrb_cont_stack *s, ptrdiff_t depth)
+{
+  while (s->len > 0 && s->entries[s->len-1].ci_index > depth) {
+    s->len--;
+  }
+  mrb_assert(s->len > 0 && s->entries[s->len-1].ci_index == depth);
+  return s->entries[--s->len];
 }
 
 static inline mrb_callinfo*
@@ -899,6 +988,8 @@ fiber_terminate(mrb_state *mrb, struct mrb_context *c, mrb_callinfo *ci)
   c->status = MRB_FIBER_TERMINATED;
   mrb_free(mrb, c->svars);
   c->svars = NULL;
+  mrb_cont_stack_free(mrb, c->conts);
+  c->conts = NULL;
   mrb_free(mrb, c->cibase);
   c->cibase = c->ciend = c->ci = NULL;
   mrb_value *stack = c->stbase;
@@ -1669,7 +1760,7 @@ mrb_value
 mrb_exec_irep(mrb_state *mrb, mrb_value self, const struct RProc *p)
 {
   mrb_callinfo *ci = mrb->c->ci;
-  if (ci->cci == CINFO_NONE) {
+  if (!MRB_CI_RETURN_CLAIMED_P(ci)) {
     return exec_irep(mrb, self, p);
   }
   else {
@@ -1731,7 +1822,10 @@ send_method(mrb_state *mrb, mrb_value self, mrb_bool pub)
   int n = ci->n;
   mrb_sym name;
 
-  if (ci->cci > CINFO_NONE) {
+  /* Entered from C, this frame's return is not this loop's to give away, so
+     the send is made as a call of its own rather than by taking the frame
+     over the way the path below does. */
+  if (MRB_CI_RETURN_CLAIMED_P(ci)) {
   funcall:;
     const mrb_value *argv;
     mrb_int argc;
@@ -2093,13 +2187,336 @@ mrb_yield_cont(mrb_state *mrb, mrb_value b, mrb_value self, mrb_int argc, const 
   const struct RProc *p = mrb_proc_ptr(b);
   mrb_callinfo *ci = mrb->c->ci;
 
-  stack_extend_adjust(mrb, 4, &argv);
-  mrb->c->ci->stack[1] = mrb_ary_new_from_values(mrb, argc, argv);
-  mrb->c->ci->stack[2] = mrb_nil_value();
-  mrb->c->ci->stack[3] = mrb_nil_value();
-  ci->n = 15;
+  /* The frame this replaces has to be one whose return nothing outside this
+     `mrb_vm_exec()` is waiting for. Taking a claimed frame away drops that
+     return, so the block runs on a nested VM there instead. */
+  if (MRB_CI_RETURN_CLAIMED_P(ci)) {
+    struct RClass *tc;
+    mrb_proc_get_self(mrb, p, &tc);
+    return yield_with_attr(mrb, b, argc, argv, self, tc, FALSE);
+  }
+
+  /* `ci->n` holds the count in four bits and spells 15 as "the arguments are
+     in an array", so a short list goes into the registers and only a longer
+     one is packed. Packing allocates, which every block call would then pay:
+     it costs about 17ns of a 106ns call. */
+  if (argc < 15) {
+    stack_extend_adjust(mrb, argc + 2, &argv);
+    mrb_value *dst = mrb->c->ci->stack + 1;
+    for (mrb_int i = 0; i < argc; i++) {
+      dst[i] = argv[i];
+    }
+    dst[argc] = mrb_nil_value();  /* block slot */
+    ci->n = (uint8_t)argc;
+  }
+  else {
+    stack_extend_adjust(mrb, 4, &argv);
+    mrb->c->ci->stack[1] = mrb_ary_new_from_values(mrb, argc, argv);
+    mrb->c->ci->stack[2] = mrb_nil_value();
+    mrb->c->ci->stack[3] = mrb_nil_value();
+    ci->n = 15;
+  }
   ci->kw = FALSE;
   return exec_irep(mrb, self, p);
+}
+
+mrb_value
+mrb_funcall_tail(mrb_state *mrb, mrb_value self, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+
+  /* The same frame that mrb_yield_cont() refuses to replace, for the same
+     reason: something outside this `mrb_vm_exec()` is waiting for what a
+     claimed frame returns, and taking it away drops that return. */
+  if (MRB_CI_RETURN_CLAIMED_P(ci)) {
+    return mrb_funcall_argv(mrb, self, mid, argc, argv);
+  }
+
+  struct RClass *tc = mrb_class(mrb, self);
+  mrb_method_t m = mrb_vm_find_method(mrb, tc, &tc, mid);
+
+  /* A method the receiver does not have is dispatched through
+     method_missing, which rewrites the argument list of the frame it is
+     called from and puts the name in front of it. Doing that to the frame
+     this is about to hand to the VM is a second thing to get right for no
+     gain, so the nested path takes it.
+
+     A C method is left there too, and loses nothing by it: mrb_funcall_argv()
+     calls a C method on a frame of its own rather than on a nested
+     mrb_vm_exec(), so there is no re-entry to remove and no boundary for a
+     Fiber.yield to cross. */
+  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_CFUNC_P(m)) {
+    return mrb_funcall_argv(mrb, self, mid, argc, argv);
+  }
+
+  funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci);
+  ci->mid = mid;
+  mrb_vm_ci_target_class_set(ci, tc);
+  return exec_irep(mrb, self, MRB_METHOD_PROC(m));
+}
+
+/* Lays out the frame of a call handed to the VM: the receiver, the arguments,
+   the block slot, and whatever registers the callee has beyond them. Done in
+   one pass rather than through funcall_args_capture() and a second extend for
+   the callee's own registers, since a walk pays for it on every element. The
+   argument count that path cannot lay out register by register, fifteen and
+   up, is still left to it. */
+static inline void
+cont_frame_setup(mrb_state *mrb, mrb_callinfo *ci2, mrb_value self,
+                 mrb_int argc, const mrb_value *argv, mrb_int nregs)
+{
+  mrb_value *regs;
+
+  if (mrb_unlikely(argc >= CALL_MAXARGS)) {
+    funcall_args_capture(mrb, 0, argc, argv, mrb_nil_value(), ci2);
+    stack_extend(mrb, nregs > 3 ? nregs : 3);
+    regs = ci2->stack;
+    if (nregs > 3) stack_clear(regs + 3, nregs - 3);
+  }
+  else {
+    mrb_int keep = argc + 2;          /* self + args + block */
+
+    ci2->n = (uint8_t)argc;
+    ci2->kw = FALSE;
+    stack_extend_adjust(mrb, nregs > keep ? nregs : keep, &argv);
+    /* Read after the extend: growing the stack moves every frame onto the
+       new one. */
+    regs = ci2->stack;
+    stack_copy(regs + 1, argv, argc);
+    regs[keep-1] = mrb_nil_value();   /* the callee takes no block */
+    if (nregs > keep) stack_clear(regs + keep, nregs - keep);
+  }
+  regs[0] = self;
+}
+
+/* Runs the continuation the frame at `idx` is owed. Answers 1 if it asked for
+   another call (callee and dummy frame pushed), 0 if it answered into *vp,
+   and -1 if it raised. */
+static int
+cont_resume(mrb_state *mrb, mrb_value *vp, ptrdiff_t idx)
+{
+  struct mrb_cont_entry e = cont_take(mrb->c->conts, idx);
+
+  /* The answer sits in a register of the frame that has just been popped, and
+     the collector nils those. It goes into the arena for as long as the
+     continuation might allocate before it has put the answer somewhere of its
+     own. An immediate needs none of that, which is what nearly every
+     comparison answers with. */
+  if (!mrb_immediate_p(*vp)) {
+    mrb_gc_protect(mrb, *vp);
+  }
+  *vp = e.func(mrb, *vp, e.state);
+  if (mrb_unlikely(mrb->exc != NULL)) return -1;
+  return (mrb->c->ci - mrb->c->cibase != idx) ? 1 : 0;
+}
+
+static inline mrb_bool
+funcall_cont_attr(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                  mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  struct RClass *tc;
+  mrb_method_t m;
+  const struct RProc *p;
+  mrb_func_t f;
+  const struct RProc *cp;
+
+  /* Two things have to hold for the call to be handed over. Nothing outside
+     this mrb_vm_exec() may be waiting for what the frame this method runs on
+     returns, since the handover answers through that frame. And the callee
+     has to be written in Ruby: a C function returns to whoever called it
+     rather than to the VM loop, and cannot suspend. */
+  if (MRB_CI_RETURN_CLAIMED_P(ci)) goto nested;
+  tc = mrb_class(mrb, recv);
+  m = mrb_vm_find_method(mrb, tc, &tc, mid);
+  if (MRB_METHOD_UNDEF_P(m)) goto nested;
+  if (MRB_METHOD_CFUNC_P(m)) {
+    f = MRB_METHOD_CFUNC(m);
+    cp = MRB_METHOD_PROC_P(m) ? MRB_METHOD_PROC(m) : NULL;
+    goto direct;
+  }
+  p = MRB_METHOD_PROC(m);
+  if (MRB_PROC_ALIAS_P(p)) {
+    mid = p->body.mid;
+    p = p->upper;
+  }
+  if (MRB_PROC_CFUNC_P(p)) {
+    f = MRB_PROC_CFUNC(p);
+    cp = p;
+    goto direct;
+  }
+  if (p->body.irep == NULL) goto nested;
+
+  {
+    ptrdiff_t idx = ci - mrb->c->cibase;
+    mrb_int n = mrb_ci_nregs(ci);
+    mrb_callinfo *ci2 = cipush(mrb, n, CINFO_CONT, tc, p, NULL, mid, 0);
+
+    cont_frame_setup(mrb, ci2, recv, argc, argv, p->body.irep->nregs);
+    cont_push(mrb, k, state, idx);
+    /* The frame the cfunc epilogue in mrb_vm_exec() pops on the way back. Its
+       NULL `u` is what tells that epilogue to reload `irep` from the callee
+       below it, the same signal exec_irep() leaves. */
+    cipush(mrb, 0, 0, NULL, NULL, NULL, 0, 0);
+    *vp = recv;
+    return TRUE;
+  }
+
+direct:
+  /* A C method enters no VM, so there is nothing to hand over and nothing for
+     a Fiber to suspend inside. It is called here rather than through
+     mrb_funcall_argv(), which would look the method up a second time: a walk
+     that asks every element pays for that on every one of them. What it does
+     around the call -- the frame, the arena, the exception -- is done the
+     same way here. */
+  if (mrb->jmp) {
+    mrb_callinfo *ci2;
+    mrb_value v;
+    int ai = mrb_gc_arena_save(mrb);
+
+    ci2 = cipush(mrb, mrb_ci_nregs(ci), CINFO_DIRECT, tc, cp, NULL, mid, 0);
+    cont_frame_setup(mrb, ci2, recv, argc, argv, 0);
+    mrb->exc = NULL;
+    v = f(mrb, recv);
+    cipop(mrb);
+    if (mrb->exc) {
+      mrb_exc_raise(mrb, mrb_obj_value(mrb->exc));
+    }
+    mrb_gc_arena_restore(mrb, ai);
+    mrb_gc_protect(mrb, v);
+    *vp = v;
+    return FALSE;
+  }
+  /* Without a jump buffer there is no one to catch what the call raises, and
+     mrb_funcall_argv() is where that buffer is set up. */
+
+nested:
+  *vp = mrb_funcall_argv(mrb, recv, mid, argc, argv);
+  return FALSE;
+}
+
+MRB_API mrb_bool
+mrb_funcall_cont_p(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                   mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+{
+  return funcall_cont_attr(mrb, vp, k, state, recv, mid, argc, argv);
+}
+
+MRB_API mrb_value
+mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                 mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv)
+{
+  mrb_value v;
+
+  if (funcall_cont_attr(mrb, &v, k, state, recv, mid, argc, argv)) return v;
+  return k(mrb, v, state);
+}
+
+/* mrb_block_cont() and mrb_block_cont_under() in one. `c` is the class the
+   block is to run under, and NULL asks for the one the block was written in,
+   which is what an ordinary yield gives it. */
+static inline mrb_bool
+block_cont_attr(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                mrb_value blk, mrb_int argc, const mrb_value *argv,
+                mrb_value self, struct RClass *c)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  const struct RProc *p;
+  struct RClass *tc;
+  mrb_value bself;
+  mrb_sym mid;
+
+  check_block(mrb, blk);
+
+  /* The two conditions mrb_funcall_cont() checks, less the method lookup it
+     has no need of here. Nothing outside this mrb_vm_exec() may be waiting
+     for what the frame this method runs on returns, and the block has to be
+     written in Ruby: a C block returns to whoever called it rather than to
+     the VM loop, and cannot suspend. */
+  if (MRB_CI_RETURN_CLAIMED_P(ci)) goto nested;
+  p = mrb_proc_ptr(blk);
+  if (MRB_PROC_CFUNC_P(p) || p->body.irep == NULL) goto nested;
+
+  if (c) {
+    bself = self;
+    tc = c;
+  }
+  else {
+    bself = mrb_proc_get_self(mrb, p, &tc);
+  }
+  /* A block reports the method it was written in, which is what a backtrace
+     and `__method__` read. yield_with_attr() takes it from the same place. */
+  mid = MRB_PROC_ENV_P(p) ? p->e.env->mid : ci->mid;
+
+  {
+    ptrdiff_t idx = ci - mrb->c->cibase;
+    mrb_int n = mrb_ci_nregs(ci);
+    mrb_callinfo *ci2 = cipush(mrb, n, CINFO_CONT, tc, p, NULL, mid, 0);
+
+    cont_frame_setup(mrb, ci2, bself, argc, argv, p->body.irep->nregs);
+    if (c) {
+      /* A block given a class of its own is a class body: a `def` in it lands
+         on that class, and a visibility written in it ends with the block.
+         yield_with_attr() marks the frame the same way. */
+      MRB_CI_SET_VISIBILITY_BREAK(ci2);
+      MRB_CI_SET_GIVEN_CLASS(ci2);
+    }
+    cont_push(mrb, k, state, idx);
+    cipush(mrb, 0, 0, NULL, NULL, NULL, 0, 0);
+    *vp = bself;
+    return TRUE;
+  }
+
+nested:
+  *vp = c ? mrb_yield_with_class(mrb, blk, argc, argv, self, c)
+          : mrb_yield_argv(mrb, blk, argc, argv);
+  return FALSE;
+}
+
+/* Whether a call of `blk` from here can be handed to the VM at all: the frame
+   has to be one this mrb_vm_exec() will return through, and the block has to
+   be written in Ruby. Neither changes over a walk, so a walk asks once. Where
+   the answer is yes, the ask is the last thing the walk does and costs
+   nothing on the way out; where it is no, every call is made here and the
+   walk keeps its loop rather than a C frame per element. */
+MRB_API mrb_bool
+mrb_block_cont_ready_p(mrb_state *mrb, mrb_value blk)
+{
+  const struct RProc *p;
+
+  if (MRB_CI_RETURN_CLAIMED_P(mrb->c->ci)) return FALSE;
+  if (!mrb_proc_p(blk)) return FALSE;
+  p = mrb_proc_ptr(blk);
+  return !MRB_PROC_CFUNC_P(p) && p->body.irep != NULL;
+}
+
+MRB_API mrb_bool
+mrb_block_cont_p(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                 mrb_value blk, mrb_int argc, const mrb_value *argv)
+{
+  return block_cont_attr(mrb, vp, k, state, blk, argc, argv, mrb_nil_value(), NULL);
+}
+
+MRB_API mrb_value
+mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+               mrb_value blk, mrb_int argc, const mrb_value *argv)
+{
+  mrb_value v;
+
+  if (block_cont_attr(mrb, &v, k, state, blk, argc, argv, mrb_nil_value(), NULL)) return v;
+  return k(mrb, v, state);
+}
+
+MRB_API mrb_value
+mrb_block_cont_under(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                     mrb_value blk, mrb_int argc, const mrb_value *argv,
+                     mrb_value self, struct RClass *c)
+{
+  mrb_value v;
+
+  mrb_assert(c != NULL);
+  if (block_cont_attr(mrb, &v, k, state, blk, argc, argv, self, c)) return v;
+  return k(mrb, v, state);
 }
 
 #define RBREAK_TAG_FOREACH(f) \
@@ -2311,6 +2728,7 @@ prepare_tagged_break(mrb_state *mrb, uint32_t tag, const mrb_callinfo *return_ci
 
 #define INIT_DISPATCH for (;;) { CALL_CODE_HOOKS(); switch (insn) {
 #define CASE(insn,ops) case insn: DECODE_OPERANDS(ops); L_ ## insn ## _BODY:
+#define CASE_PC(insn,ops) case insn: pc0 = ci->pc; DECODE_OPERANDS(ops); L_ ## insn ## _BODY:
 #define NEXT goto L_END_DISPATCH
 #define JUMP NEXT
 #define END_DISPATCH L_END_DISPATCH: RETURN_IF_TASK_STOPPED(mrb);}}
@@ -2319,6 +2737,7 @@ prepare_tagged_break(mrb_state *mrb, uint32_t tag, const mrb_callinfo *return_ci
 
 #define INIT_DISPATCH JUMP; return mrb_nil_value();
 #define CASE(insn,ops) L_ ## insn: DECODE_OPERANDS(ops); L_ ## insn ## _BODY:
+#define CASE_PC(insn,ops) L_ ## insn: pc0 = ci->pc; DECODE_OPERANDS(ops); L_ ## insn ## _BODY:
 #define NEXT RETURN_IF_TASK_STOPPED(mrb); CALL_CODE_HOOKS(); goto *optable[insn]
 #define JUMP NEXT
 #define END_DISPATCH RETURN_IF_TASK_STOPPED(mrb)
@@ -2357,7 +2776,7 @@ static mrb_bool
 task_across_c_boundary(mrb_state *mrb)
 {
   for (mrb_callinfo *ci = mrb->c->ci; ci > mrb->c->cibase; ci--) {
-    if (ci->cci > 0) return TRUE;
+    if (MRB_CI_PINS_C_FRAME_P(ci)) return TRUE;
   }
   return FALSE;
 }
@@ -2827,6 +3246,16 @@ vm_op_getidx(mrb_state *mrb, uint32_t a, mrb_sym *midp)
   else if (tt == MRB_TT_HASH) {
     /* optimize only for Hash itself; see the Array branch above */
     if (mrb_obj_ptr(va)->c != mrb->idx_class[MRB_IDX_OP_HASH_AREF]) goto getidx_fallback;
+    /* A miss on a hash whose default is a proc runs Ruby code. Sending
+       `Hash#[]` instead of reading the value here gives that call a frame of
+       its own to take over, which `mrb_hash_get()` called from this opcode
+       has no way to offer. Only a miss pays the send. */
+    if (mrb_unlikely(MRB_RHASH_PROCDEFAULT_P(va) != 0)) {
+      mrb_value v = mrb_hash_fetch(mrb, va, vb, mrb_undef_value());
+      if (mrb_undef_p(v)) goto getidx_fallback;
+      regs[a] = v;
+      return VM_NEXT;
+    }
     int ai = mrb_gc_arena_save(mrb);
     va = mrb_hash_get(mrb, va, vb);
     ci = mrb->c->ci;
@@ -2913,6 +3342,135 @@ getidx0_fallback:
   SET_FIXNUM_VALUE(regs[a+1], 0);
   *midp = MRB_OPSYM(aref);
   return VM_SEND_SYM;
+}
+
+/* Whether a constant read hands `const_missing` to the VM rather than calling
+   it from C.  The built-in hook only raises, so nothing is gained by sending
+   it, and a hook the program declares private or protected keeps the nested
+   call it had, which dispatched it however it was declared. */
+static mrb_bool
+const_missing_send_p(mrb_state *mrb, mrb_value mod)
+{
+  struct RClass *c = mrb_class(mrb, mod);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(const_missing));
+
+  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_NOTIMPL_P(m)) return FALSE;
+  if (MRB_METHOD_VISIBILITY(m) != 0) return FALSE;
+  if (MRB_METHOD_FUNC_P(m)) return MRB_METHOD_FUNC(m) != mrb_mod_const_missing;
+  {
+    const struct RProc *p = MRB_METHOD_PROC(m);
+    if (MRB_PROC_CFUNC_P(p) && MRB_PROC_CFUNC(p) == mrb_mod_const_missing) return FALSE;
+  }
+  return TRUE;
+}
+
+/* Whether a block argument's `to_proc` is sent through the VM rather than
+   called from C.  A `to_proc` written in C runs in C either way, and one the
+   program declared private or protected keeps the nested call, which
+   dispatched it however it was declared. */
+static mrb_bool
+to_proc_send_p(mrb_state *mrb, mrb_value v)
+{
+  struct RClass *c = mrb_class(mrb, v);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(to_proc));
+
+  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_NOTIMPL_P(m)) return FALSE;
+  if (MRB_METHOD_VISIBILITY(m) != 0) return FALSE;
+  if (MRB_METHOD_FUNC_P(m)) return FALSE;
+  return !MRB_PROC_CFUNC_P(MRB_METHOD_PROC(m));
+}
+
+/* Whether OP_STRCAT sends `to_s` through the VM rather than calling it from
+   C.  A `to_s` written in C runs in C either way, so the send is worth
+   building only for one the program wrote, and one it declared private or
+   protected keeps the nested call, which dispatched it however it was
+   declared. */
+static mrb_bool
+str_cat_send_p(mrb_state *mrb, mrb_value v)
+{
+  struct RClass *c = mrb_class(mrb, v);
+  mrb_method_t m = mrb_method_search_vm(mrb, &c, MRB_SYM(to_s));
+
+  if (MRB_METHOD_UNDEF_P(m) || MRB_METHOD_NOTIMPL_P(m)) return FALSE;
+  if (MRB_METHOD_VISIBILITY(m) != 0) return FALSE;
+  if (MRB_METHOD_FUNC_P(m)) return FALSE;
+  return !MRB_PROC_CFUNC_P(MRB_METHOD_PROC(m));
+}
+
+/* OP_GETMCNST: the constant `Mod::NAME` names.  A name the module does not
+   hold goes to `const_missing` as a real send, so a `Fiber.yield` written in
+   the hook can suspend.  The receiver already sits in regs[a], which is where
+   the read's own result belongs, and `room` says the compiler reserved
+   regs[a+1] and regs[a+2] for the call.  A read whose registers an older
+   compiler did not reserve takes the nested path below, and so does one whose
+   hook const_missing_send_p() leaves in C. */
+static int
+vm_op_getmcnst(mrb_state *mrb, uint32_t a, mrb_sym sym, mrb_bool room, mrb_sym *midp)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  mrb_value recv = regs[a];
+  enum mrb_vtype tt = mrb_type(recv);
+
+  if (tt == MRB_TT_CLASS || tt == MRB_TT_MODULE || tt == MRB_TT_SCLASS) {
+    mrb_value v = mrb_const_get_noraise(mrb, mrb_class_ptr(recv), sym);
+    if (!mrb_undef_p(v)) {
+      regs[a] = v;
+      return VM_NEXT;
+    }
+    if (room && const_missing_send_p(mrb, recv)) {
+      SET_SYM_VALUE(regs[a+1], sym);
+      *midp = MRB_SYM(const_missing);
+      return VM_SEND_SYM;
+    }
+  }
+  {
+    /* a receiver that is no class or module raises here, and so does a name
+       the built-in hook is left to answer */
+    mrb_value v = mrb_const_get(mrb, recv, sym);
+    ci = mrb->c->ci;
+    regs[a] = v;
+  }
+  return VM_NEXT;
+}
+
+/* OP_GETCONST: the constant a bare name reads.  As in vm_op_getmcnst(), a name
+   no lexical scope holds goes to `const_missing` as a real send; its receiver
+   is the module the lexical search ended on, and it goes in regs[a], where the
+   read's own result belongs.  Only a value the search itself found is cached:
+   what the hook answers is not, on either path, so the hook is asked again on
+   the next read. */
+static int
+vm_op_getconst(mrb_state *mrb, uint32_t a, const mrb_irep *irep, mrb_sym sym, mrb_bool room, mrb_sym *midp)
+{
+  mrb_callinfo *ci = mrb->c->ci;
+  struct RClass *base = NULL;
+  mrb_value v = mrb_vm_const_get_noraise_base(mrb, ci, sym, &base);
+
+  if (!mrb_undef_p(v)) {
+    regs[a] = v;
+#ifndef MRB_NO_CONST_CACHE
+    {
+      uint32_t h = mrb_int_hash_func(mrb, ((intptr_t)irep) ^ sym) & (MRB_CONST_CACHE_SIZE-1);
+      struct mrb_const_cache_entry *cc = &mrb->const_cache[h];
+      cc->irep = irep;
+      cc->sym = sym;
+      cc->value = v;
+    }
+#else
+    (void)irep;
+#endif
+    return VM_NEXT;
+  }
+  if (room && base && const_missing_send_p(mrb, mrb_obj_value(base))) {
+    regs[a] = mrb_obj_value(base);
+    SET_SYM_VALUE(regs[a+1], sym);
+    *midp = MRB_SYM(const_missing);
+    return VM_SEND_SYM;
+  }
+  v = mrb_vm_const_get(mrb, sym);
+  ci = mrb->c->ci;
+  regs[a] = v;
+  return VM_NEXT;
 }
 
 static int
@@ -3181,6 +3739,7 @@ mrb_vm_exec(mrb_state *mrb, const struct RProc *begin_proc, const mrb_code *iseq
   uint16_t b;
   uint16_t c;
   mrb_sym mid;
+  const mrb_code *pc0 = NULL;
   const struct mrb_irep_catch_handler *ch;
 
 #ifndef MRB_USE_VM_SWITCH_DISPATCH
@@ -3452,16 +4011,9 @@ RETRY_TRY_BLOCK:
         NEXT;
       }
 #endif
-      {
-        mrb_value v = mrb_vm_const_get(mrb, irep->syms[b]);
-        ci = mrb->c->ci;
-        regs[a] = v;
-#ifndef MRB_NO_CONST_CACHE
-        cc->irep = irep;
-        cc->sym = sym;
-        cc->value = v;
-#endif
-      }
+      int r = vm_op_getconst(mrb, a, irep, irep->syms[b], a+2 < irep->nregs, &mid);
+      ci = mrb->c->ci;
+      if (r == VM_SEND_SYM) goto L_SEND_SYM;
       NEXT;
     }
 
@@ -3475,9 +4027,9 @@ RETRY_TRY_BLOCK:
     }
 
     CASE(OP_GETMCNST, BB) {
-      mrb_value v = mrb_const_get(mrb, regs[a], irep->syms[b]);
+      int r = vm_op_getmcnst(mrb, a, irep->syms[b], a+2 < irep->nregs, &mid);
       ci = mrb->c->ci;
-      regs[a] = v;
+      if (r == VM_SEND_SYM) goto L_SEND_SYM;
       NEXT;
     }
 
@@ -3685,10 +4237,10 @@ RETRY_TRY_BLOCK:
     }
     goto L_SENDB;
 
-    CASE(OP_SSENDB, BBB) {
+    CASE_PC(OP_SSENDB, BBB) {
       regs[a] = regs[0];
     }
-    goto L_SENDB;
+    goto L_SENDB_BLK;
 
     CASE(OP_SEND, BBB)
     goto L_SENDB;
@@ -3704,7 +4256,51 @@ RETRY_TRY_BLOCK:
     SET_NIL_VALUE(regs[a+2]);
     goto L_SENDB_SYM;
 
-    CASE(OP_SENDB, BBB)
+    CASE_PC(OP_SENDB, BBB)
+    L_SENDB_BLK:
+    mid = irep->syms[b];
+    /* A block argument that is no Proc is converted by sending `to_proc`,
+       which the VM runs rather than a nested mrb_vm_exec.  The instruction
+       runs again when the send answers, and the send is built above the
+       argument rather than over it, so the second run still holds what was
+       sent to, which is what the TypeError names when a `to_proc` answers
+       with something other than a Proc.  An undef one register above tells
+       the two runs apart, and sits below the frame the send pushes.
+
+       Only the two instructions that can carry a written block arrive here,
+       so an ordinary call pays nothing, and they arrive before the keyword
+       arguments are packed, so a call carrying them is not packed twice.  A
+       call whose registers an older compiler did not reserve takes the nested
+       call, and so does one whose `to_proc` to_proc_send_p() leaves in C. */
+    {
+      mrb_int b0 = (c < CALL_MAXARGS) ? a+c+1 : a+mrb_bidx(c&0xf, (c>>4)&0xf);
+      mrb_callinfo *bci = mrb->c->ci;
+
+      if (!mrb_proc_p(bci->stack[b0]) && b0+3 < irep->nregs) {
+        if (mrb_undef_p(bci->stack[b0+1])) {
+          mrb_value ans = bci->stack[b0+2];
+          SET_NIL_VALUE(bci->stack[b0+1]);
+          SET_NIL_VALUE(bci->stack[b0+2]);
+          if (!mrb_proc_p(ans)) {
+            mrb_raisef(mrb, E_TYPE_ERROR, "%v cannot be converted to Proc by #%n",
+                       bci->stack[b0], MRB_SYM(to_proc));
+          }
+          bci->stack[b0] = ans;
+        }
+        else if (!mrb_nil_p(bci->stack[b0]) && to_proc_send_p(mrb, bci->stack[b0])) {
+          bci->stack[b0+1] = mrb_undef_value();
+          bci->stack[b0+2] = bci->stack[b0];
+          SET_NIL_VALUE(bci->stack[b0+3]);
+          bci->pc = pc0;
+          a = (uint32_t)(b0+2);
+          c = 0;
+          mid = MRB_SYM(to_proc);
+          goto L_SENDB_SYM;
+        }
+      }
+    }
+    goto L_SENDB_SYM;
+
     L_SENDB:
     mid = irep->syms[b];
     L_SENDB_SYM:
@@ -4074,7 +4670,7 @@ RETRY_TRY_BLOCK:
             break;
           }
           ci = cipop(mrb);
-          if (ci[1].cci != CINFO_NONE) {
+          if (MRB_CI_PINS_C_FRAME_P(&ci[1])) {
             mrb_assert(prev_jmp != NULL);
             mrb->exc = (struct RObject*)break_new(mrb, RBREAK_TAG_BREAK, return_ci, v);
             mrb_gc_arena_restore(mrb, ai);
@@ -4124,10 +4720,31 @@ RETRY_TRY_BLOCK:
       }
       acc = ci->cci;
       ci = cipop(mrb);
+      if (mrb_unlikely(acc != CINFO_NONE)) {
       if (acc == CINFO_SKIP || acc == CINFO_DIRECT) {
         mrb_gc_arena_restore(mrb, ai);
         mrb->jmp = prev_jmp;
         return v;
+      }
+      if (acc == CINFO_CONT) {
+        /* The frame returned into is a C method that asked to be resumed with
+           this value (see mrb_funcall_cont()). It runs here rather than on a
+           nested VM, so what it does next -- answer, or ask for another call
+           -- is decided without leaving this loop. */
+        int r = cont_resume(mrb, &v, ci - mrb->c->cibase);
+        if (mrb_unlikely(r < 0)) goto L_RAISE;
+        ci = mrb->c->ci;
+        if (r > 0) {
+          /* it asked for another call: callee and dummy frame are pushed */
+          irep = ci[-1].proc->body.irep;
+          ci->stack[0] = v;
+          ci = cipop(mrb);
+          mrb_gc_arena_restore(mrb, ai);
+          JUMP;
+        }
+        /* it answered: return that from the C method */
+        ci = cipop(mrb);
+      }
       }
       DEBUG(fprintf(stderr, "from :%s\n", mrb_sym_name(mrb, ci->mid)));
       irep = ci->proc->body.irep;
@@ -4614,9 +5231,54 @@ RETRY_TRY_BLOCK:
       NEXT;
     }
 
-    CASE(OP_STRCAT, B) {
+    CASE_PC(OP_STRCAT, B) {
+      /* A part that is no String is converted by sending `to_s`, which the VM
+         runs rather than a nested mrb_vm_exec.  The instruction runs again
+         when the send answers, and the answer is left in a register of its
+         own, so the second run still holds what was sent to: that is what
+         mrb_any_to_s() answers for when a `to_s` answers with something other
+         than a String, as mrb_type_convert() does.  An undef in regs[a+2]
+         tells the second run from the first, and sits below the frame the
+         send pushes, which is what keeps the callee from writing over it.  A
+         concatenation whose registers an older compiler did not reserve takes
+         the nested call, and so does a part whose `to_s` str_cat_send_p()
+         leaves in C. */
+      mrb_value part = regs[a+1];
+
       mrb_ensure_string_type(mrb, regs[a]);
-      mrb_str_concat(mrb, regs[a], regs[a+1]);
+      switch (mrb_type(part)) {
+      case MRB_TT_STRING:
+        break;
+      default:
+        if (a+4 < irep->nregs) {
+          if (mrb_undef_p(regs[a+2])) {
+            mrb_value ans = regs[a+3];
+            SET_NIL_VALUE(regs[a+2]);
+            SET_NIL_VALUE(regs[a+3]);
+            part = (mrb_type(ans) == MRB_TT_STRING) ? ans : mrb_any_to_s(mrb, part);
+            ci = mrb->c->ci;
+            break;
+          }
+          if (str_cat_send_p(mrb, part)) {
+            regs[a+2] = mrb_undef_value();
+            regs[a+3] = part;
+            SET_NIL_VALUE(regs[a+4]);
+            ci->pc = pc0;
+            a += 3;
+            c = 0;
+            mid = MRB_SYM(to_s);
+            goto L_SENDB_SYM;
+          }
+        }
+        /* fall through */
+      case MRB_TT_SYMBOL: case MRB_TT_INTEGER:
+      case MRB_TT_SCLASS: case MRB_TT_CLASS: case MRB_TT_MODULE:
+        /* the types mrb_obj_as_string() answers for itself never sent one */
+        part = mrb_obj_as_string(mrb, part);
+        ci = mrb->c->ci;
+        break;
+      }
+      mrb_str_cat_str(mrb, regs[a], part);
       ci = mrb->c->ci;
       NEXT;
     }
@@ -4854,6 +5516,7 @@ RETRY_TRY_BLOCK:
 
     CASE(OP_EXT1, Z) {
       const mrb_code *pc = ci->pc;
+      pc0 = ci->pc - 1;
       insn = READ_B();
       switch (insn) {
 #define OPCODE(insn,ops) case OP_ ## insn: FETCH_ ## ops ## _1(); ci->pc = pc; goto L_OP_ ## insn ## _BODY;
@@ -4864,6 +5527,7 @@ RETRY_TRY_BLOCK:
     }
     CASE(OP_EXT2, Z) {
       const mrb_code *pc = ci->pc;
+      pc0 = ci->pc - 1;
       insn = READ_B();
       switch (insn) {
 #define OPCODE(insn,ops) case OP_ ## insn: FETCH_ ## ops ## _2(); ci->pc = pc; goto L_OP_ ## insn ## _BODY;
@@ -4874,6 +5538,7 @@ RETRY_TRY_BLOCK:
     }
     CASE(OP_EXT3, Z) {
       const mrb_code *pc = ci->pc;
+      pc0 = ci->pc - 1;
       insn = READ_B();
       switch (insn) {
 #define OPCODE(insn,ops) case OP_ ## insn: FETCH_ ## ops ## _3(); ci->pc = pc; goto L_OP_ ## insn ## _BODY;

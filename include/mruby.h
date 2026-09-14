@@ -189,6 +189,40 @@ typedef struct {
   } u;
 } mrb_callinfo;
 
+/* Values of mrb_callinfo::cci. The frame's relation to the C stack:
+
+   CINFO_NONE     nothing of C stands between this frame and the one below
+   CINFO_SKIP     a C caller started this mrb_vm_exec() and waits for it
+   CINFO_DIRECT   a C caller called this method and waits for its return
+   CINFO_RESUMED  entered by Fiber.yield returning into mrb_fiber_resume()
+   CINFO_CONT     called for a C method that asked to be resumed with the
+                  result (mrb_funcall_cont()); that method left a
+                  continuation rather than a C frame
+
+   Two questions are asked of these values, and CINFO_CONT is the one case
+   they answer differently, so each has a macro of its own.
+
+   MRB_CI_PINS_C_FRAME_P() asks whether a C frame is waiting on this one. A
+   fiber switched away from such a frame could not return to it. A CINFO_CONT
+   frame is not one: what the C method needs to go on is in its own frame and
+   in the continuation, both on the heap.
+
+   MRB_CI_RETURN_CLAIMED_P() asks whether anything outside this mrb_vm_exec()
+   is waiting for what this frame returns. A CINFO_CONT frame is one: a C
+   method asked to be resumed with it. So a method that means to take the
+   frame over -- to replace it, or to hand its own call to the VM -- asks this
+   rather than the other, and taking a CINFO_CONT frame is what the two differ
+   about. */
+#define CINFO_NONE    0
+#define CINFO_SKIP    1
+#define CINFO_DIRECT  2
+#define CINFO_RESUMED 3
+#define CINFO_CONT    4
+
+#define MRB_CI_PINS_C_FRAME_P(ci) \
+  ((ci)->cci != CINFO_NONE && (ci)->cci != CINFO_CONT)
+#define MRB_CI_RETURN_CLAIMED_P(ci) ((ci)->cci != CINFO_NONE)
+
 enum mrb_fiber_state {
   MRB_FIBER_CREATED = 0,
   MRB_FIBER_RUNNING,
@@ -201,6 +235,8 @@ enum mrb_fiber_state {
 /* Task context status aliases */
 #define MRB_TASK_CREATED MRB_FIBER_CREATED
 #define MRB_TASK_STOPPED MRB_FIBER_TERMINATED
+
+struct mrb_cont_stack;
 
 struct mrb_context {
   struct mrb_context *prev;
@@ -226,6 +262,12 @@ struct mrb_context {
      would have cost every frame of every call stack eight bytes.  Grown with
      cibase and freed with it. */
   struct RBasic **svars;
+
+  /* Continuations registered by C methods that handed a Ruby call to the VM
+     and asked to be resumed with its result (see mrb_funcall_cont()). NULL
+     until a first such call needs one, so a context that never makes one
+     pays this pointer and nothing else. Freed with the context. */
+  struct mrb_cont_stack *conts;
 
   enum mrb_fiber_state status : 4;
   mrb_bool vmexec : 1;
@@ -1711,6 +1753,100 @@ MRB_API mrb_value mrb_yield_with_class(mrb_state *mrb, mrb_value b, mrb_int argc
 /* this function should always be called as the last function of a method */
 /* e.g. return mrb_yield_cont(mrb, proc, self, argc, argv); */
 mrb_value mrb_yield_cont(mrb_state *mrb, mrb_value b, mrb_value self, mrb_int argc, const mrb_value *argv);
+
+/* continue execution to the method `mid` answers on `self` */
+/* the same rule applies: call it as the last thing the C method does */
+/* e.g. return mrb_funcall_tail(mrb, obj, MRB_OPSYM(eq), 1, &other); */
+/* a call the VM cannot be handed this way (method_missing, a C method) is
+   made the ordinary way instead, so a caller needs no test of its own */
+/* named for the tail call rather than for a continuation: mrb_funcall_cont()
+   below is the one that resumes the C method afterwards */
+mrb_value mrb_funcall_tail(mrb_state *mrb, mrb_value self, mrb_sym mid, mrb_int argc, const mrb_value *argv);
+
+/**
+ * Resumes a C method after a Ruby call it asked the VM to make.
+ *
+ * @param result what the call answered
+ * @param state the integer the C method left for itself
+ */
+typedef mrb_value mrb_cont_func(mrb_state *mrb, mrb_value result, mrb_int state);
+
+/**
+ * Hands a Ruby call to the VM and asks to be resumed with its result.
+ *
+ * The call runs in the mrb_vm_exec() this method was dispatched from rather
+ * than in a nested one, so no C frame stands between the two and a Fiber can
+ * suspend inside the call. Use it as `return mrb_funcall_cont(...)`: the
+ * method returns at once and `k` is called later with the result.
+ *
+ * `k` keeps what the method needs in `state` and in its own frame's
+ * registers; C local variables do not survive the return.
+ *
+ * Falls back to a nested call plus an immediate `k` where the frame cannot
+ * be handed over: a method reached from C, and a callee that is itself a C
+ * function (which cannot suspend anyway).
+ */
+MRB_API mrb_value mrb_funcall_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                                   mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv);
+
+/**
+ * The same, for a walk that has more than one call to make.
+ *
+ * Answers TRUE when the call was handed to the VM: the C method has nothing
+ * more to do and returns `*vp` at once, and `k` runs later with the result.
+ * Answers FALSE when the call could not be handed over and was made here, in
+ * which case `*vp` holds what it answered and the walk can go on to its next
+ * call without leaving the loop.
+ *
+ * mrb_funcall_cont() is this with the answer passed straight to `k`, which
+ * costs a C frame per call that was not handed over. A walk over a long array
+ * makes that many.
+ */
+MRB_API mrb_bool mrb_funcall_cont_p(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                                    mrb_value recv, mrb_sym mid, mrb_int argc, const mrb_value *argv);
+
+/**
+ * Hands a block call to the VM and asks to be resumed with its result.
+ *
+ * What mrb_funcall_cont() does for a method a C method sends, this does for a
+ * block a C method runs. A method that walks something and calls the block on
+ * each element uses it once per element, carrying the position in `state`.
+ *
+ * Falls back the same way, and to mrb_yield() rather than to a method call.
+ */
+MRB_API mrb_value mrb_block_cont(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                                 mrb_value blk, mrb_int argc, const mrb_value *argv);
+
+/**
+ * The same, for a walk that has more than one call to make: it answers
+ * whether the call was handed over, the way mrb_funcall_cont_p() does.
+ */
+MRB_API mrb_bool mrb_block_cont_p(mrb_state *mrb, mrb_value *vp, mrb_cont_func *k, mrb_int state,
+                                  mrb_value blk, mrb_int argc, const mrb_value *argv);
+
+/**
+ * Whether a call of `blk` from here can be handed to the VM at all.
+ *
+ * Neither of the two things it asks -- the frame, and whether the block is
+ * written in Ruby -- changes over a walk, so a walk asks once and then knows
+ * which shape to take: mrb_block_cont() as the last thing it does where the
+ * answer is yes, and mrb_block_cont_p() in a loop where it is no.
+ */
+MRB_API mrb_bool mrb_block_cont_ready_p(mrb_state *mrb, mrb_value blk);
+
+/**
+ * The same, for a block that runs under a class of its own.
+ *
+ * What mrb_yield_with_class() does for a nested call, this does for a call
+ * handed to the VM: the block runs with `self` for a receiver and `c` for the
+ * class a `def` in it lands on, which is what a class or module body is.
+ *
+ * The value the block answers with is rarely the answer of a method written
+ * this way, so `k` reads what it is to return from its own frame's registers.
+ */
+MRB_API mrb_value mrb_block_cont_under(mrb_state *mrb, mrb_cont_func *k, mrb_int state,
+                                       mrb_value blk, mrb_int argc, const mrb_value *argv,
+                                       mrb_value self, struct RClass *c);
 
 /* mrb_gc_protect() leaves the object in the arena */
 MRB_API void mrb_gc_protect(mrb_state *mrb, mrb_value obj);

@@ -351,6 +351,35 @@ def _assert_raise_with_message(type, exc, exp_msg, msg = nil, &block)
   assert_true(ret, msg, diff)
 end
 
+##
+# Record whether a `Fiber.yield` written inside the given block can cross the
+# method that runs the block.
+#
+# A method that reaches Ruby by re-entering the VM (mrb_funcall(), mrb_yield())
+# leaves a C frame between the two Ruby frames. A fiber lives on the heap and a
+# switch is a pointer assignment, so that C frame cannot travel with it and the
+# suspend raises FiberError instead. `expected` is `:ok` where the crossing
+# works today and `:ng` where it raises, so a case that starts crossing is as
+# much a change to notice as one that stops: each is a decision about where a
+# method runs the code it is given.
+#
+# A case whose method the build does not define is skipped rather than passed.
+# The same expression reaches a C method in one build and a Ruby one in
+# another, and a missing method would otherwise report a crossing that was
+# never tried.
+def assert_cross(expected, name, available = true, &block)
+  assert("Fiber.yield across #{name}") do
+    skip "#{name} is not in this build" unless available
+    got = begin
+      Fiber.new(&block).resume
+      :ok
+    rescue FiberError
+      :ng
+    end
+    assert_equal expected, got
+  end
+end
+
 def pass
   assert_true(true)
 end

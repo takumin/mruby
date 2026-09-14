@@ -162,7 +162,7 @@ fiber_check_cfunc(mrb_state *mrb, struct mrb_context *c)
   mrb_callinfo *ci;
 
   for (ci = c->ci; ci >= c->cibase; ci--) {
-    if (ci->cci > 0) {
+    if (MRB_CI_PINS_C_FRAME_P(ci)) {
       mrb_raise(mrb, E_FIBER_ERROR, "can't cross C function boundary");
     }
   }
@@ -324,7 +324,7 @@ fiber_resume(mrb_state *mrb, mrb_value self)
   mrb_bool vmexec = FALSE;
 
   mrb_get_args(mrb, "*!", &a, &len);
-  if (mrb->c->ci->cci > 0) {
+  if (MRB_CI_PINS_C_FRAME_P(mrb->c->ci)) {
     vmexec = TRUE;
   }
   return fiber_switch(mrb, self, len, a, TRUE, vmexec);

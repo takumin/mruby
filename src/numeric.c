@@ -2496,6 +2496,59 @@ cmpnum_total(mrb_state *mrb, mrb_value v1, mrb_value v2)
   return n == CMP_UNORDERED ? -2 : n;
 }
 
+/* mrb_cmp() as far as it goes without running Ruby: 1 with the sign in
+   `*out`, 0 for a pair that has no order at all, and -1 for one that only a
+   `<=>` written in Ruby can order. A caller that can hand that `<=>` to the
+   VM asks this rather than mrb_cmp(), which would run it on a nested one.
+
+   The one place it does not answer as mrb_cmp() does is a pair with a NaN in
+   it: that pair has no order here rather than being a tie, which is what a
+   sort and a search want and what mrb_cmp() reports to them as -2. */
+int
+mrb_cmp_in_c(mrb_state *mrb, mrb_value a, mrb_value b, mrb_int *out)
+{
+  enum mrb_vtype ta = mrb_type(a), tb = mrb_type(b);
+
+  if (ta == tb) {
+    switch (ta) {
+    case MRB_TT_INTEGER:
+      {
+        /* Read with mrb_integer(): an Integer too wide to sit in the value is
+           an object here, and reading that one as an inline value reads its
+           address. */
+        mrb_int x = mrb_integer(a), y = mrb_integer(b);
+        *out = (x > y) ? 1 : (x < y) ? -1 : 0;
+        return 1;
+      }
+#ifndef MRB_NO_FLOAT
+    case MRB_TT_FLOAT:
+      {
+        mrb_float x = mrb_float(a), y = mrb_float(b);
+        if (x > y) *out = 1;
+        else if (x < y) *out = -1;
+        else if (x == y) *out = 0;
+        else return 0;          /* a NaN stands in no order */
+        return 1;
+      }
+#endif
+    case MRB_TT_STRING:
+      *out = mrb_str_cmp(mrb, a, b);
+      return 1;
+    default:
+      break;
+    }
+  }
+  /* A number and a number of the other kind are ordered without either being
+     asked, which is the one pair of unlike types mrb_cmp() settles in C. */
+  if ((mrb_fixnum_p(a) || mrb_float_p(a)) && (mrb_fixnum_p(b) || mrb_float_p(b))) {
+    mrb_int c = mrb_cmp(mrb, a, b);
+    if (c == -2) return 0;
+    *out = c;
+    return 1;
+  }
+  return -1;
+}
+
 /**
  * Compares two mrb_value objects (obj1 and obj2).
  *

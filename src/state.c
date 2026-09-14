@@ -181,6 +181,7 @@ mrb_free_context(mrb_state *mrb, struct mrb_context *c)
   mrb_free(mrb, c->stbase);
   mrb_free(mrb, c->svars);
   mrb_free(mrb, c->cibase);
+  mrb_cont_stack_free(mrb, c->conts);
   mrb_free(mrb, c);
 }
 

@@ -404,6 +404,13 @@ assert("Array#rindex (block)") do
   assert_equal 69, (1..100).to_a.rindex { |i| i % 5 == 0 and i % 7 == 0 }
 end
 
+assert("Array#rindex (block) with a block that shortens the array") do
+  a = [1, 2, 3, 4, 5, 6]
+  seen = []
+  assert_nil a.rindex { |x| seen << x; a.pop; a.pop; false }
+  assert_equal [6, 4, 2], seen
+end
+
 assert('Array#shift', '15.2.12.5.27') do
   a = [1,2,3]
   b = a.shift
@@ -511,6 +518,16 @@ assert("Array#unshift taking shared self") do
 end
 
 
+assert('Array#inspect over an array longer than a C stack holds') do
+  # Every element's `inspect` here is a C method, which is a call the walk
+  # cannot hand to the VM and makes itself. Coming back through the resume for
+  # each of those would take a C frame per element.
+  a = Array.new(50000) { |i| i }
+  s = a.inspect
+  assert_equal "[0, 1, 2, ", s[0, 10]
+  assert_equal "49999]", s[-6, 6]
+end
+
 assert('Array#to_s', '15.2.12.5.31 / 15.2.12.5.32') do
   a = [2, 3,   4, 5]
   a[4] = a
@@ -582,6 +599,25 @@ assert("Array (Longish inline array)") do
   assert_equal({Array=>200}, h)
 end
 
+assert('Array#rindex with a == that shortens the array') do
+  # The search steps down from the end, so a `==` that shortens the array
+  # leaves the index past the new end. What the step has to do there is come
+  # back inside the array rather than read where the index points.
+  shrink = Class.new do
+    def initialize(a)
+      @a = a
+    end
+
+    def ==(other)
+      @a.replace([1])
+      false
+    end
+  end
+  a = (2..40).to_a
+  a.push(shrink.new(a))
+  assert_equal 0, a.rindex(1)
+end
+
 assert("Array#rindex") do
   class Sneaky
     def ==(*)
@@ -592,6 +628,19 @@ assert("Array#rindex") do
   end
   $a = [2, 3, 4, 5, 6, 7, 8, 9, 10, Sneaky.new]
   assert_equal 0, $a.rindex(1)
+end
+
+assert('Array#sort with a block on an array long enough for the heap') do
+  a = Array.new(100) { |i| (i * 37) % 100 }
+  assert_equal (0...100).to_a, a.sort { |x, y| x <=> y }
+  assert_equal (0...100).to_a.reverse, a.sort { |x, y| y <=> x }
+  b = Array.new(100) { |i| i % 5 }
+  assert_equal b.sort, b.sort { |x, y| x <=> y }
+end
+
+assert('Array#sort! with a block that changes the array length') do
+  a = [3, 1, 2, 5, 4]
+  assert_raise(RuntimeError) { a.sort! { |x, y| a.pop; x <=> y } }
 end
 
 assert('Array#sort!') do
