@@ -37,6 +37,21 @@ MRuby::Toolchain.new(:gcc) do |conf, params|
     linker.library_paths = []
     linker.option_library = '-l%s'
     linker.option_library_path = '-L%s'
+    linker.option_use_linker = '-fuse-ld=%s'
+    # The drivers of this family all take `-fuse-ld=`, so a build for this
+    # machine looks for a linker faster than the `ld` they would otherwise
+    # reach for. `mold` links a binary of this size several times faster than
+    # GNU ld, and `lld`, which more machines have already, sits between the
+    # two. Which of them is installed is settled by a link and not by this
+    # list, so a machine with neither builds as it always did.
+    #
+    # A cross build looks for nothing and names its linkers itself. Linking
+    # for another target is often more than resolving symbols: a linker
+    # script places the image of a bare-metal target, and a specs file of the
+    # toolchain says how. A probe that links a program answers whether a
+    # linker runs, and not whether the image it wrote is the one that target
+    # boots.
+    linker.preferred_linkers = conf.kind_of?(MRuby::CrossBuild) ? [] : %w(mold lld)
     linker.link_options = '%{flags} -o "%{outfile}" %{objs} %{flags_before_libraries} %{libs} %{flags_after_libraries}'
   end
 
