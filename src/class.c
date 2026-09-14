@@ -1371,6 +1371,17 @@ ensure_class_type(mrb_state *mrb, mrb_value val)
 
 #define to_sym(mrb, ss) mrb_obj_to_sym(mrb, ss)
 
+/* The Array a send packs its arguments into when `ci->n == 15`.  C code
+   reads its elements in place, so it is hidden from ObjectSpace meanwhile. */
+static struct RArray*
+packed_args(const mrb_callinfo *ci)
+{
+  struct RArray *a = mrb_ary_ptr(ci->stack[1]);
+
+  a->c = NULL; /* hide from ObjectSpace.each_object */
+  return a;
+}
+
 /*
  * Gets the number of arguments passed to the current C function call.
  *
@@ -1388,10 +1399,7 @@ mrb_get_argc(mrb_state *mrb)
   mrb_int argc = mrb->c->ci->n;
 
   if (argc == 15) {
-    struct RArray *a = mrb_ary_ptr(mrb->c->ci->stack[1]);
-
-    a->c = NULL; /* hide from ObjectSpace.each_object */
-    argc = ARY_LEN(a);
+    argc = ARY_LEN(packed_args(mrb->c->ci));
   }
   return argc;
 }
@@ -1416,10 +1424,7 @@ mrb_get_argv(mrb_state *mrb)
   mrb_int argc = mrb->c->ci->n;
   mrb_value *array_argv = mrb->c->ci->stack + 1;
   if (argc == 15) {
-    struct RArray *a = mrb_ary_ptr(*array_argv);
-
-    a->c = NULL; /* hide from ObjectSpace.each_object */
-    array_argv = ARY_PTR(a);
+    array_argv = ARY_PTR(packed_args(mrb->c->ci));
   }
   return array_argv;
 }
@@ -1520,10 +1525,6 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
   const mrb_value *argv;
   mrb_int i = 0;
 
-  /* fast path only for non-packed, non-keyword args */
-  if (argc >= 15 || ci->kw) return -1;
-  argv = ci->stack + 1;
-
   /* validate format and count args in one scan (table lookup, no switch) */
   const char *p = format;
   int req = 0, opt = 0;
@@ -1534,6 +1535,25 @@ get_args_fast(mrb_state *mrb, const char *format, void** ptr, va_list *ap)
     if (v == 2) { in_opt = TRUE; p++; continue; }
     if (in_opt) opt++; else req++;
     p++;
+  }
+  if (mrb_unlikely(ci->kw)) {
+    /* A format this path takes names no keyword, so the only keyword
+       dictionary it can serve is an empty one: anything inside belongs among
+       the arguments, and folding it in is the general path's business. */
+    mrb_value kdict = ci->stack[mrb_ci_bidx(ci)-1];
+    if (!mrb_hash_p(kdict) || mrb_hash_size(mrb, kdict) > 0) return -1;
+  }
+  if (mrb_unlikely(argc >= 15)) {
+    /* `Class#new` hands `initialize` its arguments packed, so a C method
+       written as an initializer used to meet the general path every time.
+       Nothing is read until the format is known good, and then they are read
+       where they sit, the way the general path reads them. */
+    struct RArray *a = packed_args(ci);
+    argv = ARY_PTR(a);
+    argc = ARY_LEN(a);
+  }
+  else {
+    argv = ci->stack + 1;
   }
   if (argc < req || argc > req + opt) {
     mrb_argnum_error(mrb, argc, req, req + opt);
@@ -1719,10 +1739,9 @@ get_args_v(mrb_state *mrb, mrb_args_format format, void** ptr, va_list *ap)
 
   argv_on_stack = argc < 15;
   if (!argv_on_stack) {
-    struct RArray *a = mrb_ary_ptr(*argv);
+    struct RArray *a = packed_args(ci);
     argv = ARY_PTR(a);
     argc = ARY_LEN(a);
-    a->c = NULL; /* hide from ObjectSpace.each_object */
   }
 
   opt = FALSE;

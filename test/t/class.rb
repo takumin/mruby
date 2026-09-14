@@ -60,6 +60,20 @@ assert('Class#new', '15.2.3.3.3') do
   # with block doesn't work yet
 end
 
+assert('Class#new with an initialize written in C') do
+  # `Class#new` hands `initialize` its arguments packed, with a keyword
+  # dictionary alongside
+  assert_equal "abc", String.new("abc")
+  assert_equal "abc", String.new(*["abc"])
+  assert_equal "abc", String.new("abc", **{})
+  assert_equal "abc", String.new("abc") {}
+  assert_raise(TypeError) { String.new(1) }
+
+  # keywords the initializer does not take are one more positional argument
+  assert_equal "{a: 1}", Exception.new(a: 1).message
+  assert_raise(ArgumentError) { Exception.new("m", a: 1) }
+end
+
 assert('Class#superclass', '15.2.3.3.4') do
   class SubClass < String; end
   assert_equal(String, SubClass.superclass)
