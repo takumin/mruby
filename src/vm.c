@@ -3235,6 +3235,12 @@ RETRY_TRY_BLOCK:
     }
 
     CASE(OP_LOADL, BB) {
+      if ((irep->pool[b].tt & IREP_TT_NFLAG) == 0) {
+        /* a string literal that its file froze */
+        regs[a] = mrb_frozen_str_new(mrb, &irep->pool[b]);
+        mrb_gc_arena_restore(mrb, ai);
+        NEXT;
+      }
       switch (irep->pool[b].tt) {   /* number */
       case IREP_TT_INT32:
         VM_SET_INT_VALUE(regs[a], (mrb_int)irep->pool[b].u.i32);
@@ -3263,13 +3269,16 @@ RETRY_TRY_BLOCK:
 #else
         goto L_INT_OVERFLOW;
 #endif
-#ifndef MRB_NO_FLOAT
       case IREP_TT_FLOAT:
+#ifndef MRB_NO_FLOAT
         VM_SET_FLOAT_VALUE(regs[a], irep->pool[b].u.f);
-        break;
+#else
+        /* a binary that a build with Float dumped */
+        regs[a] = mrb_nil_value();
 #endif
+        break;
       default:
-        /* should not happen (tt:string) */
+        /* should not happen */
         regs[a] = mrb_nil_value();
         break;
       }

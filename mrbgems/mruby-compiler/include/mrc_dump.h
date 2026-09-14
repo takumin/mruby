@@ -38,7 +38,7 @@ int mrc_dump_irep_binary(mrc_ccontext *c, const mrc_irep *irep, uint8_t flags, F
 /*   Major: Incompatible to prior versions */
 /*   Minor: Upper-compatible to prior versions */
 #define RITE_BINARY_MAJOR_VER          "04"
-#define RITE_BINARY_MINOR_VER          "00"
+#define RITE_BINARY_MINOR_VER          "01"
 #define RITE_BINARY_FORMAT_VER         RITE_BINARY_MAJOR_VER RITE_BINARY_MINOR_VER
 #if defined(RITE_COMPILER_NAME)
 #undef RITE_COMPILER_NAME
