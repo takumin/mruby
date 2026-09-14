@@ -1953,6 +1953,30 @@ end
 
 DEFINED_TEST_CONST = 1
 
+assert('defined? answers with one string per answer') do
+  # CRuby answers a question asked twice with one string, and answers it with
+  # a string of its own: a program that freezes "expression" is left holding
+  # a string nothing else is.
+  assert_true defined?(1).equal?(defined?(:sym))
+  assert_true defined?(Object).equal?(defined?(DEFINED_TEST_CONST))
+  assert_true defined?(1).frozen?
+  assert_false defined?(1).equal?("expression".freeze)
+  assert_false defined?(Object).equal?("constant".freeze)
+end
+
+assert('defined? inside a BasicObject') do
+  # What compiled code asks for at run time it asks of whatever self it is
+  # given, and a BasicObject has none of Kernel's methods, so what it asks has
+  # to be a method every object has.
+  cls = Class.new(BasicObject) do
+    def answer; defined?(::String); end
+    def missing; defined?(::NoSuchConstantAnywhere); end
+  end
+  obj = cls.new
+  assert_equal "constant", obj.answer
+  assert_nil obj.missing
+end
+
 assert('defined? on operands resolved at run time') do
   # constants (in the lexical scope of this method)
   assert_equal 'constant', defined?(DEFINED_TEST_CONST)
