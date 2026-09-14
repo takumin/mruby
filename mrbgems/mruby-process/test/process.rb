@@ -96,6 +96,63 @@ module ProcessTestUtil
     nil
   end
 
+  # The seventeen resources a limit can be set on, by the names an argument
+  # spells them.  The whole list is known to every port; which of them a port
+  # has is what the constants say, and `rlimit_resources` is what the tests
+  # walk to compare the two.
+  def self.rlimit_resources
+    %w[AS CORE CPU DATA FSIZE MEMLOCK MSGQUEUE NICE NOFILE NPROC NPTS RSS
+       RTPRIO RTTIME SBSIZE SIGPENDING STACK]
+  end
+
+  # The three answers a limit can be instead of a number.  Every build defines
+  # them, whether or not its port limits anything.
+  def self.rlimit_answers
+    [Process::RLIM_INFINITY, Process::RLIM_SAVED_CUR, Process::RLIM_SAVED_MAX]
+  end
+
+  # Whether +limit+ is an answer Process.getrlimit may give: a count of
+  # whatever the resource is measured in, or one of the three above.
+  def self.rlimit?(limit)
+    limit >= 0 || rlimit_answers.include?(limit)
+  end
+
+  # Whether this port declares each of the two limit calls, which is what a
+  # test that needs one skips on.  They are declared one at a time, so they
+  # are asked for one at a time.
+  def self.getrlimit?
+    Process.respond_to?(:getrlimit)
+  end
+
+  def self.setrlimit?
+    Process.respond_to?(:setrlimit)
+  end
+
+  # Whether a test can make its change to a limit in a child, which the
+  # C helper does with fork(2) where the POSIX port reads limits.
+  def self.isolated?
+    Object.const_defined?(:ProcessRlimitTest) && ProcessRlimitTest.respond_to?(:__isolate)
+  end
+
+  # Run the block in a child and answer what it answered as `inspect` writes
+  # it, or the name of the class it raised.  A limit the block lowers is lost
+  # to the child alone, which is what lets a test lower a hard limit at all.
+  # The block asserts nothing: an assertion is counted in the process that
+  # made it, and the child ends with the block.
+  def self.isolated
+    pid, fd = ProcessRlimitTest.__isolate
+    raise "no child to run the block in" unless pid
+    if pid == 0
+      report = begin
+        yield.inspect
+      rescue Exception => e
+        e.class.to_s
+      end
+      ProcessRlimitTest.__report(fd, report)
+    end
+    ProcessRlimitTest.__collect(pid, fd)
+  end
+
   # Whether this build has a Float for the float units and Process.times to
   # answer in.
   def self.float?
