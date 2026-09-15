@@ -269,10 +269,8 @@ assert 'unpack("U") over every lead byte' do
   # F0 80, F8 80, FC 80), a surrogate (ED A0 and above), U+10FFFF (F4 90 and
   # above, F5 to F7), and the five and six byte lengths (F8 to FD). A shorter
   # spelling of a value is "redundant" and everything else short of a
-  # character is "malformed", which is how CRuby tells the two apart. What
-  # CRuby admits past U+10FFFF, the four byte spellings above it and the
-  # five and six byte ones, is refused here; over these 3072 strings that is
-  # the whole of the difference.
+  # character is "malformed", which is how CRuby tells the two apart, and
+  # a value past U+10FFFF is read up to 0x7FFFFFFF, as CRuby reads it.
   min = [0, 128, 2048, 65536, 2097152, 67108864]
   claim = ->(c) {
     if c < 0x80 then 1 elsif c < 0xC0 then 0 elsif c < 0xE0 then 2
@@ -289,7 +287,6 @@ assert 'unpack("U") over every lead byte' do
     v = c & (0x7F >> n)
     (1...n).each {|k| v = (v << 6) | (bytes[k] & 0x3F) }
     next :redundant if v < min[n - 1]
-    next :malformed if v > 0x10FFFF
     [v]
   }
   0.upto(255) do |c|
