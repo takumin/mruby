@@ -20,6 +20,12 @@ MRuby::Toolchain.new(:gcc) do |conf, params|
     compiler.cxx_compile_flag = '-x c++ -std=gnu++03'
     compiler.cxx_exception_flag = '-fexceptions'
     compiler.cxx_invalid_flags = c_mandatory_flags + cxx_invalid_flags
+    # A C++ ABI build compiles as C++ with these flags, so a config selects the
+    # C++ standard it wants by writing `-std=c++23` (or `-std=gnu++23`) among
+    # them. The version is the config's to choose and the sources that stay on
+    # the C compiler there cannot be given any of them, so the family is named
+    # by what it is spelled with rather than one by one.
+    compiler.c_invalid_flags = [/\A\s*--?std=(?:c|gnu)\+\+/, /\A\s*-x\s*c\+\+(?!\S)/]
 
     def compiler.setup_debug(conf)
       self.flags << %w(-g3 -O0)

@@ -404,6 +404,38 @@ If you need to enable C++ exception explicitly add the following:
 conf.enable_cxx_exception
 ```
 
+#### Compiler flags under `enable_cxx_abi`
+
+Since `enable_cxx_abi` compiles almost every source as C++,
+the flags of the C compiler are a C++ command line there, and
+a configuration that wants a particular standard for them adds
+it to those flags:
+
+```ruby
+conf.enable_cxx_abi
+conf.cc.flags << '-std=c++23'
+```
+
+A few vendored sources stay on the C compiler even in such a
+build; the Prism parser of `mruby-compiler` is one, since no
+C++ compiler accepts its generated code. They are compiled
+with the flags that belong to C++ taken back off: the one the
+build itself added to compile as C++, and the ones the
+toolchain names in `cc.c_invalid_flags`. The standard
+selection is named there already (`-std=c++NN` and
+`-std=gnu++NN` for gcc and clang, `/std:c++NN` for Visual
+C++), so what a configuration adds to that list is a C++ flag
+of another kind that the C compiler would reject:
+
+```ruby
+conf.cc.flags << '-fcoroutines'
+conf.cc.c_invalid_flags << '-fcoroutines'
+```
+
+An entry is either the flag itself, which is matched against a
+whole flag as it was written, or a regular expression, which
+names a family of them.
+
 #### C++ exception disabling
 
 If your compiler does not support C++, and you want to ensure

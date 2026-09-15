@@ -21,6 +21,11 @@ MRuby::Toolchain.new(:visualcpp) do |conf, _params|
     compiler.preprocess_options = %Q[/EP %{flags} "%{infile}" > "%{outfile}"]
     compiler.cxx_compile_flag = '/TP'
     compiler.cxx_exception_flag = '/EHs'
+    # As with the standard selection of the other toolchains: a config that
+    # asks for a C++ standard in a C++ ABI build writes `/std:c++20` among the
+    # flags, and the sources that stay on the C compiler there are compiled
+    # without it. `cl` takes its options with either prefix.
+    compiler.c_invalid_flags = [%r{\A\s*[-/]std:c\+\+}i, %r{\A\s*[-/]TP(?!\S)}]
   end
 
   conf.linker do |linker|

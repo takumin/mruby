@@ -126,9 +126,11 @@ MRuby::Gem::Specification.new('mruby-compiler') do |spec|
   # Prism is a vendored C library and must be compiled as C: neither g++ (its
   # generated diagnostic table uses non-trivial designated initializers) nor
   # clang++ (its implicit void* conversions) can build it as C++. In an
-  # MRB_USE_CXX_ABI build the rest of mruby compiles as C++, so strip the C++
-  # compile flag here to keep these sources on the C compiler; mrc_common.h
-  # wraps the Prism header in extern "C" so the C++ glue links against them.
+  # MRB_USE_CXX_ABI build the rest of mruby compiles as C++, so these sources
+  # are compiled by `cc.as_c`, which is the build's compiler with the flags
+  # that belong to C++ taken back off (see `Command::Compiler#c_invalid_flags`);
+  # mrc_common.h wraps the Prism header in extern "C" so the C++ glue links
+  # against them.
   # Prism's allocator is the arena, which the header declares with C linkage
   # so that these C objects resolve it; its blocks come from libc there, so
   # nothing here reaches a C++-linkage symbol (see MRC_PRISM_ARENA_LIBC).
@@ -138,28 +140,11 @@ MRuby::Gem::Specification.new('mruby-compiler') do |spec|
   # The objects go through the rules like every other object of the gem, so
   # that a change to a Prism header or to the compile flags rebuilds them.
   prism_src_dir = "#{prism_dir}/src"
+  prism_gen_src_dir = "#{prism_gen_dir}/src"
   prism_obj_dir = "#{build_dir}/lib"
   prism_cc = nil
-  cc.define_rules(prism_obj_dir, prism_src_dir) do
-    prism_cc ||= if build.cxx_abi_enabled?
-      cc.clone.tap do |c|
-        c.flags = cc.flags.flatten - [cc.cxx_compile_flag].flatten
-        c.defines = cc.defines
-      end
-    else
-      cc
-    end
-  end
-  prism_gen_src_dir = "#{prism_gen_dir}/src"
-  cc.define_rules(prism_obj_dir, prism_gen_src_dir) do
-    prism_cc ||= if build.cxx_abi_enabled?
-      cc.clone.tap do |c|
-        c.flags = cc.flags.flatten - [cc.cxx_compile_flag].flatten
-        c.defines = cc.defines
-      end
-    else
-      cc
-    end
+  [prism_src_dir, prism_gen_src_dir].each do |src_dir|
+    cc.define_rules(prism_obj_dir, src_dir) { prism_cc ||= cc.as_c }
   end
   Dir.glob("#{prism_src_dir}/**/*.c").each do |src|
     objs << objfile(src.relative_path_from(prism_src_dir).pathmap("#{prism_obj_dir}/%X"))

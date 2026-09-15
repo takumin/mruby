@@ -89,6 +89,19 @@ module MRuby
     # it compiled in, for a compiler that takes such a thing.
     attr_accessor :option_compilation_dir
     attr_accessor :cxx_compile_flag, :cxx_exception_flag, :cxx_invalid_flags
+    # What a compile as C cannot be given, as the counterpart of
+    # `cxx_invalid_flags`: that list is what the move to C++ drops, this one is
+    # what the move back to C drops. An `enable_cxx_abi` build compiles nearly
+    # everything as C++, so `flags` there is a C++ command line, holding the
+    # `cxx_compile_flag` the build added and whatever the config wrote for the
+    # C++ its sources are now compiled as. The sources that must stay on the C
+    # compiler all the same -- a vendored C library such as Prism -- take those
+    # back off through `as_c`. An entry is either the flag itself, matched
+    # against a whole element of `flags` as `cxx_invalid_flags` is, or a
+    # pattern, which is how a toolchain names a family whose spelling it cannot
+    # know in full: it knows how the C++ standard is selected, not which one a
+    # config will ask for.
+    attr_accessor :c_invalid_flags
     attr_writer :preprocess_options
 
     def initialize(build, source_exts=[], label: "CC")
@@ -107,6 +120,7 @@ module MRuby
       @option_compilation_dir = %q[-ffile-compilation-dir="%s"]
       @compile_options = %q[%{flags} -o "%{outfile}" -c "%{infile}"]
       @cxx_invalid_flags = []
+      @c_invalid_flags = []
       @out_ext = build.exts.object
     end
 
@@ -126,6 +140,28 @@ module MRuby
       # not the value.
       [defines, internal_defines].flatten
         .any? {|d| d.to_s.split('=', 2).first == name}
+    end
+
+    # This compiler as the one to compile a source that has to be C. Outside a
+    # C++ ABI build that is this compiler itself, so a caller need not ask what
+    # kind of build it is in; inside one it is a copy whose flags are the C++
+    # command line with what belongs to C++ taken back off: the
+    # `cxx_compile_flag` the build added, and whatever the toolchain names in
+    # `c_invalid_flags` -- a `-std=c++23` the config wrote for its own sources
+    # among it, which the C compiler would refuse the moment it is no longer
+    # compiling as C++.
+    #
+    # Only the flags are the copy's own. The defines stay shared with this
+    # compiler, so what a gem defines for the sources of its build still
+    # reaches these ones.
+    def as_c
+      return self unless build.cxx_abi_enabled?
+
+      invalid = c_invalid_flags.flatten
+      clone.tap do |c|
+        c.flags = (flags.flatten - [cxx_compile_flag].flatten)
+          .reject {|flag| invalid.any? {|pattern| pattern === flag}}
+      end
     end
 
     # The flags that keep the directories of this machine out of what the
