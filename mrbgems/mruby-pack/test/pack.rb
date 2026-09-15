@@ -223,12 +223,28 @@ assert 'pack/unpack "U"' do
 
   assert_raise(RangeError) { [-0x40000000].pack("U") }
   assert_raise(RangeError) { [-1].pack("U") }
-  assert_raise(RangeError) { [0x40000000].pack("U") }
 end
 
-assert 'pack("U") with a value outside the Unicode range' do
-  assert_equal [0xF4, 0x8F, 0xBF, 0xBF], [0x10FFFF].pack("U").unpack("C*")
-  assert_raise(RangeError) { [0x110000].pack("U") }
+assert 'pack("U") with a value past U+10FFFF' do
+  # CRuby writes every value up to 0x7FFFFFFF, over up to six bytes, and
+  # unpack("U") reads each of them back.
+  [
+    [0x10FFFF,   [0xF4, 0x8F, 0xBF, 0xBF]],
+    [0x110000,   [0xF4, 0x90, 0x80, 0x80]],
+    [0x1FFFFF,   [0xF7, 0xBF, 0xBF, 0xBF]],
+    [0x200000,   [0xF8, 0x88, 0x80, 0x80, 0x80]],
+    [0x3FFFFFF,  [0xFB, 0xBF, 0xBF, 0xBF, 0xBF]],
+    [0x4000000,  [0xFC, 0x84, 0x80, 0x80, 0x80, 0x80]],
+    [0x40000000, [0xFD, 0x80, 0x80, 0x80, 0x80, 0x80]],
+    [0x7FFFFFFF, [0xFD, 0xBF, 0xBF, 0xBF, 0xBF, 0xBF]],
+  ].each do |v, bytes|
+    assert_equal bytes, [v].pack("U").unpack("C*"), v.to_s(16)
+    assert_equal [v], [v].pack("U").unpack("U"), v.to_s(16)
+  end
+  # 0x7FFFFFFF + 1 is added at run time, since the literal does not fit
+  # MRB_INT32 without bigint; there the addition raises RangeError itself.
+  top = 0x7FFFFFFF
+  assert_raise(RangeError) { [top + 1].pack("U") }
 
   # A value that would land inside the Unicode range if it were truncated to
   # 32 bits must not come out as the character it truncates to.
@@ -303,7 +319,6 @@ assert 'unpack("U") over every lead byte' do
     end
   end
 end
-
 assert 'unpack1' do
   d = 1234
   assert_equal(d, [d].pack("i").unpack1("i"))
