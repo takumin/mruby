@@ -1172,7 +1172,7 @@ io_putc(mrb_state *mrb, mrb_value io)
 
   if (len == 0) return c;
 
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   write_len = mrb_utf8len(ptr, ptr + len);
 #else
   write_len = 1;          /* Non-UTF8: write single byte */
@@ -2244,7 +2244,7 @@ io_getc(mrb_state *mrb, mrb_value io)
 
   io_fill_buf(mrb, fptr);
   if (fptr->eof) return mrb_nil_value();
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   const char *p = &buf->mem[buf->start];
   if ((*p) & 0x80) {
     len = mrb_utf8len(p, p+buf->len);

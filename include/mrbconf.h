@@ -102,8 +102,10 @@
 /* call malloc_trim(0) from mrb_full_gc() */
 //#define MRB_USE_MALLOC_TRIM
 
-/* string class to handle UTF-8 encoding */
-//#define MRB_UTF8_STRING
+/* UTF-8 strings come with the mruby-encoding gem; there is no macro for them */
+#ifdef MRB_UTF8_STRING
+#error "MRB_UTF8_STRING is gone; add the mruby-encoding gem instead"
+#endif
 
 /* maximum length of strings */
 /* the default value is 1MB */
