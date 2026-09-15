@@ -896,7 +896,7 @@ handle_key(mirb_editor *ed, int key, mirb_edit_result *result)
         perform_dedent(&ed->buf);
       }
     }
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
     /* Handle UTF-8 multibyte characters (bytes >= 0x80) */
     else if (key >= 128 && key <= 255) {
       mirb_history_browse_stop(&ed->hist);

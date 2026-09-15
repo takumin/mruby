@@ -2,8 +2,8 @@ MRuby::Gem::Specification.new('mruby-encoding') do |spec|
   spec.license = 'MIT'
   spec.author  = 'mruby developers'
   spec.summary = "Poorman's Encoding for mruby"
+  # Core and the other gems read their strings as UTF-8 under this define.
   spec.build.defines << "HAVE_MRUBY_ENCODING_GEM"
-  spec.build.defines << "MRB_UTF8_STRING"
   spec.add_test_dependency 'mruby-string-ext'
   # The tests ask String for the methods that change a receiver, so that a
   # method the build carries and the coderange checklist does not name fails

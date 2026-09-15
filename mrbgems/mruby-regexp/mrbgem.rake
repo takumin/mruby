@@ -89,7 +89,7 @@ MRuby::Gem::Specification.new('mruby-regexp') do |spec|
   # reading its strings as characters, and only where it classifies them by
   # Unicode.
   spec.build_settings do
-    if build.has_define?('MRB_UTF8_STRING') &&
+    if build.has_define?('HAVE_MRUBY_ENCODING_GEM') &&
        !build.has_define?('MRB_USE_ASCII_CTYPE')
       spec.test_rbfiles -= ["#{spec.dir}/test/ascii_case.rb", "#{spec.dir}/test/ascii_ctype.rb"]
     else

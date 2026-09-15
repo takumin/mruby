@@ -178,7 +178,7 @@ size_t mirb_buffer_line_len(mirb_buffer *buf, size_t index);
 
 /*
  * Get cursor display column (visual column for terminal positioning)
- * Handles UTF-8 display width when MRB_UTF8_STRING is defined
+ * Handles UTF-8 display width when HAVE_MRUBY_ENCODING_GEM is defined
  */
 size_t mirb_buffer_cursor_display_col(mirb_buffer *buf);
 

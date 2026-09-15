@@ -1256,7 +1256,7 @@ sym_inspect(mrb_state *mrb, mrb_value sym)
     sp[0] = ':';
     sp[1] = '"';
   }
-#ifdef MRB_UTF8_STRING
+#ifdef HAVE_MRUBY_ENCODING_GEM
   if (SYMBOL_INLINE_P(id)) RSTR_CODERANGE_SET(mrb_str_ptr(str), MRB_STR_CODERANGE_7BIT);
 #endif
   return str;
