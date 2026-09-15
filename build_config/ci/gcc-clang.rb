@@ -68,6 +68,13 @@ MRuby::Build.new('cxx_abi') do |conf|
   conf.enable_test
 
   conf.enable_cxx_abi
+
+  # A config compiles the C++ of such a build by a standard of its own choosing
+  # and writes it where every other compile flag goes, which the sources that
+  # stay on the C compiler must be spared. Written here it stands in for that
+  # config while changing nothing: it is the standard this build compiles by
+  # already, so what it covers is the C sources being compiled without it.
+  conf.compilers.each {|c| c.flags << '-std=gnu++03'}
 end
 
 MRuby::Build.new('byte-string') do |conf|
