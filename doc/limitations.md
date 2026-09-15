@@ -184,8 +184,8 @@ Module refinements (`refine`, `using`) are not supported in mruby.
 ## No `Encoding` Class
 
 mruby does not have an `Encoding` class. Strings are treated as
-byte sequences by default. UTF-8 aware string operations can be
-enabled with the `MRB_UTF8_STRING` compile flag, which is also what
+byte sequences by default. UTF-8 aware string operations come
+with the `mruby-encoding` gem, which is also what
 makes case conversion follow Unicode rather than ASCII; `MRB_USE_ASCII_CTYPE`
 narrows that half back without giving up the indexing. A Unicode conversion
 refuses bytes that spell no character with `ArgumentError`; one narrowed to

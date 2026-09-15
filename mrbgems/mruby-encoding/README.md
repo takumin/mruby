@@ -10,6 +10,34 @@ This mrbgem provides a lightweight, "poorman's" encoding functionality for mruby
   - `Encoding::UTF_8`
   - `Encoding::ASCII_8BIT` (aliased as `Encoding::BINARY`)
 
+## UTF-8 strings
+
+A build with this gem reads its strings as UTF-8. Without it, strings are
+bytes.
+
+- Adds UTF-8 encoding support to character-oriented String instance methods.
+- Case conversion follows Unicode: `String#downcase`, `#upcase`, `#capitalize`
+  and `#swapcase` map every character Unicode gives a case, and a mapping may
+  spell several characters (`"ß".upcase` is `"SS"`). `String#casecmp?` folds
+  by the same data rather than converting.
+- A string read as bytes (`String#b`) converts and folds ASCII alone, and one
+  holding bytes that spell no character is refused with `ArgumentError`.
+- The regexp `i` flag reads the same data, folding every character Unicode
+  pairs with one other. Without this gem it folds ASCII letters, and a
+  pattern holding a character that needs one of the Unicode foldings raises
+  `RegexpError` rather than answering as if the character had no case.
+- The regexp POSIX brackets classify by Unicode above ASCII: `[[:alpha:]]`
+  holds a letter of any script and `[[:^alpha:]]` rejects it, as in CRuby.
+  Without this gem a bracket holds its ASCII and no character above it.
+- `String#succ` steps a letter or a digit above ASCII within its own run of
+  them and wraps at the end of it, as in CRuby (`"ת".succ` is `"אא"`).
+  Without this gem nothing above ASCII is a letter or a digit, and the last
+  character steps as a character.
+- `MRB_USE_ASCII_CTYPE` narrows the case, the brackets and `String#succ` back
+  to ASCII, taking the refusal with them and leaving the indexing.
+
+A gem reads the answer with `build.has_define?("HAVE_MRUBY_ENCODING_GEM")`.
+
 ## Functionality
 
 This gem introduces an `Encoding` module and extends the `String` and `Integer` classes with encoding-related methods.
@@ -86,11 +114,7 @@ puts invalid_utf8.valid_encoding? #=> false
 # Integer#chr
 puts 65.chr # => "A"
 puts 65.chr("BINARY") # => "A"
-
-# When mruby is compiled with MRB_UTF8_STRING
-if Object.const_defined?(:MRB_UTF8_STRING)
-  puts 12354.chr("UTF-8") # => "あ"
-  # puts 0x110000.chr("UTF-8") #=> RangeError
-end
+puts 12354.chr("UTF-8") # => "あ"
+# puts 0x110000.chr("UTF-8") #=> RangeError
 
 ```

@@ -600,7 +600,7 @@ assert("String#byteindex and String#byterindex with regexp") do
   assert_nil "hello".byterindex(/l/, -10)
 
   # the same two searches read in the other space.  They part company with
-  # `index` and `rindex` only on a build with MRB_UTF8_STRING, where the
+  # `index` and `rindex` only on a build with mruby-encoding, where the
   # answer and the position argument are both byte offsets
   if __ENCODING__ == "UTF-8"
     assert_equal 1, "あいうあいう".index(/い/)
