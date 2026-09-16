@@ -682,6 +682,32 @@ assert("Regexp - a \\u escape in a class names what spelling it out names") do
   assert_equal ["a", "b", "c", "z"], "abcdz-".scan(/[a-\u{63 7a}]/)
 end
 
+assert("Regexp - a \\u escape in a byte-indexed pattern's class names the bytes") do
+  # The escape used to ask the build whether a character is more than a byte,
+  # where the pattern is what holds the answer: a binary pattern spells no
+  # character with its bytes on a build that reads characters everywhere else.
+  # A class written there holds the bytes, so the escape that names the same
+  # character has to come to the same members, or the two spellings disagree.
+  skip unless __ENCODING__ == "UTF-8"
+  spelled = Regexp.new("[\u{100}]".b)     # the character, written out
+  named = Regexp.new("[\\u{100}]".b)      # the same character, named
+  ["\u{100}".b, "\xC4".b, "\x80".b].each do |subject|
+    assert_equal spelled.match?(subject), named.match?(subject)
+  end
+  assert_equal 0, (named =~ "Āx".b)
+  assert_equal 4, Regexp.new("[\\u{100}]+".b).match("ĀĀ".b)[0].bytesize
+  # The literal path names it the same way there.
+  assert_equal 0, (Regexp.new("\\u{100}".b) =~ "Āx".b)
+  # An ASCII codepoint is a member of its own however the pattern is indexed,
+  # and a list still gives every codepoint a membership.
+  assert_equal 0, (Regexp.new("[\\u{61}]".b) =~ "a".b)
+  assert_equal ["a", "b"], "abc".b.scan(Regexp.new("[\\u{61 62}]".b))
+  # A pattern read by character names the character, which is the control the
+  # rows above are read against.
+  assert_equal 0, (Regexp.new("[\\u{100}]") =~ "Āx")
+  assert_nil ("\xC4".b =~ Regexp.new("[\\u{100}]"))
+end
+
 assert("Regexp - malformed \\u escapes") do
   # each of these is a RegexpError in CRuby rather than a shorter codepoint
   # or literal text
