@@ -887,10 +887,10 @@ assert("Regexp - a class joins the byte escapes that spell a character") do
   assert_equal 0, (Regexp.new("[\\304\\200]") =~ "Āx")   # octal spells it too
   assert_equal 0, (Regexp.new("[\\xF0\\x9F\\x98\\x80]") =~ "\u{1F600}x")
   # A member the escapes spell opens and closes a range as a written out one
-  # does, and folds under /i as the character it is.
+  # does. What /i makes of it follows the build, as it does for the character
+  # written out, so unicode_case.rb and ascii_case.rb hold that pair.
   assert_equal 0, (Regexp.new("[\\xC4\\x80-\\xC4\\x81]") =~ "āx")
   assert_nil (Regexp.new("[\\xC4\\x80-\\xC4\\x81]") =~ "Ăx")
-  assert_equal 0, (Regexp.new("[\\xC4\\x80]", Regexp::IGNORECASE) =~ "āx")
   assert_equal 1, (Regexp.new("[^\\xC4\\x80]") =~ "Āx")
   # Escapes that spell no character are bytes, which is the rule `[\xC4]` is
   # already read by: an overlong sequence, a leader another leader follows and
