@@ -1461,8 +1461,16 @@ read_class_atom(re_compiler *c, re_charclass *cc, mrb_bool *is_byte, mrb_bool cl
        which reports it. */
     if (peek(c) < 0xC0) {
       uint32_t esc = (uint32_t)parse_escape(c);
-      /* \xNN and octal \NNN name a byte, and the literal path emits one. */
-      if (esc >= 0x80) *is_byte = TRUE;
+      /* \xNN and octal \NNN name a byte, and the literal path emits one,
+         apart from the run of them that spells a character: `[\xC4\x80]`
+         holds "\u{100}" as the pattern's `[Ā]` does, and a quantifier after
+         the class binds to the whole character. What spells no character is
+         a byte here as it is there. */
+      if (esc >= 0x80) {
+        uint32_t joined;
+        if (read_escaped_char(c, (int)esc, &joined)) return joined;
+        *is_byte = TRUE;
+      }
       return esc;
     }
   }

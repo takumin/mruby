@@ -377,6 +377,9 @@ assert("Regexp - the backtracking engine reads such a byte the same way") do
   assert_nil j.match(Regexp.new("(\xc4)\\1?"))
   assert_nil j.match(Regexp.new("(?=\xc4)\xc4\xb5"))
   assert_equal 2, j.match(Regexp.new("(\xc4\xb5)\\1?"))[0].bytesize
+  # A class holding what the escapes spell is one atom there as well, so the
+  # backreference asks for the character rather than for a byte of it.
+  assert_equal 0, (Regexp.new("([\\xC4\\x80])\\1") =~ "ĀĀ")
 end
 
 assert("Regexp - a capture spans whole characters") do
@@ -453,6 +456,9 @@ assert("Regexp - a lookbehind branch counts its own width in both units") do
   # over it steps back one where the character written out steps back two.
   assert_equal 2, (Regexp.new("(?<=[Ā])x".b) =~ "Āx".b)
   assert_nil (Regexp.new("(?<![Ā])x".b) =~ "Āx".b)
+  # Byte escapes that spell a character are as wide as the character, so the
+  # rewind over a class holding one clears both of its bytes.
+  assert_equal 1, Regexp.new("(?<=[\\xC4\\x80])x").match("Āx").begin(0)
 end
 
 assert("Regexp - a lookaround holds where its sub-pattern matches") do
@@ -914,6 +920,69 @@ assert("Regexp - a byte-indexed pattern's class holds its bytes") do
   assert_equal 0, (Regexp.new("Ā".b, Regexp::IGNORECASE) =~ "Āx".b)
   assert_equal 0, (Regexp.new("[Ā]") =~ "Āx")
   assert_equal 2, Regexp.new("[Ā]").match("Āx")[0].bytesize
+end
+
+assert("Regexp - a class joins the byte escapes that spell a character") do
+  # The literal path reads `\xC4\x80` as the character those bytes spell, so a
+  # quantifier after it repeats the whole of it. Inside a class each escape
+  # stayed a member of its own, and a class holding the two bytes matches no
+  # character a subject read by character spells: `[\xC4\x80]` answered nil
+  # against "Ā" where the same escapes outside the brackets answered 0.
+  skip unless __ENCODING__ == "UTF-8"
+  assert_equal 0, (Regexp.new("[\\xC4\\x80]") =~ "Āx")
+  assert_equal 4, Regexp.new("[\\xC4\\x80]+").match("ĀĀ")[0].bytesize
+  assert_equal 0, (Regexp.new("[\\304\\200]") =~ "Āx")   # octal spells it too
+  assert_equal 0, (Regexp.new("[\\xF0\\x9F\\x98\\x80]") =~ "\u{1F600}x")
+  # The class holds the character, so neither byte of it is a member of its own.
+  assert_nil (Regexp.new("[\\xC4\\x80]") =~ "\xC4".b)
+  assert_nil (Regexp.new("[\\xC4\\x80]") =~ "\x80".b)
+  # A member the escapes spell opens and closes a range as a written out one
+  # does. What /i makes of it follows the build, as it does for the character
+  # written out, so unicode_case.rb and ascii_case.rb hold that pair.
+  assert_equal 0, (Regexp.new("[\\xC4\\x80-\\xC4\\x81]") =~ "āx")
+  assert_nil (Regexp.new("[\\xC4\\x80-\\xC4\\x81]") =~ "Ăx")
+  # One end is enough to spell: the span runs to the atom beside it whichever
+  # side the escapes stand, and the octal and three byte runs reach one too.
+  assert_equal 0, (Regexp.new("[a-\\xC4\\x80]") =~ "\u{9F}x")
+  assert_equal 0, (Regexp.new("[\\xC4\\x80-ā]") =~ "āx")
+  assert_equal 0, (Regexp.new("[\\304\\200-\\304\\201]") =~ "āx")
+  assert_equal 0, (Regexp.new("[\\xE3\\x81\\x82-\\xE3\\x81\\x84]") =~ "いx")
+  assert_nil (Regexp.new("[\\xE3\\x81\\x82-\\xE3\\x81\\x84]") =~ "おx")
+  assert_equal 1, (Regexp.new("[^\\xC4\\x80]") =~ "Āx")
+  # Escapes that spell no character are bytes, which is the rule `[\xC4]` is
+  # already read by: an overlong sequence, a leader another leader follows and
+  # one nothing follows each stay where they were.
+  assert_false Regexp.new("[\\xC0\\xBC]").match?("<")
+  assert_equal 0, (Regexp.new("[\\xC4\\xC4]") =~ "\xC4".b)
+  assert_equal 0, (Regexp.new("[\\xC4x]") =~ "x")
+  assert_nil (Regexp.new("[\\xC4]") =~ "Āx")
+  assert_equal 0, (Regexp.new("[\\xC4]") =~ "\xC4".b)
+  # A byte the run leaves over is a byte, before it or after it, and a nest, an
+  # intersection and a member written out beside one hold what they read.
+  assert_equal 0, (Regexp.new("[\\xC4\\x80\\x80]") =~ "\x80".b)
+  assert_equal 0, (Regexp.new("[\\x80\\xC4\\x80]") =~ "Āx")
+  assert_equal 0, (Regexp.new("[[\\xC4\\x80]]") =~ "Āx")
+  assert_equal 0, (Regexp.new("[\\xC4\\x80&&\\xC4\\x80]") =~ "Āx")
+  assert_equal 0, (Regexp.new("[Ā\\xC4\\x81]") =~ "āx")
+  assert_equal 0, (Regexp.new("[\\xC4\\x80\\xC4\\x81]") =~ "āx")
+  # A byte-indexed pattern spells no character with its bytes, so nothing
+  # joins there and the class holds the two bytes.
+  assert_equal 0, (Regexp.new("[\\xC4\\x80]".b) =~ "Āx".b)
+  # A span the escapes write backwards is the empty class the written out
+  # spelling is refused for, and one member is one character, so a non-greedy
+  # quantifier takes the whole of it rather than a byte.
+  assert_raise_with_message(RegexpError, "empty range in char class: /[\\xC4\\x81-\\xC4\\x80]/") do
+    Regexp.new("[\\xC4\\x81-\\xC4\\x80]")
+  end
+  assert_equal 2, Regexp.new("[\\xC4\\x80]+?").match("ĀĀ")[0].bytesize
+  # A class escape beside such a member holds its own, and the String methods
+  # that drive a pattern read the class the same way.
+  assert_equal 0, (Regexp.new("[\\w\\xC4\\x80]") =~ "Āx")
+  assert_equal 2, "ĀĀ".scan(Regexp.new("[\\xC4\\x80]")).size
+  # The literal spelling of the same escapes agrees, which is what the class
+  # was read against.
+  assert_equal 0, (Regexp.new("\\xC4\\x80") =~ "Āx")
+  assert_equal 4, Regexp.new("\\xC4\\x80+").match("ĀĀ")[0].bytesize
 end
 
 assert("Regexp - /i over a class of bytes asks for no case data") do
