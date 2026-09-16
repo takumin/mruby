@@ -29,6 +29,11 @@ from typing import Dict, Iterable, List, Optional, Sequence
 API_VERSION = "7.1"
 BATCH_SIZE = 200
 
+# Azure DevOps の Work Item Tracking API のパス。パスに含まれる綴りは API 側の名前で
+# あり誤記ではないため、codespell の指摘を行単位で抑止している。
+WIQL_PATH = "/_apis/wit/wiql"  # codespell:ignore wit
+BATCH_PATH = "/_apis/wit/workitemsbatch"  # codespell:ignore wit
+
 FIELDS = [
     "System.Id",
     "System.Title",
@@ -132,9 +137,9 @@ def build_wiql(project: str, team: Optional[str], iteration_path: Optional[str])
 
 
 def query_ids(client: Client, team: Optional[str], wiql: str) -> List[int]:
-    path = "/_apis/wit/wiql"
+    path = WIQL_PATH
     if team:
-        path = "/{}/_apis/wit/wiql".format(urllib.parse.quote(team))
+        path = "/{}{}".format(urllib.parse.quote(team), WIQL_PATH)
     result = client.post(path, {"query": wiql})
     return [int(item["id"]) for item in result.get("workItems", [])]
 
@@ -144,8 +149,7 @@ def fetch_work_items(client: Client, ids: Sequence[int]) -> Dict[int, dict]:
     for start in range(0, len(ids), BATCH_SIZE):
         chunk = list(ids[start : start + BATCH_SIZE])
         result = client.post(
-            "/_apis/wit/workitemsbatch",
-            {"ids": chunk, "fields": FIELDS, "errorPolicy": "omit"},
+            BATCH_PATH, {"ids": chunk, "fields": FIELDS, "errorPolicy": "omit"}
         )
         for raw in result.get("value", []):
             if raw is None:
