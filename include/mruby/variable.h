@@ -101,13 +101,16 @@ MRB_API void mrb_gv_remove(mrb_state *mrb, mrb_sym sym);
  * (CRuby's `$~` is per method scope) can keep its global spelling. The
  * dispatch lives behind a sentinel stored in the globals table itself, so
  * the name stays defined and listed in `global_variables`, and an ordinary
- * global pays one type test on access. `set` may raise; removing the name
- * with `mrb_gv_remove()` removes the hook with it.
+ * global pays one type test on access. `set` may raise; a NULL `set` makes
+ * the variable read-only, assignment raising the NameError from the
+ * dispatch itself. Removing the name with `mrb_gv_remove()` removes the
+ * hook with it.
  *
  * @param mrb The mruby state reference
  * @param sym The name of the global variable
  * @param get Called to produce the variable's value
- * @param set Called with the value assigned to the variable
+ * @param set Called with the value assigned to the variable, or NULL to
+ *            make the variable read-only
  */
 MRB_API void mrb_gv_define_virtual(mrb_state *mrb, mrb_sym sym, mrb_value (*get)(mrb_state*), void (*set)(mrb_state*, mrb_value));
 
