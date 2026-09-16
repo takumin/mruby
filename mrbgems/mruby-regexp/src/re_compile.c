@@ -1298,6 +1298,64 @@ unicode_escape_first(re_compiler *c, mrb_bool *more)
   return cp;
 }
 
+/* Read one more byte escape, or answer -1 and leave the position where it
+   stood. Only `\xNN` and octal `\NNN` name a byte; everything else names a
+   character or an assertion and is not a byte of the sequence being spelled. */
+static int
+next_escaped_byte(re_compiler *c)
+{
+  const char *save = c->p;
+  if (peek(c) != '\\') return -1;
+  next_char(c);
+  int k = peek(c);
+  if (k != 'x' && !(k >= '0' && k <= '7')) { c->p = save; return -1; }
+  int v = parse_escape(c);
+  if (v < 0x80 || v > 0xBF) { c->p = save; return -1; }
+  return v;
+}
+
+/* Whether the byte escapes standing here spell a character, the first of them
+   already read as `ch`. On TRUE the escapes are consumed and *cp is the
+   character they spell; on FALSE the position is where it stood, and `ch` is
+   a byte that starts no whole character.
+
+   Byte escapes that spell a character are that character: CRuby reads
+   `\xC4\x80` as "\u{100}" and binds a quantifier to the whole of it, and so
+   does the spelling that writes the bytes out. A byte-indexed pattern spells
+   no character with its bytes, so nothing joins there.
+
+   The question is asked from one place because a pattern has one answer to
+   it: emit_escaped_byte() puts it for the literal path and read_class_atom()
+   for what a class holds, and the two reading the same escapes differently is
+   what made one pattern say two things about itself. */
+static mrb_bool
+read_escaped_char(re_compiler *c, int ch, uint32_t *cp)
+{
+  int need = 0;
+  if (c->binary) need = 0;  /* bytes spell no character here; see above */
+  else if (ch >= 0xC2 && ch <= 0xDF) need = 1;
+  else if (ch >= 0xE0 && ch <= 0xEF) need = 2;
+  else if (ch >= 0xF0 && ch <= 0xF4) need = 3;
+  if (need == 0) return FALSE;
+
+  const char *save = c->p;
+  char buf[4];
+  buf[0] = (char)ch;
+  int n = 1;
+  while (n <= need) {
+    int b = next_escaped_byte(c);
+    if (b < 0) break;
+    buf[n++] = (char)b;
+  }
+  if (n == need + 1 && mrb_re_charlen(buf, buf + n, FALSE) == n) {
+    int len = 0;
+    *cp = mrb_re_decode_char(buf, buf + n, &len, FALSE);
+    return TRUE;
+  }
+  c->p = save;  /* spells no character: the lead byte is a byte of its own */
+  return FALSE;
+}
+
 /* Add one member to the class: the ASCII bitmap and the range list each hold
    one side of 128, and class_match() picks the side to read from the value
    alone. Above 128 the value is a codepoint or a byte, which the tag records
@@ -2569,62 +2627,22 @@ emit_char_bytes(re_compiler *c, int ch)
   }
 }
 
-/* Read one more byte escape, or answer -1 and leave the position where it
-   stood. Only `\xNN` and octal `\NNN` name a byte; everything else names a
-   character or an assertion and is not a byte of the sequence being spelled. */
-static int
-next_escaped_byte(re_compiler *c)
-{
-  const char *save = c->p;
-  if (peek(c) != '\\') return -1;
-  next_char(c);
-  int k = peek(c);
-  if (k != 'x' && !(k >= '0' && k <= '7')) { c->p = save; return -1; }
-  int v = parse_escape(c);
-  if (v < 0x80 || v > 0xBF) { c->p = save; return -1; }
-  return v;
-}
-
 /* Emit a byte escape whose value is above 127, having read the first one.
 
-   Byte escapes that spell a character are that character: CRuby reads
-   `\xC4\x80` as "\u{100}" and binds a quantifier to the whole of it, and so
-   does the unescaped spelling here through emit_char_bytes(). So the
-   continuation bytes are read and the character emitted as one atom.
-
-   What is left is a byte no character reaches, which is a byte and not the
-   codepoint of the same number: `\xC4` alone is not "\u{C4}", and the byte it
-   names lives inside "\u{100}" without being a character there. RE_BYTE is
-   what asks for it, matching only where the subject byte stands alone, the
-   rule `[\xC4]` already reads it by. Matching it inside a character instead
-   was what let a match, a capture and a lookaround stop between two bytes of
-   one. */
+   What read_escaped_char() leaves is a byte no character reaches, which is a
+   byte and not the codepoint of the same number: `\xC4` alone is not
+   "\u{C4}", and the byte it names lives inside "\u{100}" without being a
+   character there. RE_BYTE is what asks for it, matching only where the
+   subject byte stands alone, the rule `[\xC4]` already reads it by. Matching
+   it inside a character instead was what let a match, a capture and a
+   lookaround stop between two bytes of one. */
 static void
 emit_escaped_byte(re_compiler *c, int ch)
 {
-  int need = 0;
-  if (c->binary) need = 0;  /* bytes spell no character here; see above */
-  else if (ch >= 0xC2 && ch <= 0xDF) need = 1;
-  else if (ch >= 0xE0 && ch <= 0xEF) need = 2;
-  else if (ch >= 0xF0 && ch <= 0xF4) need = 3;
-
-  if (need > 0) {
-    const char *save = c->p;
-    char buf[4];
-    buf[0] = (char)ch;
-    int n = 1;
-    while (n <= need) {
-      int b = next_escaped_byte(c);
-      if (b < 0) break;
-      buf[n++] = (char)b;
-    }
-    if (n == need + 1 && mrb_re_charlen(buf, buf + n, FALSE) == n) {
-      int len = 0;
-      uint32_t cp = mrb_re_decode_char(buf, buf + n, &len, FALSE);
-      emit_codepoint(c, cp);
-      return;
-    }
-    c->p = save;  /* spells no character: the lead byte is a byte of its own */
+  uint32_t cp;
+  if (read_escaped_char(c, ch, &cp)) {
+    emit_codepoint(c, cp);
+    return;
   }
   emit(c, RE_BYTE, (uint8_t)ch, 0);
 }
