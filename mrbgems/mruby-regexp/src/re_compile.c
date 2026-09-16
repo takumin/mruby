@@ -1408,7 +1408,12 @@ class_named_cp(re_compiler *c, re_charclass *cc, uint32_t cp, mrb_bool *is_byte)
    raw 0xB5 both compile to the byte outside [...]. Reading the same byte as
    U+00B5 inside [...] made the two halves of one pattern disagree about what
    the pattern holds. A byte and a codepoint of the same number are different
-   members, which is what the tag on the stored value records. */
+   members, which is what the tag on the stored value records.
+
+   Whether the pattern spells characters at all is the same question again,
+   and it is the pattern's rather than the build's: a byte-indexed pattern
+   holds bytes, so a leader there starts no character to decode and every byte
+   of one is a member of its own. */
 static uint32_t
 read_class_atom(re_compiler *c, re_charclass *cc, mrb_bool *is_byte, mrb_bool closes_range)
 {
@@ -1461,9 +1466,13 @@ read_class_atom(re_compiler *c, re_charclass *cc, mrb_bool *is_byte, mrb_bool cl
     return (uint32_t)next_char(c);
   }
   /* Multi-byte UTF-8 leader: decode the full codepoint. An invalid leader
-     decodes as itself over one byte, so it is a byte like the rest. */
+     decodes as itself over one byte, so it is a byte like the rest, and so
+     does every byte of a byte-indexed pattern: the decode is handed the
+     pattern's own reading, as emit_char_bytes() takes an atom's length from
+     it. `[Ā]` written in such a pattern is the two bytes, which is what
+     CRuby reads an ASCII-8BIT class as. */
   int len = 0;
-  uint32_t cp = mrb_re_decode_char(c->p, c->src_end, &len, FALSE);
+  uint32_t cp = mrb_re_decode_char(c->p, c->src_end, &len, c->binary);
   c->p += len;
   if (len == 1) *is_byte = TRUE;
   return cp;

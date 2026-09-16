@@ -449,6 +449,10 @@ assert("Regexp - a lookbehind branch counts its own width in both units") do
   bin = "ābx".b
   assert_equal 2, (bin =~ /(?<=ā|bc)b/)
   assert_nil ("abx".b =~ /(?<=ā|bc)b/)
+  # A class in a byte-indexed pattern holds one byte per member, so a rewind
+  # over it steps back one where the character written out steps back two.
+  assert_equal 2, (Regexp.new("(?<=[Ā])x".b) =~ "Āx".b)
+  assert_nil (Regexp.new("(?<![Ā])x".b) =~ "Āx".b)
 end
 
 assert("Regexp - a lookaround holds where its sub-pattern matches") do
@@ -813,6 +817,59 @@ assert("Regexp - a pattern byte that starts no character is a byte in a class") 
   # ASCII belongs to both, so it pairs with either.
   assert_equal 0, ("\xFF".b =~ Regexp.new("[\x00-\xFF]"))
   assert_equal 0, ("µ" =~ Regexp.new("[\x00-\u{FF}]"))
+end
+
+assert("Regexp - a byte-indexed pattern's class holds its bytes") do
+  # A byte-indexed pattern spells no character with its bytes, and the literal
+  # path has read it that way since a quantifier there had to know what it
+  # repeats. Inside a class the same bytes were still decoded into a codepoint,
+  # so one pattern answered two ways about what it holds depending on which
+  # side of a `[` the character stood: `Ā` written in a binary pattern was the
+  # two bytes outside the brackets and U+0100 inside them.
+  skip unless __ENCODING__ == "UTF-8"
+  # Each byte is a member of its own, so the class matches at the leader.
+  assert_equal 0, (Regexp.new("[Ā]".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[Āā]+".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[あ]".b) =~ "あx".b)
+  # A quantifier binds to the class, which every byte of the subject is in.
+  assert_equal 4, Regexp.new("[Ā]+".b).match("ĀĀ".b)[0].bytesize
+  # The negated form is the one that answers rather than declining: with two
+  # bytes held, the first byte the class does not hold is the `x`.
+  assert_equal 2, (Regexp.new("[^Ā]".b) =~ "Āx".b)
+  # Both ends of a range are bytes there, so the span is one of bytes.
+  assert_equal 0, (Regexp.new("[Ā-ā]".b) =~ "Āx".b)
+  # A byte has no case, so /i leaves the class as written.
+  assert_equal 0, (Regexp.new("[Ā]".b, Regexp::IGNORECASE) =~ "Āx".b)
+  # A backslash before one of those bytes is still the byte, and a nest and an
+  # intersection hold what the operand read.
+  assert_equal 0, (Regexp.new("[\\Ā]".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[[Ā]]".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[Ā&&Ā]".b) =~ "Āx".b)
+  # A character of any width is the bytes it is written with, and the negated
+  # form with a quantifier takes them one at a time.
+  assert_equal 4, Regexp.new("[\u{1F600}]+".b).match("\u{1F600}".b)[0].bytesize
+  assert_equal 1, Regexp.new("[^Ā]+".b).match("xĀ".b)[0].bytesize
+  # ASCII in the same class is a member of its own as it is anywhere, and so
+  # are a POSIX bracket's members beside such a character.
+  assert_equal 0, (Regexp.new("[aĀ]".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[aĀ]".b) =~ "ax".b)
+  assert_equal 0, (Regexp.new("[[:alpha:]Ā]".b) =~ "Āx".b)
+  # Both ends of a span the codepoints would write backwards are bytes here,
+  # so it is a range rather than the empty class that spelling is refused for.
+  assert_equal 0, (Regexp.new("[ā-Ā]".b) =~ "Āx".b)
+  # One member is one byte, so a non-greedy quantifier stops after one.
+  assert_equal 1, Regexp.new("[Ā]+?".b).match("ĀĀ".b)[0].bytesize
+  # The String methods that drive a pattern read the class the same way, a
+  # backward search among them.
+  assert_equal 2, "Āx".b.scan(Regexp.new("[Ā]".b)).size
+  assert_equal "--x", "Āx".b.gsub(Regexp.new("[Ā]".b), "-")
+  assert_equal 4, "ĀxĀ".b.rindex(Regexp.new("[Ā]".b))
+  # The literal spelling beside each of these agrees, and so does the class of
+  # a pattern read by character.
+  assert_equal 0, (Regexp.new("Ā".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("Ā".b, Regexp::IGNORECASE) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[Ā]") =~ "Āx")
+  assert_equal 2, Regexp.new("[Ā]").match("Āx")[0].bytesize
 end
 
 assert("Regexp - /i over a class of bytes asks for no case data") do

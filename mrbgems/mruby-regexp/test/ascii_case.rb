@@ -17,6 +17,9 @@ assert("Regexp - /i refuses what ASCII folding cannot answer") do
   assert_raise(RegexpError) { Regexp.new("Σ", Regexp::IGNORECASE) }
   assert_raise(RegexpError) { Regexp.new("д", Regexp::IGNORECASE) }
   assert_raise(RegexpError) { Regexp.new("aĀb", Regexp::IGNORECASE) }
+  # A byte-indexed pattern spells no character with its bytes, so a class of
+  # them has nothing to fold and nothing to refuse.
+  assert_kind_of Regexp, Regexp.new("[Ā]".b, Regexp::IGNORECASE)
   # A backslash before a multibyte character has no escape meaning, so the
   # escaped spelling is refused exactly as the plain one is.
   assert_raise(RegexpError) { Regexp.new("\\Ā", Regexp::IGNORECASE) }
