@@ -875,6 +875,40 @@ assert("Regexp - a byte-indexed pattern's class holds its bytes") do
   assert_equal 2, Regexp.new("[Ā]").match("Āx")[0].bytesize
 end
 
+assert("Regexp - a class joins the byte escapes that spell a character") do
+  # The literal path reads `\xC4\x80` as the character those bytes spell, so a
+  # quantifier after it repeats the whole of it. Inside a class each escape
+  # stayed a member of its own, and a class holding the two bytes matches no
+  # character a subject read by character spells: `[\xC4\x80]` answered nil
+  # against "Ā" where the same escapes outside the brackets answered 0.
+  skip unless __ENCODING__ == "UTF-8"
+  assert_equal 0, (Regexp.new("[\\xC4\\x80]") =~ "Āx")
+  assert_equal 4, Regexp.new("[\\xC4\\x80]+").match("ĀĀ")[0].bytesize
+  assert_equal 0, (Regexp.new("[\\304\\200]") =~ "Āx")   # octal spells it too
+  assert_equal 0, (Regexp.new("[\\xF0\\x9F\\x98\\x80]") =~ "\u{1F600}x")
+  # A member the escapes spell opens and closes a range as a written out one
+  # does, and folds under /i as the character it is.
+  assert_equal 0, (Regexp.new("[\\xC4\\x80-\\xC4\\x81]") =~ "āx")
+  assert_nil (Regexp.new("[\\xC4\\x80-\\xC4\\x81]") =~ "Ăx")
+  assert_equal 0, (Regexp.new("[\\xC4\\x80]", Regexp::IGNORECASE) =~ "āx")
+  assert_equal 1, (Regexp.new("[^\\xC4\\x80]") =~ "Āx")
+  # Escapes that spell no character are bytes, which is the rule `[\xC4]` is
+  # already read by: an overlong sequence, a leader another leader follows and
+  # one nothing follows each stay where they were.
+  assert_false Regexp.new("[\\xC0\\xBC]").match?("<")
+  assert_equal 0, (Regexp.new("[\\xC4\\xC4]") =~ "\xC4".b)
+  assert_equal 0, (Regexp.new("[\\xC4x]") =~ "x")
+  assert_nil (Regexp.new("[\\xC4]") =~ "Āx")
+  assert_equal 0, (Regexp.new("[\\xC4]") =~ "\xC4".b)
+  # A byte-indexed pattern spells no character with its bytes, so nothing
+  # joins there and the class holds the two bytes.
+  assert_equal 0, (Regexp.new("[\\xC4\\x80]".b) =~ "Āx".b)
+  # The literal spelling of the same escapes agrees, which is what the class
+  # was read against.
+  assert_equal 0, (Regexp.new("\\xC4\\x80") =~ "Āx")
+  assert_equal 4, Regexp.new("\\xC4\\x80+").match("ĀĀ")[0].bytesize
+end
+
 assert("Regexp - /i over a class of bytes asks for no case data") do
   # Folding is for characters, and a byte that starts none has no case: a
   # class of continuation bytes used to reach the fold tables through the
