@@ -815,6 +815,40 @@ assert("Regexp - a pattern byte that starts no character is a byte in a class") 
   assert_equal 0, ("µ" =~ Regexp.new("[\x00-\u{FF}]"))
 end
 
+assert("Regexp - a byte-indexed pattern's class holds its bytes") do
+  # A byte-indexed pattern spells no character with its bytes, and the literal
+  # path has read it that way since a quantifier there had to know what it
+  # repeats. Inside a class the same bytes were still decoded into a codepoint,
+  # so one pattern answered two ways about what it holds depending on which
+  # side of a `[` the character stood: `Ā` written in a binary pattern was the
+  # two bytes outside the brackets and U+0100 inside them.
+  skip unless __ENCODING__ == "UTF-8"
+  # Each byte is a member of its own, so the class matches at the leader.
+  assert_equal 0, (Regexp.new("[Ā]".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[Āā]+".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[あ]".b) =~ "あx".b)
+  # A quantifier binds to the class, which every byte of the subject is in.
+  assert_equal 4, Regexp.new("[Ā]+".b).match("ĀĀ".b)[0].bytesize
+  # The negated form is the one that answers rather than declining: with two
+  # bytes held, the first byte the class does not hold is the `x`.
+  assert_equal 2, (Regexp.new("[^Ā]".b) =~ "Āx".b)
+  # Both ends of a range are bytes there, so the span is one of bytes.
+  assert_equal 0, (Regexp.new("[Ā-ā]".b) =~ "Āx".b)
+  # A byte has no case, so /i leaves the class as written.
+  assert_equal 0, (Regexp.new("[Ā]".b, Regexp::IGNORECASE) =~ "Āx".b)
+  # A backslash before one of those bytes is still the byte, and a nest and an
+  # intersection hold what the operand read.
+  assert_equal 0, (Regexp.new("[\\Ā]".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[[Ā]]".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[Ā&&Ā]".b) =~ "Āx".b)
+  # The literal spelling beside each of these agrees, and so does the class of
+  # a pattern read by character.
+  assert_equal 0, (Regexp.new("Ā".b) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("Ā".b, Regexp::IGNORECASE) =~ "Āx".b)
+  assert_equal 0, (Regexp.new("[Ā]") =~ "Āx")
+  assert_equal 2, Regexp.new("[Ā]").match("Āx")[0].bytesize
+end
+
 assert("Regexp - /i over a class of bytes asks for no case data") do
   # Folding is for characters, and a byte that starts none has no case: a
   # class of continuation bytes used to reach the fold tables through the
