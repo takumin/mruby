@@ -1367,23 +1367,28 @@ class_add_member(re_compiler *c, re_charclass *cc, uint32_t cp, mrb_bool is_byte
   else class_add_codepoint(c, cc, (is_byte ? RE_CLASS_BYTE : 0) | cp);
 }
 
-/* What a `\u` escape names, in the members a class can hold. On a build whose
-   characters are single bytes, a codepoint above ASCII is the bytes that spell
-   it, which is already what a character written out in the class comes to
-   there: read_class_atom() decodes one byte at a time, so `[Ā]` holds `\xC4`
-   and `\x80`. Naming the same character rather than spelling it out cannot
-   mean something else, so the escape contributes those bytes too. All but the
-   last join the class here, and the last is returned, so it can open a range
-   as any other atom would.
+/* What a `\u` escape names, in the members a class can hold. Where the class
+   reads no character out of the pattern's bytes, a codepoint above ASCII is
+   the bytes that spell it: read_class_atom() takes one byte at a time on a
+   build whose characters are single bytes, and on any build where the pattern
+   is byte-indexed, so `[Ā]` holds `\xC4` and `\x80` in either place. Naming
+   the same character rather than spelling it out cannot mean something else,
+   so the escape contributes those bytes too. All but the last join the class
+   here, and the last is returned, so it can open a range as any other atom
+   would.
+
+   Which of the two the class is reading is the pattern's question and not the
+   build's, as it is for the literal path: a binary pattern holds bytes on a
+   build that reads characters everywhere else.
 
    A range so opened is a range of bytes, since that is what both ends are.
    The written out spelling reaches byte ends by its own route and comes to a
    different span, which is what a range between two characters neither
-   spelling can express comes to on a build like this. */
+   spelling can express comes to where the bytes are the members. */
 static uint32_t
 class_named_cp(re_compiler *c, re_charclass *cc, uint32_t cp, mrb_bool *is_byte)
 {
-  if (MRB_ENC_MULTIBYTE_P || cp < 0x80) return cp;
+  if ((MRB_ENC_MULTIBYTE_P && !c->binary) || cp < 0x80) return cp;
 
   char buf[4];
   int len = (int)mrb_utf8_to_buf(buf, (mrb_int)cp);
@@ -1397,8 +1402,10 @@ class_named_cp(re_compiler *c, re_charclass *cc, uint32_t cp, mrb_bool *is_byte)
 /* Read one character class atom: either an ASCII byte (0-127), a
    `\escape`, or a full multi-byte UTF-8 codepoint. Returns the value and
    advances c->p. *is_byte says which of the two the value is: TRUE for a
-   byte at or above 0x80 that starts no whole character, FALSE for ASCII, for
-   a decoded codepoint and for `\u`, which names a codepoint outright.
+   byte at or above 0x80 that starts no whole character, FALSE for ASCII and
+   for a decoded codepoint. `\u` names a codepoint outright, and is one
+   wherever the class holds characters; where it holds bytes the escape comes
+   to the bytes that spell the codepoint, as class_named_cp() says.
    closes_range says the atom follows a `-`, which matters to a `\u{...}`
    list alone: the codepoint next to the `-` is the range end, and the rest
    of the list are members.
