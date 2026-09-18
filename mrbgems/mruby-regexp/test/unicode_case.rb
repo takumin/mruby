@@ -21,6 +21,16 @@ assert("Regexp - Unicode case folding under /i") do
   # Inside a class, and its negation.
   assert_equal "ā", "ā".match(/[Ā]/i)[0]
   assert_nil "ā".match(/[^Ā]/i)
+  # Byte escapes that spell a character are that character, so they fold as the
+  # character does, in the class as in the literal path, and a range whose ends
+  # they spell folds over its span.
+  assert_equal "ā", "ā".match(Regexp.new("\\xC4\\x80", Regexp::IGNORECASE))[0]
+  assert_equal "ā", "ā".match(Regexp.new("[\\xC4\\x80]", Regexp::IGNORECASE))[0]
+  assert_equal "Ā", "Ā".match(Regexp.new("[\\xC4\\x80-\\xC4\\x81]", Regexp::IGNORECASE))[0]
+  # A byte-indexed pattern holds the bytes instead, and a byte has no case, so
+  # the class takes one byte where the character class took the character the
+  # fold reached.
+  assert_equal 1, Regexp.new("[\\xC4\\x80]".b, Regexp::IGNORECASE).match("āx".b)[0].bytesize
   # Three codepoints share one fold: U+03A3 and U+03C2 both fold to U+03C3.
   # A class written with any of them has to reach the other two, which takes
   # the fold they share as a stepping stone rather than one hop from what was

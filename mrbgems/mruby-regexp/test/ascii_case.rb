@@ -17,9 +17,20 @@ assert("Regexp - /i refuses what ASCII folding cannot answer") do
   assert_raise(RegexpError) { Regexp.new("Σ", Regexp::IGNORECASE) }
   assert_raise(RegexpError) { Regexp.new("д", Regexp::IGNORECASE) }
   assert_raise(RegexpError) { Regexp.new("aĀb", Regexp::IGNORECASE) }
+  # A byte-indexed pattern spells no character with its bytes, so a class of
+  # them has nothing to fold and nothing to refuse.
+  assert_kind_of Regexp, Regexp.new("[Ā]".b, Regexp::IGNORECASE)
   # A backslash before a multibyte character has no escape meaning, so the
   # escaped spelling is refused exactly as the plain one is.
   assert_raise(RegexpError) { Regexp.new("\\Ā", Regexp::IGNORECASE) }
+  # Byte escapes that spell a character are that character, so a run of them is
+  # refused wherever the character it spells would be, an end of a range too.
+  assert_raise(RegexpError) { Regexp.new("\\xC4\\x80", Regexp::IGNORECASE) }
+  assert_raise(RegexpError) { Regexp.new("[\\xC4\\x80]", Regexp::IGNORECASE) }
+  assert_raise(RegexpError) { Regexp.new("[\\xC4\\x80-\\xC4\\x81]", Regexp::IGNORECASE) }
+  # A byte-indexed pattern spells no character with them, so there is nothing
+  # to fold there either.
+  assert_kind_of Regexp, Regexp.new("[\\xC4\\x80]".b, Regexp::IGNORECASE)
   # A range straddling the ASCII boundary is refused for its non-ASCII half,
   # which the split leaves in the codepoint list; the ASCII half it could have
   # answered on its own does not save it.

@@ -1298,6 +1298,64 @@ unicode_escape_first(re_compiler *c, mrb_bool *more)
   return cp;
 }
 
+/* Read one more byte escape, or answer -1 and leave the position where it
+   stood. Only `\xNN` and octal `\NNN` name a byte; everything else names a
+   character or an assertion and is not a byte of the sequence being spelled. */
+static int
+next_escaped_byte(re_compiler *c)
+{
+  const char *save = c->p;
+  if (peek(c) != '\\') return -1;
+  next_char(c);
+  int k = peek(c);
+  if (k != 'x' && !(k >= '0' && k <= '7')) { c->p = save; return -1; }
+  int v = parse_escape(c);
+  if (v < 0x80 || v > 0xBF) { c->p = save; return -1; }
+  return v;
+}
+
+/* Whether the byte escapes standing here spell a character, the first of them
+   already read as `ch`. On TRUE the escapes are consumed and *cp is the
+   character they spell; on FALSE the position is where it stood, and `ch` is
+   a byte that starts no whole character.
+
+   Byte escapes that spell a character are that character: CRuby reads
+   `\xC4\x80` as "\u{100}" and binds a quantifier to the whole of it, and so
+   does the spelling that writes the bytes out. A byte-indexed pattern spells
+   no character with its bytes, so nothing joins there.
+
+   The question is asked from one place because a pattern has one answer to
+   it: emit_escaped_byte() puts it for the literal path and read_class_atom()
+   for what a class holds, and the two reading the same escapes differently is
+   what made one pattern say two things about itself. */
+static mrb_bool
+read_escaped_char(re_compiler *c, int ch, uint32_t *cp)
+{
+  int need = 0;
+  if (c->binary) need = 0;  /* bytes spell no character here; see above */
+  else if (ch >= 0xC2 && ch <= 0xDF) need = 1;
+  else if (ch >= 0xE0 && ch <= 0xEF) need = 2;
+  else if (ch >= 0xF0 && ch <= 0xF4) need = 3;
+  if (need == 0) return FALSE;
+
+  const char *save = c->p;
+  char buf[4];
+  buf[0] = (char)ch;
+  int n = 1;
+  while (n <= need) {
+    int b = next_escaped_byte(c);
+    if (b < 0) break;
+    buf[n++] = (char)b;
+  }
+  if (n == need + 1 && mrb_re_charlen(buf, buf + n, FALSE) == n) {
+    int len = 0;
+    *cp = mrb_re_decode_char(buf, buf + n, &len, FALSE);
+    return TRUE;
+  }
+  c->p = save;  /* spells no character: the lead byte is a byte of its own */
+  return FALSE;
+}
+
 /* Add one member to the class: the ASCII bitmap and the range list each hold
    one side of 128, and class_match() picks the side to read from the value
    alone. Above 128 the value is a codepoint or a byte, which the tag records
@@ -1309,23 +1367,28 @@ class_add_member(re_compiler *c, re_charclass *cc, uint32_t cp, mrb_bool is_byte
   else class_add_codepoint(c, cc, (is_byte ? RE_CLASS_BYTE : 0) | cp);
 }
 
-/* What a `\u` escape names, in the members a class can hold. On a build whose
-   characters are single bytes, a codepoint above ASCII is the bytes that spell
-   it, which is already what a character written out in the class comes to
-   there: read_class_atom() decodes one byte at a time, so `[Ā]` holds `\xC4`
-   and `\x80`. Naming the same character rather than spelling it out cannot
-   mean something else, so the escape contributes those bytes too. All but the
-   last join the class here, and the last is returned, so it can open a range
-   as any other atom would.
+/* What a `\u` escape names, in the members a class can hold. Where the class
+   reads no character out of the pattern's bytes, a codepoint above ASCII is
+   the bytes that spell it: read_class_atom() takes one byte at a time on a
+   build whose characters are single bytes, and on any build where the pattern
+   is byte-indexed, so `[Ā]` holds `\xC4` and `\x80` in either place. Naming
+   the same character rather than spelling it out cannot mean something else,
+   so the escape contributes those bytes too. All but the last join the class
+   here, and the last is returned, so it can open a range as any other atom
+   would.
+
+   Which of the two the class is reading is the pattern's question and not the
+   build's, as it is for the literal path: a binary pattern holds bytes on a
+   build that reads characters everywhere else.
 
    A range so opened is a range of bytes, since that is what both ends are.
    The written out spelling reaches byte ends by its own route and comes to a
    different span, which is what a range between two characters neither
-   spelling can express comes to on a build like this. */
+   spelling can express comes to where the bytes are the members. */
 static uint32_t
 class_named_cp(re_compiler *c, re_charclass *cc, uint32_t cp, mrb_bool *is_byte)
 {
-  if (MRB_ENC_MULTIBYTE_P || cp < 0x80) return cp;
+  if ((MRB_ENC_MULTIBYTE_P && !c->binary) || cp < 0x80) return cp;
 
   char buf[4];
   int len = (int)mrb_utf8_to_buf(buf, (mrb_int)cp);
@@ -1339,8 +1402,10 @@ class_named_cp(re_compiler *c, re_charclass *cc, uint32_t cp, mrb_bool *is_byte)
 /* Read one character class atom: either an ASCII byte (0-127), a
    `\escape`, or a full multi-byte UTF-8 codepoint. Returns the value and
    advances c->p. *is_byte says which of the two the value is: TRUE for a
-   byte at or above 0x80 that starts no whole character, FALSE for ASCII, for
-   a decoded codepoint and for `\u`, which names a codepoint outright.
+   byte at or above 0x80 that starts no whole character, FALSE for ASCII and
+   for a decoded codepoint. `\u` names a codepoint outright, and is one
+   wherever the class holds characters; where it holds bytes the escape comes
+   to the bytes that spell the codepoint, as class_named_cp() says.
    closes_range says the atom follows a `-`, which matters to a `\u{...}`
    list alone: the codepoint next to the `-` is the range end, and the rest
    of the list are members.
@@ -1350,7 +1415,12 @@ class_named_cp(re_compiler *c, re_charclass *cc, uint32_t cp, mrb_bool *is_byte)
    raw 0xB5 both compile to the byte outside [...]. Reading the same byte as
    U+00B5 inside [...] made the two halves of one pattern disagree about what
    the pattern holds. A byte and a codepoint of the same number are different
-   members, which is what the tag on the stored value records. */
+   members, which is what the tag on the stored value records.
+
+   Whether the pattern spells characters at all is the same question again,
+   and it is the pattern's rather than the build's: a byte-indexed pattern
+   holds bytes, so a leader there starts no character to decode and every byte
+   of one is a member of its own. */
 static uint32_t
 read_class_atom(re_compiler *c, re_charclass *cc, mrb_bool *is_byte, mrb_bool closes_range)
 {
@@ -1391,8 +1461,16 @@ read_class_atom(re_compiler *c, re_charclass *cc, mrb_bool *is_byte, mrb_bool cl
        which reports it. */
     if (peek(c) < 0xC0) {
       uint32_t esc = (uint32_t)parse_escape(c);
-      /* \xNN and octal \NNN name a byte, and the literal path emits one. */
-      if (esc >= 0x80) *is_byte = TRUE;
+      /* \xNN and octal \NNN name a byte, and the literal path emits one,
+         apart from the run of them that spells a character: `[\xC4\x80]`
+         holds "\u{100}" as the pattern's `[Ā]` does, and a quantifier after
+         the class binds to the whole character. What spells no character is
+         a byte here as it is there. */
+      if (esc >= 0x80) {
+        uint32_t joined;
+        if (read_escaped_char(c, (int)esc, &joined)) return joined;
+        *is_byte = TRUE;
+      }
       return esc;
     }
   }
@@ -1403,9 +1481,13 @@ read_class_atom(re_compiler *c, re_charclass *cc, mrb_bool *is_byte, mrb_bool cl
     return (uint32_t)next_char(c);
   }
   /* Multi-byte UTF-8 leader: decode the full codepoint. An invalid leader
-     decodes as itself over one byte, so it is a byte like the rest. */
+     decodes as itself over one byte, so it is a byte like the rest, and so
+     does every byte of a byte-indexed pattern: the decode is handed the
+     pattern's own reading, as emit_char_bytes() takes an atom's length from
+     it. `[Ā]` written in such a pattern is the two bytes, which is what
+     CRuby reads an ASCII-8BIT class as. */
   int len = 0;
-  uint32_t cp = mrb_re_decode_char(c->p, c->src_end, &len, FALSE);
+  uint32_t cp = mrb_re_decode_char(c->p, c->src_end, &len, c->binary);
   c->p += len;
   if (len == 1) *is_byte = TRUE;
   return cp;
@@ -2569,62 +2651,22 @@ emit_char_bytes(re_compiler *c, int ch)
   }
 }
 
-/* Read one more byte escape, or answer -1 and leave the position where it
-   stood. Only `\xNN` and octal `\NNN` name a byte; everything else names a
-   character or an assertion and is not a byte of the sequence being spelled. */
-static int
-next_escaped_byte(re_compiler *c)
-{
-  const char *save = c->p;
-  if (peek(c) != '\\') return -1;
-  next_char(c);
-  int k = peek(c);
-  if (k != 'x' && !(k >= '0' && k <= '7')) { c->p = save; return -1; }
-  int v = parse_escape(c);
-  if (v < 0x80 || v > 0xBF) { c->p = save; return -1; }
-  return v;
-}
-
 /* Emit a byte escape whose value is above 127, having read the first one.
 
-   Byte escapes that spell a character are that character: CRuby reads
-   `\xC4\x80` as "\u{100}" and binds a quantifier to the whole of it, and so
-   does the unescaped spelling here through emit_char_bytes(). So the
-   continuation bytes are read and the character emitted as one atom.
-
-   What is left is a byte no character reaches, which is a byte and not the
-   codepoint of the same number: `\xC4` alone is not "\u{C4}", and the byte it
-   names lives inside "\u{100}" without being a character there. RE_BYTE is
-   what asks for it, matching only where the subject byte stands alone, the
-   rule `[\xC4]` already reads it by. Matching it inside a character instead
-   was what let a match, a capture and a lookaround stop between two bytes of
-   one. */
+   What read_escaped_char() leaves is a byte no character reaches, which is a
+   byte and not the codepoint of the same number: `\xC4` alone is not
+   "\u{C4}", and the byte it names lives inside "\u{100}" without being a
+   character there. RE_BYTE is what asks for it, matching only where the
+   subject byte stands alone, the rule `[\xC4]` already reads it by. Matching
+   it inside a character instead was what let a match, a capture and a
+   lookaround stop between two bytes of one. */
 static void
 emit_escaped_byte(re_compiler *c, int ch)
 {
-  int need = 0;
-  if (c->binary) need = 0;  /* bytes spell no character here; see above */
-  else if (ch >= 0xC2 && ch <= 0xDF) need = 1;
-  else if (ch >= 0xE0 && ch <= 0xEF) need = 2;
-  else if (ch >= 0xF0 && ch <= 0xF4) need = 3;
-
-  if (need > 0) {
-    const char *save = c->p;
-    char buf[4];
-    buf[0] = (char)ch;
-    int n = 1;
-    while (n <= need) {
-      int b = next_escaped_byte(c);
-      if (b < 0) break;
-      buf[n++] = (char)b;
-    }
-    if (n == need + 1 && mrb_re_charlen(buf, buf + n, FALSE) == n) {
-      int len = 0;
-      uint32_t cp = mrb_re_decode_char(buf, buf + n, &len, FALSE);
-      emit_codepoint(c, cp);
-      return;
-    }
-    c->p = save;  /* spells no character: the lead byte is a byte of its own */
+  uint32_t cp;
+  if (read_escaped_char(c, ch, &cp)) {
+    emit_codepoint(c, cp);
+    return;
   }
   emit(c, RE_BYTE, (uint8_t)ch, 0);
 }

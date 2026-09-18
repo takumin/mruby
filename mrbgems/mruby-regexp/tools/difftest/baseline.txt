@@ -1,7 +1,7 @@
 # Where mruby-regexp answers a pattern differently from CRuby, as
 # compare.rb beside this file reads it. Regenerate with --update;
 # every line is a difference that is meant, and README.md says why.
-# taken with ruby 4.0.6p0 x86_64-linux
+# taken with ruby 4.0.7p0 x86_64-linux
 # against a build with chars=1 unicode=1
 010101010101010101011010010101010101101001| 010101010101010101011010010101010101011001| #char U+00B2
 E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [&&\\x80]/
@@ -188,10 +188,22 @@ E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;
 E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\x80-\\xbf]/i
 E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\x80-\\xbf]/m
 E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\x80-\\xbf]/x
+E:RegexpError| ..............0.......X...|;;;;;;;;;;;;;;0-1;;;;;;;;X:ArgumentError;;; [\\x80\\xC4\\x80]/
+E:RegexpError| ..............00......X...|;;;;;;;;;;;;;;0-1;0-1;;;;;;;X:ArgumentError;;; [\\x80\\xC4\\x80]/i
+E:RegexpError| ..............0.......X...|;;;;;;;;;;;;;;0-1;;;;;;;;X:ArgumentError;;; [\\x80\\xC4\\x80]/m
+E:RegexpError| ..............0.......X...|;;;;;;;;;;;;;;0-1;;;;;;;;X:ArgumentError;;; [\\x80\\xC4\\x80]/x
 E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\x80]/
 E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\x80]/i
 E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\x80]/m
 E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\x80]/x
+E:RegexpError| ..............0.......X...|;;;;;;;;;;;;;;0-1;;;;;;;;X:ArgumentError;;; [\\xC4\\x80\\x80]/
+E:RegexpError| ..............00......X...|;;;;;;;;;;;;;;0-1;0-1;;;;;;;X:ArgumentError;;; [\\xC4\\x80\\x80]/i
+E:RegexpError| ..............0.......X...|;;;;;;;;;;;;;;0-1;;;;;;;;X:ArgumentError;;; [\\xC4\\x80\\x80]/m
+E:RegexpError| ..............0.......X...|;;;;;;;;;;;;;;0-1;;;;;;;;X:ArgumentError;;; [\\xC4\\x80\\x80]/x
+E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\xC4\\xC4]/
+E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\xC4\\xC4]/i
+E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\xC4\\xC4]/m
+E:RegexpError| ......................X...|;;;;;;;;;;;;;;;;;;;;;;X:ArgumentError;;; [\\xC4\\xC4]/x
 E:RegexpError| .000000000000000000000X000|;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;X:ArgumentError;0-1;0-1;0-1 [^[\\x80]]/
 E:RegexpError| .000000000000000000000X000|;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;X:ArgumentError;0-1;0-1;0-1 [^[\\x80]]/i
 E:RegexpError| .000000000000000000000X000|;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;0-1;X:ArgumentError;0-1;0-1;0-1 [^[\\x80]]/m
