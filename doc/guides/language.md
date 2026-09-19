@@ -287,6 +287,7 @@ gembox provides the class or feature you need:
 | ENV                   | stdlib-io  | mruby-env         |
 | Process               | stdlib-io  | mruby-process     |
 | Signal                | stdlib-io  | mruby-signal      |
+| VFS                   | stdlib-io  | mruby-vfs         |
 | Math                  | math       | mruby-math        |
 | Rational              | math       | mruby-rational    |
 | Complex               | math       | mruby-complex     |
@@ -301,6 +302,7 @@ gembox provides the class or feature you need:
 | `Kernel#sprintf`, `String#%`  | stdlib-ext | mruby-sprintf      |
 | `Array#pack`, `String#unpack` | stdlib-ext | mruby-pack         |
 | `Kernel#rand`                 | stdlib-ext | mruby-random       |
+| `Kernel#require`, `#load`     | stdlib-io  | mruby-vfs          |
 | `Kernel#eval`                 | metaprog   | mruby-eval         |
 | `Kernel#binding`              | metaprog   | mruby-binding      |
 | `Proc#binding`                | metaprog   | mruby-proc-binding |

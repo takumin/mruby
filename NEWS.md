@@ -102,6 +102,12 @@ the rest. It is not in `default`, so a build asks for it.
 - `mruby-signal`: a `Signal` module and the platform's signal table, which
   `Process.kill` and `Process::Status#to_s` both read; in `stdlib-io`
 - `mruby-env`: `ENV` for environment variable access; in `stdlib-io`
+- `mruby-vfs`: a `VFS` module of backends mounted at path prefixes, with the
+  host's files through a HAL port at the root, a `VFS::Memory` over a `Hash`,
+  and any object answering `stat` and `read`; and over it `Kernel#require`,
+  `require_relative`, `load` and `__dir__` with `$LOAD_PATH` and
+  `$LOADED_FEATURES`, loading Ruby source where the build has the compiler
+  and RITE bytecode everywhere; in `stdlib-io`
 - `mruby-string-bitops`: bit operations on `String`
 - `mruby-bin-mrb`: an mruby runtime command with no compiler in it, for
   running bytecode where the compiler is not wanted
